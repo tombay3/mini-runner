@@ -35,6 +35,7 @@ const legacyScripts = [
   "/game/lodeRunner.colorSelector.js",
   "/game/lodeRunner.gamepad.js",
   "/game/lodeRunner.main.js",
+  "/game/lodeRunner.agentHooks.js",
   "/game/lodeRunner.win.js",
   "/game/lodeRunner.share.js",
 ];
