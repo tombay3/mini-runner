@@ -1,4 +1,5 @@
 import "./style.css";
+import { installUserRecordings } from "./user-recordings.js";
 
 const BOOT_KEY = "__lodeRunnerViteBoot";
 const STATUS_ID = "boot-status";
@@ -67,6 +68,7 @@ async function bootLegacyGame() {
     if (typeof window.init !== "function") {
       throw new Error("Legacy runtime loaded, but window.init is missing.");
     }
+    installUserRecordings();
     if (!bootState.initialized) {
       bootState.initialized = true;
       setStatus("Starting game...");

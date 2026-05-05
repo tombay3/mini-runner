@@ -4,7 +4,6 @@
 *.py[oc]
 __pycache__/
 .venv
-requirements.txt
 .streamlit/
 
 node_modules/

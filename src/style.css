@@ -38,3 +38,91 @@ body {
 .boot-status-error {
   background: rgba(120, 24, 24, 0.94);
 }
+
+.recording-rail {
+  position: fixed;
+  left: 12px;
+  bottom: 12px;
+  z-index: 2147483646;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 6px;
+  border: 1px solid rgba(245, 247, 250, 0.18);
+  border-radius: 14px;
+  background: rgba(12, 17, 21, 0.86);
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.3);
+  pointer-events: auto;
+}
+
+.recording-rail[data-state="available"] {
+  border-color: rgba(124, 214, 160, 0.5);
+}
+
+.recording-rail[data-state="error"] {
+  border-color: rgba(255, 122, 110, 0.6);
+}
+
+.recording-rail[data-busy] {
+  border-color: rgba(122, 192, 255, 0.55);
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(122, 192, 255, 0.18);
+}
+
+.recording-rail-button {
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid rgba(245, 247, 250, 0.22);
+  border-radius: 10px;
+  background: rgba(245, 247, 250, 0.08);
+  color: #f5f7fa;
+  cursor: pointer;
+  font: inherit;
+  transition:
+    background-color 140ms ease,
+    border-color 140ms ease,
+    color 140ms ease,
+    transform 140ms ease;
+}
+
+.recording-rail-button::before {
+  content: attr(data-icon);
+  font-size: 18px;
+  line-height: 1;
+}
+
+.recording-rail-button:hover:not(:disabled) {
+  background: rgba(245, 247, 250, 0.16);
+  transform: translateY(-1px);
+}
+
+.recording-rail-button:disabled {
+  color: rgba(245, 247, 250, 0.38);
+  border-color: rgba(245, 247, 250, 0.12);
+  cursor: default;
+  transform: none;
+}
+
+.recording-rail[data-state="available"] .recording-rail-button[data-action="play"],
+.recording-rail[data-state="available"] .recording-rail-button[data-action="delete"] {
+  border-color: rgba(124, 214, 160, 0.42);
+}
+
+.recording-rail[data-state="error"] .recording-rail-button[data-action="refresh"] {
+  color: #ffb4a8;
+  border-color: rgba(255, 122, 110, 0.52);
+}
+
+.recording-rail[data-busy="play"] .recording-rail-button[data-action="play"],
+.recording-rail[data-busy="refresh"] .recording-rail-button[data-action="refresh"],
+.recording-rail[data-busy="delete"] .recording-rail-button[data-action="delete"] {
+  color: #7ac0ff;
+  border-color: rgba(122, 192, 255, 0.58);
+}
+
+.recording-rail[data-busy="save"] .recording-rail-button[data-action="refresh"] {
+  color: #7ac0ff;
+  border-color: rgba(122, 192, 255, 0.58);
+}
