@@ -30,7 +30,7 @@ The agent targets Classic level 1. It asks the backend LLM for one short action 
   - Agent success saves `result: "success"` and `demo.state = 1`.
   - Agent failure saves `result: "failure"`, `demo.state = 0`, and `solver.failureReason`.
 
-- Extend `src/user-recordings.js`.
+- Extend `src/recording.js`.
   - Add a fourth rail icon for AI solve.
   - Enable it only for Classic level 1.
   - On click:

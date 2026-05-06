@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import json
-import os
 import tempfile
 import urllib.error
-import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
@@ -12,25 +10,13 @@ from typing import Any
 
 from flask import Flask, jsonify, request
 
+from agent import call_openai_next_action, validate_agent_request
+
 
 app = Flask(__name__)
 
 STORE_PATH = Path(__file__).resolve().parent / "__data1" / "recordings.json"
-PUZZLE_RULES_PATH = Path(__file__).resolve().parent / "docs" / "puzzle-game.md"
 STORE_VERSION = 1
-OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
-AGENT_PLAY_DATA = 1
-AGENT_LEVEL = 1
-AGENT_MAX_TICKS = 20
-AGENT_ALLOWED_KEYCODES = {
-    "stop": 32,
-    "left": 37,
-    "right": 39,
-    "up": 38,
-    "down": 40,
-    "dig_left": 90,
-    "dig_right": 88,
-}
 _store_lock = Lock()
 
 
@@ -121,140 +107,6 @@ def validate_solver(value: Any) -> dict[str, Any] | None:
     if not isinstance(value, dict):
         raise ValueError("solver must be an object")
     return value
-
-
-def validate_agent_request(payload: Any) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    if not isinstance(payload, dict):
-        raise ValueError("request body must be an object")
-    try:
-        play_data = int(payload.get("playData", 0))
-        level = int(payload.get("level", 0))
-    except (TypeError, ValueError) as exc:
-        raise ValueError("playData and level must be integers") from exc
-    if play_data != AGENT_PLAY_DATA or level != AGENT_LEVEL:
-        raise ValueError("only Classic level 1 is supported")
-    snapshot = payload.get("snapshot")
-    if not isinstance(snapshot, dict):
-        raise ValueError("snapshot must be an object")
-    history = payload.get("history", [])
-    if not isinstance(history, list):
-        raise ValueError("history must be an array")
-    return snapshot, history
-
-
-def normalize_agent_action(value: Any) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        raise ValueError("agent action must be an object")
-
-    key_code = value.get("keyCode")
-    if isinstance(key_code, str):
-        key_code = AGENT_ALLOWED_KEYCODES.get(key_code)
-    try:
-        key_code = int(key_code)
-    except (TypeError, ValueError) as exc:
-        raise ValueError("action.keyCode must be an allowed keycode") from exc
-    if key_code not in set(AGENT_ALLOWED_KEYCODES.values()):
-        raise ValueError("action.keyCode is not allowed")
-
-    try:
-        ticks = int(value.get("ticks", 1))
-    except (TypeError, ValueError) as exc:
-        raise ValueError("action.ticks must be an integer") from exc
-    ticks = max(1, min(AGENT_MAX_TICKS, ticks))
-
-    reason = value.get("reason", "")
-    return {"keyCode": key_code, "ticks": ticks, "reason": str(reason)[:500]}
-
-
-def read_puzzle_rules() -> str:
-    try:
-        return PUZZLE_RULES_PATH.read_text(encoding="utf-8")[:6000]
-    except FileNotFoundError:
-        return "Collect all gold, avoid guards, use ladders/ropes, and dig traps to solve the level."
-
-
-def build_agent_prompt(snapshot: dict[str, Any], history: list[dict[str, Any]]) -> str:
-    return "\n\n".join(
-        [
-            "You are choosing the next short Lode Runner input burst for Classic level 1.",
-            "Return JSON only. Choose one allowed keycode and a tick count from 1 to 20.",
-            "Allowed keycodes: stop=32, left=37, right=39, up=38, down=40, dig_left=90, dig_right=88.",
-            "Game rules:\n" + read_puzzle_rules(),
-            "Current live snapshot:\n" + json.dumps(snapshot, ensure_ascii=False, sort_keys=True),
-            "Recent actions:\n" + json.dumps(history[-20:], ensure_ascii=False, sort_keys=True),
-        ]
-    )
-
-
-def extract_response_text(data: dict[str, Any]) -> str:
-    if isinstance(data.get("output_text"), str):
-        return data["output_text"]
-    for item in data.get("output", []):
-        for content in item.get("content", []):
-            if isinstance(content.get("text"), str):
-                return content["text"]
-    raise ValueError("OpenAI response did not contain text output")
-
-
-def call_openai_next_action(snapshot: dict[str, Any], history: list[dict[str, Any]]) -> tuple[dict[str, Any], dict[str, Any]]:
-    api_key = os.environ.get("OPENAI_API_KEY")
-    model = os.environ.get("OPENAI_MODEL")
-    if not api_key or not model:
-        raise RuntimeError("OPENAI_API_KEY and OPENAI_MODEL are required")
-
-    now = utc_now()
-    body = {
-        "model": model,
-        "input": [
-            {
-                "role": "system",
-                "content": "You are a Lode Runner planning agent. Respond with strict JSON only.",
-            },
-            {"role": "user", "content": build_agent_prompt(snapshot, history)},
-        ],
-        "text": {
-            "format": {
-                "type": "json_schema",
-                "name": "lode_runner_next_action",
-                "strict": True,
-                "schema": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "required": ["keyCode", "ticks", "reason"],
-                    "properties": {
-                        "keyCode": {
-                            "type": "integer",
-                            "enum": list(AGENT_ALLOWED_KEYCODES.values()),
-                        },
-                        "ticks": {"type": "integer"},
-                        "reason": {"type": "string"},
-                    },
-                },
-            }
-        },
-    }
-    request_body = json.dumps(body).encode("utf-8")
-    openai_request = urllib.request.Request(
-        OPENAI_RESPONSES_URL,
-        data=request_body,
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-        method="POST",
-    )
-
-    with urllib.request.urlopen(openai_request, timeout=60) as response:
-        response_data = json.loads(response.read().decode("utf-8"))
-
-    action = normalize_agent_action(json.loads(extract_response_text(response_data)))
-    planner = {
-        "provider": "openai",
-        "model": model,
-        "generatedAt": now,
-        "responseId": response_data.get("id"),
-    }
-    return action, planner
 
 
 @app.get("/api/health")

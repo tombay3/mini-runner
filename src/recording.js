@@ -1,13 +1,13 @@
-const INSTALL_KEY = "__lodeRunnerUserRecordings";
+const INSTALL_KEY = "__lodeRunnerRecording";
 const API_BASE = "/api/recordings";
 const AGENT_API = "/api/agent/next-action";
-const OVERLAY_ID = "user-recording-overlay";
+const OVERLAY_ID = "recording-overlay";
 const AGENT_PLAY_DATA = 1;
 const AGENT_LEVEL = 1;
 const AGENT_MAX_ITERATIONS = 240;
 const AGENT_HISTORY_LIMIT = 24;
 
-export function installUserRecordings() {
+export function installRecording() {
   if (window[INSTALL_KEY]?.installed) {
     return window[INSTALL_KEY];
   }
@@ -37,7 +37,7 @@ export function installUserRecordings() {
 
 function patchRecordingSave(state) {
   const original = window.updatePlayerDemoData;
-  if (typeof original !== "function" || original.__userRecordingPatched) {
+  if (typeof original !== "function" || original.__recordingPatched) {
     return;
   }
 
@@ -47,7 +47,7 @@ function patchRecordingSave(state) {
     return result;
   }
 
-  patchedUpdatePlayerDemoData.__userRecordingPatched = true;
+  patchedUpdatePlayerDemoData.__recordingPatched = true;
   patchedUpdatePlayerDemoData.__original = original;
   window.updatePlayerDemoData = patchedUpdatePlayerDemoData;
 }
@@ -113,7 +113,7 @@ function createOverlay(state) {
   const overlay = document.createElement("section");
   overlay.id = OVERLAY_ID;
   overlay.className = "recording-rail";
-  overlay.setAttribute("aria-label", "User recordings");
+  overlay.setAttribute("aria-label", "Recording");
   overlay.innerHTML = `
     <button
       type="button"
