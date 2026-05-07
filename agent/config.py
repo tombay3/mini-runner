@@ -6,11 +6,12 @@ from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 PUZZLE_RULES_PATH = ROOT_DIR / "docs" / "puzzle-game.md"
-OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
 
 AGENT_PLAY_DATA = 1
 AGENT_LEVEL = 1
 AGENT_MAX_TICKS = 20
+AGENT_TOOL_MAX_TURNS = 3
+AGENT_TEMPERATURE = 0.1
 AGENT_ALLOWED_KEYCODES = {
     "stop": 32,
     "left": 37,
@@ -22,9 +23,28 @@ AGENT_ALLOWED_KEYCODES = {
 }
 
 
-def get_openai_api_key() -> str | None:
-    return os.environ.get("OPENAI_API_KEY")
+def normalize_model_name(model: str | None, default_provider: str = "openai") -> str | None:
+    if model is None:
+        return None
+    normalized = str(model).strip()
+    if not normalized:
+        return None
+    if ":" not in normalized:
+        normalized = f"{default_provider}:{normalized}"
+    return normalized
 
 
-def get_openai_model() -> str | None:
-    return os.environ.get("OPENAI_MODEL")
+def get_default_agent_model() -> str | None:
+    return normalize_model_name(
+        os.environ.get("AGENT_DEFAULT_MODEL") or os.environ.get("OPENAI_MODEL")
+    )
+
+
+def get_benchmark_models() -> list[str]:
+    raw = os.environ.get("AGENT_BENCHMARK_MODELS", "")
+    models = []
+    for part in raw.split(","):
+        normalized = normalize_model_name(part)
+        if normalized:
+            models.append(normalized)
+    return models

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
-import urllib.error
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
@@ -10,14 +10,23 @@ from typing import Any
 
 from flask import Flask, jsonify, request
 
-from agent import call_openai_next_action, validate_agent_request
+from agent import (
+    AgentConfigError,
+    AgentExecutionError,
+    AgentRequestError,
+    plan_next_action,
+    validate_agent_request,
+)
 
 
 app = Flask(__name__)
 
 STORE_PATH = Path(__file__).resolve().parent / "__data1" / "recordings.json"
+TRACE_STORE_PATH = Path(__file__).resolve().parent / "__data1" / "agent-traces.json"
 STORE_VERSION = 1
+TRACE_STORE_VERSION = 1
 _store_lock = Lock()
+_trace_store_lock = Lock()
 
 
 def utc_now() -> str:
@@ -26,6 +35,10 @@ def utc_now() -> str:
 
 def empty_store() -> dict[str, Any]:
     return {"version": STORE_VERSION, "updatedAt": None, "recordings": {}}
+
+
+def empty_trace_store() -> dict[str, Any]:
+    return {"version": TRACE_STORE_VERSION, "updatedAt": None, "runs": {}, "latestRuns": {}}
 
 
 def normalize_id(value: str, name: str) -> str:
@@ -38,13 +51,39 @@ def normalize_id(value: str, name: str) -> str:
     return str(parsed)
 
 
-def load_store() -> dict[str, Any]:
-    if not STORE_PATH.exists():
-        return empty_store()
-    with STORE_PATH.open("r", encoding="utf-8") as handle:
+def load_json_store(path: Path, empty_factory) -> dict[str, Any]:
+    if not path.exists():
+        return empty_factory()
+    with path.open("r", encoding="utf-8") as handle:
         data = json.load(handle)
     if not isinstance(data, dict):
-        return empty_store()
+        return empty_factory()
+    return data
+
+
+def save_json_store(path: Path, store: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=path.parent,
+        text=True,
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(store, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+        os.replace(tmp_path, path)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def load_store() -> dict[str, Any]:
+    data = load_json_store(STORE_PATH, empty_store)
     data.setdefault("version", STORE_VERSION)
     data.setdefault("updatedAt", None)
     if not isinstance(data.get("recordings"), dict):
@@ -53,24 +92,22 @@ def load_store() -> dict[str, Any]:
 
 
 def save_store(store: dict[str, Any]) -> None:
-    STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(
-        prefix=f".{STORE_PATH.name}.",
-        suffix=".tmp",
-        dir=STORE_PATH.parent,
-        text=True,
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(store, handle, indent=2, sort_keys=True)
-            handle.write("\n")
-        os.replace(tmp_path, STORE_PATH)
-    except Exception:
-        try:
-            os.unlink(tmp_path)
-        except FileNotFoundError:
-            pass
-        raise
+    save_json_store(STORE_PATH, store)
+
+
+def load_trace_store() -> dict[str, Any]:
+    data = load_json_store(TRACE_STORE_PATH, empty_trace_store)
+    data.setdefault("version", TRACE_STORE_VERSION)
+    data.setdefault("updatedAt", None)
+    if not isinstance(data.get("runs"), dict):
+        data["runs"] = {}
+    if not isinstance(data.get("latestRuns"), dict):
+        data["latestRuns"] = {}
+    return data
+
+
+def save_trace_store(store: dict[str, Any]) -> None:
+    save_json_store(TRACE_STORE_PATH, store)
 
 
 def validate_demo(demo: Any) -> dict[str, Any]:
@@ -107,6 +144,58 @@ def validate_solver(value: Any) -> dict[str, Any] | None:
     if not isinstance(value, dict):
         raise ValueError("solver must be an object")
     return value
+
+
+def validate_trace_ref(value: Any) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("traceRef must be a string")
+    return value.strip()
+
+
+def append_trace_step(run_id: str, step_trace: dict[str, Any]) -> dict[str, Any]:
+    now = utc_now()
+    context_key = f"{step_trace['playData']}:{step_trace['level']}"
+
+    with _trace_store_lock:
+        store = load_trace_store()
+        run = store["runs"].setdefault(
+            run_id,
+            {
+                "id": run_id,
+                "createdAt": step_trace.get("createdAt", now),
+                "updatedAt": now,
+                "playData": step_trace["playData"],
+                "level": step_trace["level"],
+                "requestedModel": step_trace["requestedModel"],
+                "runMode": step_trace["runMode"],
+                "steps": [],
+            },
+        )
+        step_index = len(run["steps"])
+        stored_step = dict(step_trace)
+        stored_step["stepIndex"] = step_index
+        run["steps"].append(stored_step)
+        run["updatedAt"] = now
+        run["stepCount"] = len(run["steps"])
+        run["latestAction"] = stored_step.get("action")
+        run["latestPlanner"] = stored_step.get("planner")
+        run["latestBenchmark"] = stored_step.get("benchmark")
+
+        store["latestRuns"][context_key] = {
+            "traceId": run_id,
+            "playData": step_trace["playData"],
+            "level": step_trace["level"],
+            "runMode": step_trace["runMode"],
+            "requestedModel": step_trace["requestedModel"],
+            "updatedAt": now,
+            "stepCount": run["stepCount"],
+            "latestAction": stored_step.get("action"),
+        }
+        store["updatedAt"] = now
+        save_trace_store(store)
+        return run
 
 
 @app.get("/api/health")
@@ -148,6 +237,7 @@ def put_recording(play_data: str, level: str):
         source = validate_source(payload.get("source"))
         result = validate_result(payload.get("result"), demo)
         solver = validate_solver(payload.get("solver"))
+        trace_ref = validate_trace_ref(payload.get("traceRef"))
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
 
@@ -162,6 +252,8 @@ def put_recording(play_data: str, level: str):
     }
     if solver is not None:
         record["solver"] = solver
+    if trace_ref is not None:
+        record["traceRef"] = trace_ref
 
     with _store_lock:
         store = load_store()
@@ -176,23 +268,60 @@ def put_recording(play_data: str, level: str):
 @app.post("/api/agent/next-action")
 def next_agent_action():
     try:
-        snapshot, history = validate_agent_request(request.get_json(silent=True))
+        snapshot, history, options = validate_agent_request(request.get_json(silent=True))
+        plan = plan_next_action(snapshot, history, options)
+    except AgentRequestError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except AgentConfigError as exc:
+        return jsonify({"error": str(exc)}), 503
+    except AgentExecutionError as exc:
+        return jsonify({"error": "agent execution failed", "detail": str(exc)}), 502
+
+    run_id = options.get("runId") or f"trace-{utc_now()}"
+    step_trace = dict(plan["trace"])
+    step_trace["playData"] = snapshot.get("playData", 1)
+    step_trace["level"] = snapshot.get("level", 1)
+    run = append_trace_step(run_id, step_trace)
+
+    return jsonify(
+        {
+            "action": plan["action"],
+            "planner": plan["planner"],
+            "traceId": run_id,
+            "benchmark": plan.get("benchmark"),
+            "stepCount": run.get("stepCount"),
+        }
+    )
+
+
+@app.get("/api/agent/traces/<trace_id>")
+def get_agent_trace(trace_id: str):
+    with _trace_store_lock:
+        store = load_trace_store()
+        run = store["runs"].get(trace_id)
+    if run is None:
+        return jsonify({"error": "trace not found"}), 404
+    return jsonify(run)
+
+
+@app.get("/api/agent/runs/<play_data>/<level>")
+def get_agent_run(play_data: str, level: str):
+    try:
+        play_data_key = normalize_id(play_data, "playData")
+        level_key = normalize_id(level, "level")
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
 
-    try:
-        action, planner = call_openai_next_action(snapshot, history)
-    except RuntimeError as exc:
-        return jsonify({"error": str(exc)}), 503
-    except urllib.error.HTTPError as exc:
-        message = exc.read().decode("utf-8", errors="replace")
-        return jsonify({"error": "OpenAI request failed", "detail": message}), 502
-    except (urllib.error.URLError, TimeoutError) as exc:
-        return jsonify({"error": "OpenAI request failed", "detail": str(exc)}), 502
-    except (json.JSONDecodeError, ValueError) as exc:
-        return jsonify({"error": "invalid OpenAI action", "detail": str(exc)}), 502
-
-    return jsonify({"action": action, "planner": planner})
+    context_key = f"{play_data_key}:{level_key}"
+    with _trace_store_lock:
+        trace_store = load_trace_store()
+        latest_run = trace_store["latestRuns"].get(context_key)
+    with _store_lock:
+        recording_store = load_store()
+        recording = recording_store["recordings"].get(play_data_key, {}).get(level_key)
+    if latest_run is None and recording is None:
+        return jsonify({"error": "agent run not found"}), 404
+    return jsonify({"latestRun": latest_run, "recording": recording})
 
 
 @app.delete("/api/recordings/<play_data>/<level>")

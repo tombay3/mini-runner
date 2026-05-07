@@ -1,11 +1,19 @@
+import { createAgentController } from "./agent.js";
+
 const INSTALL_KEY = "__lodeRunnerRecording";
 const API_BASE = "/api/recordings";
-const AGENT_API = "/api/agent/next-action";
 const OVERLAY_ID = "recording-overlay";
-const AGENT_PLAY_DATA = 1;
-const AGENT_LEVEL = 1;
-const AGENT_MAX_ITERATIONS = 240;
-const AGENT_HISTORY_LIMIT = 24;
+
+const agentController = createAgentController({
+  apiFetch,
+  getContextKey,
+  getCurrentContext,
+  normalizeDemo,
+  recordingApiBase: API_BASE,
+  scheduleRefresh,
+  setUiState,
+  syncOverlayState,
+});
 
 export function installRecording() {
   if (window[INSTALL_KEY]?.installed) {
@@ -18,13 +26,11 @@ export function installRecording() {
     currentRecord: null,
     currentState: "idle",
     busyAction: "",
-    agentRunning: false,
-    agentAbort: null,
-    agentPlanner: null,
     saveTimer: 0,
     refreshTimer: 0,
     els: {},
   };
+  agentController.initState(state);
   window[INSTALL_KEY] = state;
 
   createOverlay(state);
@@ -159,7 +165,7 @@ function createOverlay(state) {
   state.els.play.addEventListener("click", () => void playCurrentRecording(state));
   state.els.refresh.addEventListener("click", () => void refreshStatus(state, true));
   state.els.delete.addEventListener("click", () => void deleteCurrentRecording(state));
-  state.els.agent.addEventListener("click", () => void toggleAgent(state));
+  agentController.bindButton(state, state.els.agent);
 
   syncOverlayState(state);
 }
@@ -252,170 +258,6 @@ async function deleteCurrentRecording(state) {
   }
 }
 
-async function toggleAgent(state) {
-  if (state.agentRunning) {
-    state.agentAbort?.abort();
-    return;
-  }
-  await runAgent(state);
-}
-
-async function runAgent(state) {
-  const hooks = window.lodeRunnerAgentHooks;
-  if (!hooks?.isSupportedContext?.(AGENT_PLAY_DATA, AGENT_LEVEL)) {
-    setUiState(state, "error");
-    return;
-  }
-
-  state.agentRunning = true;
-  state.agentAbort = new AbortController();
-  state.agentPlanner = null;
-  setUiState(state, state.currentRecord ? "available" : "missing", "agent");
-
-  const history = [];
-  let failureReason = "agent stopped";
-
-  try {
-    hooks.startLevel(AGENT_PLAY_DATA, AGENT_LEVEL);
-
-    for (let iteration = 0; iteration < AGENT_MAX_ITERATIONS; iteration += 1) {
-      if (state.agentAbort.signal.aborted) {
-        failureReason = "agent cancelled";
-        break;
-      }
-
-      const before = hooks.snapshot();
-      const terminal = getTerminalResult(hooks);
-      if (terminal) {
-        await finishAgentRun(state, hooks, terminal.demo, terminal.result, terminal.reason);
-        return;
-      }
-
-      const response = await apiFetch(AGENT_API, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          playData: AGENT_PLAY_DATA,
-          level: AGENT_LEVEL,
-          snapshot: before,
-          history,
-        }),
-        signal: state.agentAbort.signal,
-      });
-      const action = normalizeAgentAction(response.action);
-      state.agentPlanner = response.planner ?? null;
-      history.push({
-        keyCode: action.keyCode,
-        ticks: action.ticks,
-        reason: action.reason,
-        tick: before.tick,
-        state: before.gameStateName,
-      });
-      while (history.length > AGENT_HISTORY_LIMIT) {
-        history.shift();
-      }
-
-      hooks.step(action.keyCode, action.ticks);
-      const afterTerminal = getTerminalResult(hooks);
-      if (afterTerminal) {
-        await finishAgentRun(
-          state,
-          hooks,
-          afterTerminal.demo,
-          afterTerminal.result,
-          afterTerminal.reason,
-        );
-        return;
-      }
-    }
-    failureReason = failureReason === "agent stopped" ? "agent max iterations reached" : failureReason;
-  } catch (error) {
-    failureReason = getErrorMessage(error);
-  }
-
-  try {
-    const failedDemo = hooks.dumpFailure(failureReason);
-    await saveAgentResult(state, failedDemo, "failure", failureReason);
-  } catch (_error) {
-    setUiState(state, "error");
-  } finally {
-    hooks.stop({ resumeTicker: false });
-    state.agentRunning = false;
-    state.agentAbort = null;
-    syncOverlayState(state);
-  }
-}
-
-async function finishAgentRun(state, hooks, demo, result, reason) {
-  try {
-    await saveAgentResult(state, demo, result, reason);
-  } finally {
-    hooks.stop({ resumeTicker: false });
-    state.agentRunning = false;
-    state.agentAbort = null;
-    syncOverlayState(state);
-  }
-}
-
-function normalizeAgentAction(action) {
-  if (!action || typeof action !== "object") {
-    throw new Error("agent returned no action");
-  }
-  const keyCode = Number(action.keyCode);
-  const ticks = Number(action.ticks);
-  if (!Number.isInteger(keyCode) || !Number.isInteger(ticks)) {
-    throw new Error("agent returned invalid action");
-  }
-  return {
-    keyCode,
-    ticks: Math.max(1, Math.min(20, ticks)),
-    reason: String(action.reason ?? ""),
-  };
-}
-
-function getTerminalResult(hooks) {
-  const demo = hooks.getRecordedDemo?.();
-  if (demo?.level === AGENT_LEVEL && Number(demo.time) > 0) {
-    if (Number(demo.state) === 1) {
-      return { demo, result: "success", reason: "finished" };
-    }
-    if (Number(demo.state) === 0) {
-      return { demo, result: "failure", reason: "runner dead" };
-    }
-  }
-  const snapshot = hooks.snapshot?.();
-  if (snapshot?.gameStateName === "runner_dead") {
-    return { demo: hooks.dumpFailure?.("runner dead"), result: "failure", reason: "runner dead" };
-  }
-  return null;
-}
-
-async function saveAgentResult(state, demoData, result, reason) {
-  const demo = normalizeDemo(demoData, AGENT_PLAY_DATA, AGENT_LEVEL);
-  demo.state = result === "success" ? 1 : 0;
-  const solver = {
-    provider: state.agentPlanner?.provider ?? "openai",
-    model: state.agentPlanner?.model ?? null,
-    generatedAt: state.agentPlanner?.generatedAt ?? new Date().toISOString(),
-    responseId: state.agentPlanner?.responseId ?? null,
-    failureReason: result === "failure" ? reason : null,
-  };
-  const record = await apiFetch(`${API_BASE}/${AGENT_PLAY_DATA}/${AGENT_LEVEL}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      demo,
-      source: "agent",
-      result,
-      solver,
-    }),
-  });
-  state.currentRecord = record;
-  state.currentKey = getContextKey({ playData: AGENT_PLAY_DATA, level: AGENT_LEVEL });
-  setUiState(state, result === "success" ? "available" : "error");
-  scheduleRefresh(state);
-}
-
 function startStoredDemo(demo, context) {
   if (typeof window.startGame !== "function") {
     throw new Error("legacy startGame is unavailable");
@@ -493,26 +335,13 @@ function syncOverlayState(state) {
   state.els.play.disabled = !hasRecord || Boolean(state.busyAction);
   state.els.delete.disabled = !hasRecord || Boolean(state.busyAction);
   state.els.refresh.disabled = Boolean(state.busyAction);
-  state.els.agent.disabled =
-    (!isAgentSupported() && !state.agentRunning) ||
-    (Boolean(state.busyAction) && state.busyAction !== "agent");
+  const agentButtonState = agentController.getButtonState(state);
+  state.els.agent.disabled = agentButtonState.disabled;
 
   state.els.play.title = hasRecord ? "Play stored recording" : "No stored recording for this level";
   state.els.delete.title = hasRecord ? "Delete stored recording" : "No stored recording to delete";
   state.els.refresh.title = getRefreshTitle(state.currentState);
-  state.els.agent.title = state.agentRunning
-    ? "Cancel AI agent"
-    : "Solve Classic level 1 with AI agent";
-}
-
-function isAgentSupported() {
-  const context = getCurrentContext();
-  return Boolean(
-    context &&
-      context.playData === AGENT_PLAY_DATA &&
-      context.level === AGENT_LEVEL &&
-      window.lodeRunnerAgentHooks?.isSupportedContext?.(context.playData, context.level),
-  );
+  state.els.agent.title = agentButtonState.title;
 }
 
 function getRefreshTitle(uiState) {
@@ -537,11 +366,4 @@ async function apiFetch(url, options) {
     throw error;
   }
   return body;
-}
-
-function getErrorMessage(error) {
-  if (error?.name === "AbortError") {
-    return "agent cancelled";
-  }
-  return error instanceof Error ? error.message : String(error);
 }
