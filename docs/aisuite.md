@@ -214,12 +214,12 @@ Current stores:
 - `__data1/recordings.json`
   - replayable user and agent demos
 - `__data1/agent-traces.json`
-  - aggregated multi-step AI reasoning runs
+  - the latest aggregated multi-step AI reasoning run only
 
-This separation exists because a single AI run may generate many planning calls before the final replayable demo is known.
+This separation exists because a single AI run may generate many planning calls before the final replayable demo is known. However, trace retention is intentionally shallow: when a new AI run begins, its trace overwrites the previously persisted trace data.
 
 ### Run-level trace shape
-Each run in `agent-traces.json` stores:
+The retained run in `agent-traces.json` stores:
 - `id`
 - `createdAt`
 - `updatedAt`
@@ -244,7 +244,7 @@ Each stored step contains:
 - response id/model metadata
 
 ### Latest-run index
-The trace store also keeps a `latestRuns` index keyed by `playData:level` so the most recent AI session for a level can be found quickly.
+The trace store still keeps a `latestRuns` index keyed by `playData:level`, but because only the latest trace is retained, it effectively points at the single currently stored run.
 
 ## Recording Integration
 The legacy runtime is still the authority for success or failure. After the browser AI run ends:

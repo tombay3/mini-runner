@@ -181,9 +181,9 @@ def append_trace_step(run_id: str, step_trace: dict[str, Any]) -> dict[str, Any]
 
     with _trace_store_lock:
         store = load_trace_store()
-        run = store["runs"].setdefault(
-            run_id,
-            {
+        run = store["runs"].get(run_id)
+        if run is None:
+            run = {
                 "id": run_id,
                 "createdAt": step_trace.get("createdAt", now),
                 "updatedAt": now,
@@ -192,8 +192,10 @@ def append_trace_step(run_id: str, step_trace: dict[str, Any]) -> dict[str, Any]
                 "requestedModel": step_trace["requestedModel"],
                 "runMode": step_trace["runMode"],
                 "steps": [],
-            },
-        )
+            }
+            # Retain only the newest trace run. A new run replaces the previous persisted trace.
+            store["runs"] = {run_id: run}
+            store["latestRuns"] = {}
         step_index = len(run["steps"])
         stored_step = dict(step_trace)
         stored_step["stepIndex"] = step_index

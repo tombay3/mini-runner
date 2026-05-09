@@ -121,7 +121,8 @@ def run_model_turn(client, model: str, snapshot: dict[str, Any], history: list[d
         {
             "role": "system",
             "content": (
-                "You are a Lode Runner planning agent. Use the helper tools when useful. "
+                "You are a Lode Runner planning agent with a forward-thinking mindset. "
+                "Use the helper tools when useful to achieve subgoals. "
                 "Your final answer must be JSON only."
             ),
         },
