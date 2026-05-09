@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import json
 
-from .config import PUZZLE_RULES_PATH
+from .config import AGENT_RULES_PATH
+from .reasoning_tools import (
+    assess_safe_progress_options,
+    detect_progress_stall,
+    find_nearest_gold_candidates,
+    find_row_ladders,
+)
 
 
 TILE_LEGEND = [
@@ -20,11 +26,14 @@ TILE_LEGEND = [
 ]
 
 
-def read_puzzle_rules() -> str:
+def read_agent_rules() -> str:
     try:
-        return PUZZLE_RULES_PATH.read_text(encoding="utf-8")[:6000]
+        return AGENT_RULES_PATH.read_text(encoding="utf-8")[:6000]
     except FileNotFoundError:
-        return "Collect all gold, avoid guards, use ladders and ropes, and dig traps to solve the level."
+        return (
+            "Classic level 1 focus: collect all gold, avoid immediate guard contact, "
+            "prefer nearby same-row gold and visible ladders, and avoid repeated retreat loops."
+        )
 
 
 def format_tile_legend() -> str:
@@ -69,22 +78,105 @@ def format_guards(snapshot: dict) -> str:
     return "\n".join(lines)
 
 
-def format_recent_actions(history: list[dict]) -> str:
-    recent = history[-12:]
+def format_recent_actions(snapshot: dict, history: list[dict]) -> str:
+    recent = history[-4:]
     if not recent:
-        return "Recent actions:\n- none"
+        return "Recent behavior:\n- none"
 
-    lines = ["Recent actions:"]
-    for item in recent:
+    stall = detect_progress_stall(snapshot, history, window=8)
+    keycode_names = {
+        32: "stop",
+        37: "left",
+        38: "up",
+        39: "right",
+        40: "down",
+        88: "dig_right",
+        90: "dig_left",
+    }
+
+    lines = [
+        "Recent behavior:",
+        f"- stallDetected={'yes' if stall.get('stalled') else 'no'}",
+        f"- rowChangeLikelyRecent={'yes' if stall.get('rowChangeLikelyRecent') else 'no'}",
+    ]
+    if stall.get("dominantDirection"):
         lines.append(
             "- "
-            f"tick={item.get('tick')} keyCode={item.get('keyCode')} ticks={item.get('ticks')} "
-            f"state={item.get('state')} reason={json.dumps(item.get('reason', ''))}"
+            f"recentDominantDirection={stall.get('dominantDirection')} "
+            f"count={stall.get('dominantCount')}"
+        )
+    if stall.get("oscillating"):
+        lines.append("- oscillating=yes")
+    if stall.get("edgePressure"):
+        lines.append(f"- edgePressure=yes toward {stall.get('edgeDirection')}")
+
+    lines.append("- lastActions:")
+    for item in recent:
+        key_code = item.get("keyCode", 32)
+        lines.append(
+            "  "
+            f"tick={item.get('tick')} action={keycode_names.get(key_code, key_code)} "
+            f"ticks={item.get('ticks')} state={item.get('state')}"
         )
     return "\n".join(lines)
 
 
-def format_snapshot(snapshot: dict) -> str:
+def format_progress_annotations(snapshot: dict, history: list[dict]) -> str:
+    runner = snapshot.get("runner") or {}
+    runner_y = runner.get("y")
+    gold_candidates = find_nearest_gold_candidates(snapshot, limit=4)
+    row_ladders = [
+        item for item in find_row_ladders(snapshot, limit=4) if item.get("visible")
+    ]
+    stall = detect_progress_stall(snapshot, history, window=8)
+    progress = assess_safe_progress_options(snapshot, history, limit=4)
+
+    lines = [
+        "Progress annotations:",
+        f"- runnerRow={runner_y} (same row as the runner)",
+        f"- rowChangeLikelyRecent={'yes' if stall.get('rowChangeLikelyRecent') else 'no'}",
+        f"- stallDetected={'yes' if stall.get('stalled') else 'no'}",
+    ]
+    if stall.get("dominantDirection"):
+        lines.append(
+            "- "
+            f"recentDominantRetreat={stall.get('dominantDirection')} "
+            f"count={stall.get('dominantCount')}"
+        )
+    if stall.get("edgePressure"):
+        lines.append(f"- edgePressure=yes toward {stall.get('edgeDirection')}")
+
+    if gold_candidates:
+        lines.append("- nearestGoldCandidates:")
+        for gold in gold_candidates:
+            lines.append(
+                "  "
+                f"({gold['x']},{gold['y']}) distance={gold['distance']} "
+                f"sameRow={'yes' if gold['sameRow'] else 'no'} direction={gold['direction']}"
+            )
+    else:
+        lines.append("- nearestGoldCandidates: none visible")
+
+    if row_ladders:
+        lines.append("- visibleLaddersOnRunnerRow:")
+        for ladder in row_ladders:
+            lines.append(
+                "  "
+                f"({ladder['x']},{ladder['y']}) distance={ladder['distance']} "
+                f"direction={ladder['direction']}"
+            )
+    else:
+        lines.append("- visibleLaddersOnRunnerRow: none")
+
+    if progress.get("options"):
+        lines.append("- safeProgressOptions:")
+        for option in progress["options"]:
+            lines.append(f"  {option.get('detail')}")
+
+    return "\n".join(lines)
+
+
+def format_snapshot(snapshot: dict, history: list[dict] | None = None) -> str:
     meta = [
         "Snapshot guide:",
         "- `grid` is the live board with dynamic actors overlaid.",
@@ -113,24 +205,30 @@ def format_snapshot(snapshot: dict) -> str:
         "",
         format_guards(snapshot),
         "",
+        format_progress_annotations(snapshot, history or []),
+        "",
         format_grid("Current live actor grid (`grid`):", snapshot.get("grid") or []),
         "",
-        format_grid("Underlying terrain grid (`baseGrid`):", snapshot.get("baseGrid") or []),
+        format_grid(
+            "Underlying terrain grid (`baseGrid`):", snapshot.get("baseGrid") or []
+        ),
     ]
     return "\n".join(meta)
 
 
-def build_agent_prompt(snapshot: dict, history: list[dict]) -> str:
-    return "\n\n".join(
-        [
-            "You are choosing the next short Lode Runner input burst for Classic level 1.",
-            "You may call helper tools before answering, but your final answer must be JSON only.",
-            "Return exactly one next action burst. Choose one allowed keycode and a tick count from 1 to 20.",
-            "Allowed keycodes: stop=32, left=37, right=39, up=38, down=40, dig_left=90, dig_right=88.",
-            'Return this JSON shape: {"keyCode": 39, "ticks": 4, "reason": "brief explanation"}.',
-            "Prefer short, safe bursts that avoid guards, reduce loops, and preserve puzzle progress.",
-            "Game rules:\n" + read_puzzle_rules(),
-            "Current live snapshot:\n" + format_snapshot(snapshot),
-            format_recent_actions(history),
-        ]
-    )
+def build_agent_prompt(
+    snapshot: dict, history: list[dict], retry_note: str | None = None
+) -> str:
+    sections = [
+        "You are choosing the next short Lode Runner input burst for Classic level 1.",
+        "You may call helper tools before answering, but your final answer must be JSON only.",
+        "Return exactly one next action burst. Choose one allowed keycode and a tick count from 1 to 20.",
+        "Allowed keycodes: stop=32, left=37, right=39, up=38, down=40, dig_left=90, dig_right=88.",
+        'Return this JSON shape: {"keyCode": 39, "ticks": 4, "reason": "brief explanation"}.',
+        "Agent rules:\n" + read_agent_rules(),
+        "Current live snapshot:\n" + format_snapshot(snapshot, history),
+        format_recent_actions(snapshot, history),
+    ]
+    if retry_note:
+        sections.append("Retry instruction:\n" + retry_note)
+    return "\n\n".join(sections)

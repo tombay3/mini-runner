@@ -5,7 +5,7 @@ from pathlib import Path
 
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
-PUZZLE_RULES_PATH = ROOT_DIR / "docs" / "puzzle-game.md"
+AGENT_RULES_PATH = ROOT_DIR / "public" / "AGENT_RULES.md"
 
 AGENT_PLAY_DATA = 1
 AGENT_LEVEL = 1

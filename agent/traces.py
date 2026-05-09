@@ -50,6 +50,7 @@ def serialize_step_trace(
     planner: dict[str, Any],
     response: Any,
     benchmark: dict[str, Any] | None,
+    guardrail: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     final_message = None
     intermediate_messages = []
@@ -67,6 +68,7 @@ def serialize_step_trace(
         "action": coerce_jsonable(action),
         "planner": coerce_jsonable(planner),
         "benchmark": coerce_jsonable(benchmark),
+        "guardrail": coerce_jsonable(guardrail),
         "finalMessage": coerce_jsonable(final_message),
         "intermediateMessages": coerce_jsonable(intermediate_messages),
         "response": {

@@ -12,11 +12,27 @@ from .config import (
     get_benchmark_models,
     get_default_agent_model,
 )
-from .errors import AgentConfigError, AgentExecutionError, AgentRequestError
+from .errors import AgentConfigError, AgentExecutionError
 from .prompt import build_agent_prompt
-from .reasoning_tools import build_reasoning_tools
+from .reasoning_tools import (
+    LEFT_KEYCODE,
+    RIGHT_KEYCODE,
+    STOP_KEYCODE,
+    assess_guard_risk,
+    assess_safe_progress_options,
+    build_reasoning_tools,
+    detect_progress_stall,
+    find_nearest_gold_candidates,
+    find_row_ladders,
+)
 from .traces import serialize_step_trace
 from .validation import normalize_agent_action
+
+PROGRESS_RETRY_NOTE = (
+    "The previous candidate repeated a stalled retreat pattern. Choose a progress action instead: "
+    "collect nearby safe gold, climb a reachable visible ladder, or otherwise change row or route. "
+    "Do not repeat the same retreat direction or stop unless danger is immediate."
+)
 
 
 def plan_next_action(
@@ -43,7 +59,7 @@ def resolve_requested_model(client, options: dict[str, Any]) -> str:
 
 
 def run_single(snapshot, history, run_mode, requested_model, client) -> dict[str, Any]:
-    result = run_model_turn(client, requested_model, snapshot, history)
+    result = select_action_with_guardrails(client, requested_model, snapshot, history)
     result["trace"] = serialize_step_trace(
         snapshot=snapshot,
         history=history,
@@ -54,6 +70,7 @@ def run_single(snapshot, history, run_mode, requested_model, client) -> dict[str
         planner=result["planner"],
         response=result["response"],
         benchmark=None,
+        guardrail=result.get("guardrail"),
     )
     return result
 
@@ -102,6 +119,8 @@ def run_benchmark(snapshot, history, options, requested_model, client) -> dict[s
         "candidates": candidates,
     }
     selected["benchmark"] = benchmark
+    selected = apply_guardrail_retry(client, selected, snapshot, history)
+    selected["benchmark"] = benchmark
     selected["trace"] = serialize_step_trace(
         snapshot=snapshot,
         history=history,
@@ -112,11 +131,19 @@ def run_benchmark(snapshot, history, options, requested_model, client) -> dict[s
         planner=selected["planner"],
         response=selected["response"],
         benchmark=benchmark,
+        guardrail=selected.get("guardrail"),
     )
     return selected
 
 
-def run_model_turn(client, model: str, snapshot: dict[str, Any], history: list[dict[str, Any]]) -> dict[str, Any]:
+def run_model_turn(
+    client,
+    model: str,
+    snapshot: dict[str, Any],
+    history: list[dict[str, Any]],
+    *,
+    retry_note: str | None = None,
+) -> dict[str, Any]:
     messages = [
         {
             "role": "system",
@@ -126,7 +153,7 @@ def run_model_turn(client, model: str, snapshot: dict[str, Any], history: list[d
                 "Your final answer must be JSON only."
             ),
         },
-        {"role": "user", "content": build_agent_prompt(snapshot, history)},
+        {"role": "user", "content": build_agent_prompt(snapshot, history, retry_note=retry_note)},
     ]
     tools = build_reasoning_tools(snapshot, history)
 
@@ -167,6 +194,103 @@ def run_model_turn(client, model: str, snapshot: dict[str, Any], history: list[d
         else None,
     }
     return {"action": action, "planner": planner, "response": response}
+
+
+def select_action_with_guardrails(client, model: str, snapshot: dict[str, Any], history: list[dict[str, Any]]) -> dict[str, Any]:
+    initial = run_model_turn(client, model, snapshot, history)
+    return apply_guardrail_retry(client, initial, snapshot, history)
+
+
+def apply_guardrail_retry(
+    client,
+    result: dict[str, Any],
+    snapshot: dict[str, Any],
+    history: list[dict[str, Any]],
+) -> dict[str, Any]:
+    model = result["planner"]["model"]
+    first_evaluation = evaluate_action_guardrail(snapshot, history, result["action"])
+    guardrail = {
+        "stallDetected": first_evaluation["stallDetected"],
+        "stallSummary": first_evaluation["stallSummary"],
+        "progressOptions": first_evaluation["progressOptions"],
+        "firstAction": result["action"],
+        "firstActionVetoed": first_evaluation["vetoed"],
+        "firstVetoReason": first_evaluation["reason"],
+        "retryAttempted": False,
+        "retryAccepted": False,
+        "acceptedActionSource": "initial",
+    }
+    if not first_evaluation["vetoed"]:
+        result["guardrail"] = guardrail
+        return result
+
+    retry_result = run_model_turn(client, model, snapshot, history, retry_note=PROGRESS_RETRY_NOTE)
+    retry_evaluation = evaluate_action_guardrail(snapshot, history, retry_result["action"])
+    guardrail["retryAttempted"] = True
+    guardrail["retryAction"] = retry_result["action"]
+    guardrail["retryAccepted"] = not retry_evaluation["vetoed"]
+    guardrail["retryVetoReason"] = retry_evaluation["reason"]
+    guardrail["acceptedActionSource"] = "retry"
+    retry_result["guardrail"] = guardrail
+    return retry_result
+
+
+def evaluate_action_guardrail(
+    snapshot: dict[str, Any], history: list[dict[str, Any]], action: dict[str, Any]
+) -> dict[str, Any]:
+    stall = detect_progress_stall(snapshot, history, window=8)
+    progress = assess_safe_progress_options(snapshot, history, limit=4)
+    risk = assess_guard_risk(snapshot)
+    same_row_gold = [item for item in find_nearest_gold_candidates(snapshot, limit=3) if item["sameRow"]]
+    row_ladders = [item for item in find_row_ladders(snapshot, limit=3) if item["visible"]]
+
+    key_code = action.get("keyCode")
+    action_direction = {LEFT_KEYCODE: "left", RIGHT_KEYCODE: "right"}.get(key_code)
+    veto_reason = None
+
+    if not stall["stalled"]:
+        return {
+            "stallDetected": False,
+            "stallSummary": stall,
+            "progressOptions": progress,
+            "vetoed": False,
+            "reason": None,
+        }
+
+    if key_code == STOP_KEYCODE and risk["risk"] not in {"critical", "high"}:
+        veto_reason = "stall detected and stop would preserve the same non-progress state"
+    elif action_direction is not None and not allow_short_escape(action, risk):
+        if stall.get("edgePressure") and action_direction == stall.get("edgeDirection"):
+            veto_reason = f"stall detected and action keeps pressing into the {stall['edgeDirection']} edge"
+        elif stall.get("dominantDirection") and action_direction == stall["dominantDirection"]:
+            if same_row_gold or row_ladders:
+                veto_reason = (
+                    "stall detected and action repeats the dominant retreat direction instead of taking "
+                    "nearby gold or ladder progress"
+                )
+            else:
+                veto_reason = "stall detected and action repeats the dominant retreat direction"
+
+    return {
+        "stallDetected": stall["stalled"],
+        "stallSummary": stall,
+        "progressOptions": progress,
+        "vetoed": veto_reason is not None,
+        "reason": veto_reason,
+    }
+
+
+def allow_short_escape(action: dict[str, Any], risk: dict[str, Any]) -> bool:
+    action_direction = {LEFT_KEYCODE: "left", RIGHT_KEYCODE: "right"}.get(action.get("keyCode"))
+    if action_direction is None:
+        return False
+    nearest_same_row = risk.get("nearestSameRowGuard") or {}
+    guard_direction = nearest_same_row.get("direction")
+    if risk["risk"] == "critical":
+        return guard_direction in {"left", "right"} and action_direction != guard_direction
+    if risk["risk"] == "high" and action.get("ticks", 0) <= 4:
+        return guard_direction in {"left", "right"} and action_direction != guard_direction
+    return False
 
 
 def parse_action_response(response: Any) -> dict[str, Any]:
