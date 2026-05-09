@@ -68,9 +68,12 @@
 	}
 
 	function snapshot() {
+		var runnerSnapshot = snapshotRunner();
+		var guardSnapshots = snapshotGuards(runnerSnapshot);
 		return {
 			active: active,
 			supported: isSupportedContext(playData, curLevel),
+			dimensions: { width: NO_OF_TILES_X, height: NO_OF_TILES_Y },
 			playData: playData,
 			level: curLevel,
 			playMode: playMode,
@@ -79,11 +82,14 @@
 			tick: recordCount || 0,
 			playTickTimer: playTickTimer || 0,
 			time: curTime || 0,
+			timing: snapshotTiming(),
 			goldCount: goldCount || 0,
 			goldComplete: !!goldComplete,
+			gold: snapshotGold(guardSnapshots),
 			lastFailureReason: lastFailureReason,
-			runner: snapshotRunner(),
-			guards: snapshotGuards(),
+			runner: runnerSnapshot,
+			guards: guardSnapshots,
+			terrainGrid: snapshotTerrainGrid(),
 			grid: snapshotGrid(1),
 			baseGrid: snapshotGrid(0)
 		};
@@ -98,11 +104,12 @@
 			yOffset: runner.pos.yOffset,
 			action: runner.action,
 			actionName: actionName(runner.action),
-			lastLeftRight: runner.lastLeftRight
+			lastLeftRight: runner.lastLeftRight,
+			summary: summarizePosition(runner.pos)
 		};
 	}
 
-	function snapshotGuards() {
+	function snapshotGuards(runnerSnapshot) {
 		var result = [];
 		for (var i = 0; i < guardCount; i++) {
 			if (!guard[i] || !guard[i].pos) continue;
@@ -114,10 +121,60 @@
 				yOffset: guard[i].pos.yOffset,
 				action: guard[i].action,
 				actionName: actionName(guard[i].action),
-				hasGold: guard[i].hasGold || 0
+				hasGold: guard[i].hasGold || 0,
+				sameRowAsRunner: !!(runnerSnapshot && guard[i].pos.y == runnerSnapshot.y),
+				summary: summarizePosition(guard[i].pos)
 			});
 		}
 		return result;
+	}
+
+	function snapshotTiming() {
+		return {
+			recordTick: recordCount || 0,
+			gameTime: curTime || 0,
+			playTickTimer: playTickTimer || 0,
+			ticksPerSecond: TICK_COUNT_PER_TIME,
+			secondPhase: (playTickTimer || 0) + "/" + TICK_COUNT_PER_TIME
+		};
+	}
+
+	function snapshotGold(guardSnapshots) {
+		var visiblePositions = [];
+		if (map) {
+			for (var y = 0; y < NO_OF_TILES_Y; y++) {
+				for (var x = 0; x < NO_OF_TILES_X; x++) {
+					var cell = map[x] && map[x][y];
+					if (cell && cell.base == GOLD_T) {
+						visiblePositions.push({ x: x, y: y });
+					}
+				}
+			}
+		}
+		return {
+			remainingCount: goldCount || 0,
+			complete: !!goldComplete,
+			visiblePositions: visiblePositions,
+			carriedByGuards: guardSnapshots.filter(function (item) {
+				return item.hasGold > 0;
+			}).map(function (item) {
+				return { id: item.id, x: item.x, y: item.y, hasGold: item.hasGold };
+			})
+		};
+	}
+
+	function snapshotTerrainGrid() {
+		var rows = [];
+		if (!map) return rows;
+		for (var y = 0; y < NO_OF_TILES_Y; y++) {
+			var row = "";
+			for (var x = 0; x < NO_OF_TILES_X; x++) {
+				var cell = map[x] && map[x][y];
+				row += cell ? terrainChar(cell.base) : "?";
+			}
+			rows.push(row);
+		}
+		return rows;
 	}
 
 	function snapshotGrid(includeActors) {
@@ -136,6 +193,41 @@
 			rows.push(row);
 		}
 		return rows;
+	}
+
+	function summarizePosition(pos) {
+		var xOffset = pos.xOffset || 0;
+		var yOffset = pos.yOffset || 0;
+		return {
+			centered: xOffset === 0 && yOffset === 0,
+			offsetDirection: offsetDirection(xOffset, yOffset)
+		};
+	}
+
+	function offsetDirection(xOffset, yOffset) {
+		var parts = [];
+		if (xOffset < 0) parts.push("left");
+		else if (xOffset > 0) parts.push("right");
+		if (yOffset < 0) parts.push("up");
+		else if (yOffset > 0) parts.push("down");
+		return parts.length ? parts.join("/") : "centered";
+	}
+
+	function terrainChar(tile) {
+		switch (tile) {
+		case EMPTY_T: return " ";
+		case BLOCK_T: return "#";
+		case SOLID_T: return "@";
+		case LADDR_T: return "H";
+		case BAR_T: return "-";
+		case TRAP_T: return "X";
+		case HLADR_T: return goldComplete ? "H" : " ";
+		case GOLD_T:
+		case GUARD_T:
+		case RUNNER_T:
+			return " ";
+		default: return "?";
+		}
 	}
 
 	function tileChar(tile) {

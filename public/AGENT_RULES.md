@@ -10,9 +10,25 @@ This file is intentionally short and easy to edit. It is read directly into the 
 ## Movement Basics
 
 - The runner can move left, right, up, and down.
+- Ladders are for vertical movement: use them to climb up or down.
+- Ropes are for horizontal crossing: use them to move sideways while open air and falling may exist below.
 - The runner can climb ladders, move across ropes, and fall.
 - The runner cannot jump.
 - The runner can dig down-left or down-right into brick.
+
+## Digging Rules
+
+- `#` is diggable brick. It is the only normal terrain tile the runner can dig.
+- `@` is solid indestructible wall or floor. Never plan to dig or pass through `@`.
+- Before choosing `dig_left` or `dig_right`, verify the adjacent lower target tile is `#`, not `@`.
+- Do not treat every floor-like tile as diggable. The exact symbol matters.
+
+## State Layers
+
+- `terrainGrid` is structural movement terrain only.
+- Runner, guards, and gold are dynamic state and are listed separately from terrain.
+- Gold is an objective list, not permanent terrain. Track visible gold positions and any guard carrying gold.
+- Offsets show in-tile movement. Use them mainly near guards, gold pickup, ladders, ropes, and falls.
 
 ## Danger Basics
 

@@ -36,11 +36,26 @@ def _get_grid(snapshot: dict[str, Any], key: str) -> list[str]:
     return [row if isinstance(row, str) else str(row) for row in rows]
 
 
-def _get_active_grid(snapshot: dict[str, Any]) -> list[str]:
-    grid = _get_grid(snapshot, "grid")
-    if grid:
-        return grid
-    return _get_grid(snapshot, "baseGrid")
+def _get_terrain_grid(snapshot: dict[str, Any]) -> list[str]:
+    return _get_grid(snapshot, "terrainGrid")
+
+
+def _get_gold_positions(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    gold = snapshot.get("gold") or {}
+    visible_positions = gold.get("visiblePositions")
+    if not isinstance(visible_positions, list):
+        return []
+
+    positions = []
+    for item in visible_positions:
+        if not isinstance(item, dict):
+            continue
+        x = _to_int(item.get("x"))
+        y = _to_int(item.get("y"))
+        if x is None or y is None:
+            continue
+        positions.append({"x": x, "y": y, "tile": "$"})
+    return positions
 
 
 def _grid_width(rows: list[str]) -> int:
@@ -77,9 +92,8 @@ def find_nearest_gold_candidates(snapshot: dict[str, Any], limit: int = 4) -> li
     if runner_x is None or runner_y is None:
         return []
 
-    rows = _get_active_grid(snapshot)
     candidates = []
-    for position in _scan_positions(rows, {"$"}):
+    for position in _get_gold_positions(snapshot):
         distance = abs(position["x"] - runner_x) + abs(position["y"] - runner_y)
         candidates.append(
             {
@@ -109,39 +123,33 @@ def find_row_ladders(snapshot: dict[str, Any], limit: int = 6) -> list[dict[str,
     if runner_x is None or runner_y is None:
         return []
 
-    grids = [_get_grid(snapshot, "grid"), _get_grid(snapshot, "baseGrid")]
-    seen = set()
+    rows = _get_terrain_grid(snapshot)
     ladders = []
-    for rows in grids:
-        if runner_y < 0 or runner_y >= len(rows):
+    if runner_y < 0 or runner_y >= len(rows):
+        return []
+    row = rows[runner_y]
+    for x, char in enumerate(row):
+        if char != "H":
             continue
-        row = rows[runner_y]
-        for x, char in enumerate(row):
-            if char not in {"H", "S"}:
-                continue
-            key = (x, char)
-            if key in seen:
-                continue
-            seen.add(key)
-            ladders.append(
-                {
-                    "x": x,
-                    "y": runner_y,
-                    "distance": abs(x - runner_x),
-                    "direction": _direction_label(runner_x, x),
-                    "visible": char == "H",
-                    "tile": char,
-                }
-            )
+        ladders.append(
+            {
+                "x": x,
+                "y": runner_y,
+                "distance": abs(x - runner_x),
+                "direction": _direction_label(runner_x, x),
+                "visible": True,
+                "tile": "H",
+            }
+        )
 
-    ladders.sort(key=lambda item: (0 if item["visible"] else 1, item["distance"], item["x"]))
+    ladders.sort(key=lambda item: (item["distance"], item["x"]))
     return ladders[: max(1, limit)]
 
 
 def assess_guard_risk(snapshot: dict[str, Any]) -> dict[str, Any]:
     runner = _get_runner(snapshot)
     guards = snapshot.get("guards") or []
-    grid = _get_active_grid(snapshot)
+    grid = _get_terrain_grid(snapshot)
     width = _grid_width(grid)
 
     runner_x = _to_int(runner.get("x"))
@@ -196,7 +204,7 @@ def detect_progress_stall(
 ) -> dict[str, Any]:
     runner = _get_runner(snapshot)
     runner_x = _to_int(runner.get("x")) or 0
-    grid_width = _grid_width(_get_active_grid(snapshot))
+    grid_width = _grid_width(_get_terrain_grid(snapshot))
 
     recent = history[-max(4, min(24, int(window))):]
     action_names = []
@@ -330,13 +338,13 @@ def assess_safe_progress_options(
 def build_reasoning_tools(snapshot: dict[str, Any], history: list[dict[str, Any]]) -> list:
     runner = _get_runner(snapshot)
     guards = snapshot.get("guards") or []
-    grid = _get_active_grid(snapshot)
+    grid = _get_terrain_grid(snapshot)
 
     def summarize_snapshot() -> dict[str, Any]:
         """Summarize the current board state, runner position, guard pressure, and remaining goal state."""
 
         guard_positions = [{"x": guard.get("x"), "y": guard.get("y")} for guard in guards[:6]]
-        gold_tiles = sum(row.count("$") for row in grid if isinstance(row, str))
+        gold_tiles = len(_get_gold_positions(snapshot))
         return {
             "runner": {
                 "x": runner.get("x"),

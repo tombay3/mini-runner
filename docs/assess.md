@@ -8,7 +8,7 @@
 
 Analyze entire codebase to understand its current functionality to make an overall assessment. Document its Architecture, technology stack and notable info in one page
 
-### 1. Overall Assessment and Functionality
+## 1. Overall Assessment and Functionality
 
 The `LodeRunner_TotalRecall` repository is a comprehensive and faithful **HTML5 remake of the classic 1983 game Lode Runner**. The project's primary goal is to preserve the original game's experience while making it accessible in any modern web browser. It is not just a simple clone; it's a "Total Recall" package that bundles multiple versions and features of the Lode Runner series.
 
@@ -30,9 +30,7 @@ The `LodeRunner_TotalRecall` repository is a comprehensive and faithful **HTML5 
 **Overall Assessment:**
 The project is a mature and feature-rich client-side application. Its main strength is its completeness as an archive and playable history of the Lode Runner series. The codebase is written in a classic, "vanilla" style, prioritizing functionality over modern development paradigms.
 
----
-
-### 2. Architecture, Technology Stack, and Notable Info
+## 2. Architecture, Technology Stack, and Notable Info
 
 Here is a one-page summary documenting the project's technical details.
 
@@ -40,7 +38,7 @@ Here is a one-page summary documenting the project's technical details.
 * **Description:** A high-fidelity HTML5 remake of the classic Lode Runner series.
 * **Live/Playable:** The game can be played locally by running a simple web server.
 
-#### Technology Stack
+### Technology Stack
 
 * **Core Language:** **JavaScript (96.0%)**
     * The game logic, state management, and rendering are all handled using **plain "vanilla" JavaScript** (likely ES5/ES6).
@@ -50,14 +48,14 @@ Here is a one-page summary documenting the project's technical details.
 * **Minor Components:** **C++ (3.5%)**
     * This small percentage likely refers to utility scripts or tools included in the `tools` directory, not the core game engine itself, which is pure JavaScript.
 
-#### Architecture
+### Architecture
 
 * **Client-Side Monolith:** The application is a traditional, monolithic frontend application. It runs entirely in the user's web browser.
 * **Script-Include Structure:** The architecture does not use modern JavaScript modules (like `import`/`export`). Instead, logic is separated into multiple `.js` files (e.g., `lodeRunner.def.js`, `lodeRunner.demo.js`, `lodeRunner.colorTheme.js`). These files are likely loaded sequentially via `<script>` tags in the main HTML file.
 * **Global Namespace:** This structure typically relies on a shared global namespace (`window` object) for communication between its different "modules" (e.g., `window.lodeRunner` might be a global object holding all game logic).
 * **Rendering:** The game is rendered to an **HTML5 `<canvas>` element**, with the main game loop and rendering logic controlled by JavaScript.
 
-#### Source files Analysis
+### Source files Analysis
 
 * **Core Engine & Definitions**: These files define the game loop, states, constants, and the main entry point:
     * lodeRunner.main.js
@@ -83,7 +81,7 @@ Here is a one-page summary documenting the project's technical details.
 * **Data & Mechanics (lodeRunner.storage.js)**: localStorage to save high scores, user levels, and game states, lodeRunner.menu.js for the UI flow.
 * **Assets & Themes (colorTheme.js & preload.js)**: CreateJS SpriteSheet objects handle the retro animations. lodeRunner.colorTheme.js dynamically manipulates canvas pixels (getImageData/putImageData) to swap between the Apple-II and C64 color palettes.
 
-#### Notable Information
+### Notable Information
 
 * **No Build Step Required:** The project is written to run directly in the browser without any transpiration or bundling.
 * **Local Server Needed:** To play locally, it requires a simple web server (like `python -m http.server`). This is a standard requirement for web applications that use features blocked by browser security on `file://` protocols (such as local storage for saving custom levels).
