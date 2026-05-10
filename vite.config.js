@@ -5,14 +5,14 @@ export default defineConfig({
   server: {
     host: "0.0.0.0",
     allowedHosts: true,
-    port: 8283,
+    port: 5000,
     // strictPort: true,
     // open: true // Open browser on server start
     // cors: true,
     proxy: {
       // Proxy requests starting with '/api' backend URL
       "/api": {
-        target: "http://localhost:5000",
+        target: "http://localhost:8080",
         changeOrigin: true,
       },
     },
