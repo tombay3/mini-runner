@@ -410,6 +410,9 @@ function selectDialog(_titleName, _checkBitmap, _levelData, _activeLevel, _scree
 	var activeState = 0; //for edit mode only (1: active level shift, -1: active level deleted)
 	var levelDeleted = 0; //for edit mode only
 	var saveKeyStateObj;
+        // D-pad scroll support: populated by setSlidePage(), used by handleEscKeyDown()
+        var _scrollBlockY = 0, _scrollMinY = 0, _scrollMaxY = 0;
+        var switchTab = null; // set by createTabs() so handleEscKeyDown can switch pages
 	
 	init();
 	
@@ -494,6 +497,27 @@ function selectDialog(_titleName, _checkBitmap, _levelData, _activeLevel, _scree
 		case KEYCODE_ESC:
 			closeBox();
 			break;	
+                // D-pad / arrow keys: scroll the level list or switch tab pages
+                case KEYCODE_UP:
+                        if(_scrollBlockY) {
+                                slider.y += _scrollBlockY;
+                                if(slider.y > _scrollMaxY) slider.y = _scrollMaxY;
+                                dialogStage.update();
+                        }
+                        break;
+                case KEYCODE_DOWN:
+                        if(_scrollBlockY) {
+                                slider.y -= _scrollBlockY;
+                                if(slider.y < _scrollMinY) slider.y = _scrollMinY;
+                                dialogStage.update();
+                        }
+                        break;
+                case KEYCODE_LEFT:
+                        if(switchTab) switchTab(activePage - 1);
+                        break;
+                case KEYCODE_RIGHT:
+                        if(switchTab) switchTab(activePage + 1);
+                        break;
 		default:
 			//debug("keycode = " + code);	
 			break;	
@@ -703,6 +727,16 @@ function selectDialog(_titleName, _checkBitmap, _levelData, _activeLevel, _scree
 				activePage = this.tabId;
 			}
 		}
+
+                // Expose tab-switch logic so D-pad LEFT/RIGHT in handleEscKeyDown can
+                // call it (tabsActive/tabsInActiveAll are only in scope here).
+                switchTab = function(p) {
+                        if(p < 0 || p >= maxPages || p === activePage) return;
+                        tabsInActiveAll();
+                        tabsActive(p);
+                        setSlidePage(p);
+                        activePage = p;
+                };
 	}
 	
 	function setSlidePage(pages)
@@ -814,6 +848,10 @@ function selectDialog(_titleName, _checkBitmap, _levelData, _activeLevel, _scree
 			
 			dialogStage.update();
 			enableMouseWheel();
+                        // Expose scroll geometry so handleEscKeyDown can drive D-pad scrolling
+                        _scrollBlockY = SLIDE_GAP_Y + SLIDE_GAP_Y1 + SELECT_SIZE_Y;
+                        _scrollMinY = minSliderY;
+                        _scrollMaxY = maxSliderY;
 		}
 		
 		function createSelectLevel(x, y)
@@ -1511,6 +1549,10 @@ function menuDialog(_titleName, _itemList, _stage, _scale, _closeIconEnable, _cl
 	
 	function buttonClick()
 	{
+                // On touch screens mouseover polling may not fire before click,
+                // so activeItem stays at its previous value. Always sync from
+                // the tapped button's myId so the right activeFun is called.
+                _itemList[0].activeItem = this.myId;
 		restoreKeyHandler(saveKeyStateObj);
 		removeAllObj();
 		_stage.cursor = 'default';

@@ -3,6 +3,7 @@ import { createAgentController } from "./agent.js";
 const INSTALL_KEY = "__lodeRunnerRecording";
 const API_BASE = "/api/recordings";
 const OVERLAY_ID = "recording-overlay";
+const FULLSCREEN_RESTART_DELAY_MS = 180;
 
 const agentController = createAgentController({
   apiFetch,
@@ -29,6 +30,7 @@ export function installRecording() {
     playbackKey: "",
     saveTimer: 0,
     refreshTimer: 0,
+    fullscreenRestartTimer: 0,
     els: {},
   };
   agentController.initState(state);
@@ -186,8 +188,8 @@ function createOverlay(state) {
   state.els.delete.addEventListener("click", () => void deleteCurrentRecording(state));
   state.els.god.addEventListener("click", () => toggleGodModeFromRail(state));
   state.els.fullscreen.addEventListener("click", () => void toggleFullscreenFromRail(state));
-  document.addEventListener("fullscreenchange", () => syncOverlayState(state));
-  document.addEventListener("webkitfullscreenchange", () => syncOverlayState(state));
+  document.addEventListener("fullscreenchange", () => handleFullscreenChange(state));
+  document.addEventListener("webkitfullscreenchange", () => handleFullscreenChange(state));
   agentController.bindButton(state, state.els.agent);
 
   syncOverlayState(state);
@@ -363,10 +365,81 @@ async function toggleFullscreenFromRail(state) {
     } else {
       await enterFullscreen();
     }
+    scheduleLegacyFullscreenRestart(state);
     setUiState(state, state.currentRecord ? "available" : "missing");
   } catch (_error) {
     setUiState(state, "error");
   }
+}
+
+function handleFullscreenChange(state) {
+  syncOverlayState(state);
+  scheduleLegacyFullscreenRestart(state);
+}
+
+function scheduleLegacyFullscreenRestart(state) {
+  window.clearTimeout(state.fullscreenRestartTimer);
+  state.fullscreenRestartTimer = window.setTimeout(
+    () => restartLegacyForFullscreen(state),
+    FULLSCREEN_RESTART_DELAY_MS,
+  );
+}
+
+function restartLegacyForFullscreen(state) {
+  state.fullscreenRestartTimer = 0;
+  state.playbackKey = "";
+
+  try {
+    state.agentAbort?.abort();
+    stopLegacyRuntime();
+    removeLegacyOverlayCanvases();
+    resetLegacyInput();
+
+    if (typeof window.init !== "function") {
+      throw new Error("legacy init is unavailable");
+    }
+
+    window.init();
+    setUiState(state, state.currentRecord ? "available" : "missing");
+    scheduleRefresh(state);
+  } catch (error) {
+    console.error("Failed to restart Lode Runner after fullscreen change", error);
+    setUiState(state, "error");
+  }
+}
+
+function stopLegacyRuntime() {
+  if (typeof window.stopPlayTicker === "function") {
+    window.stopPlayTicker();
+  }
+  if (typeof window.clearIdleDemoTimer === "function") {
+    window.clearIdleDemoTimer();
+  }
+  if (typeof window.disableStageClickEvent === "function") {
+    window.disableStageClickEvent();
+  }
+  if (window.mainStage?.removeAllEventListeners) {
+    window.mainStage.removeAllEventListeners();
+  }
+  if (window.mainStage?.removeAllChildren) {
+    window.mainStage.removeAllChildren();
+  }
+}
+
+function removeLegacyOverlayCanvases() {
+  for (const canvas of document.querySelectorAll("body > canvas")) {
+    if (canvas.id !== "canvas") {
+      canvas.remove();
+    }
+  }
+}
+
+function resetLegacyInput() {
+  if ("ACT_STOP" in window) {
+    window.keyAction = window.ACT_STOP;
+  }
+  document.onkeydown = null;
+  document.onkeyup = null;
 }
 
 function isFullscreenSupported() {
