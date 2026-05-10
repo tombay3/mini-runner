@@ -221,7 +221,7 @@
 		case LADDR_T: return "H";
 		case BAR_T: return "-";
 		case TRAP_T: return "X";
-		case HLADR_T: return goldComplete ? "H" : " ";
+		case HLADR_T: return "S";
 		case GOLD_T:
 		case GUARD_T:
 		case RUNNER_T:

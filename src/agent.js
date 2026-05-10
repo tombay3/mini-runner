@@ -90,18 +90,24 @@ async function runAgent(state, deps) {
       state.agentPlanner = response.planner ?? null;
       state.agentTraceId = response.traceId ?? state.agentRunId;
       state.agentBenchmark = response.benchmark ?? null;
+
+      hooks.step(action.keyCode, action.ticks);
+      const after = hooks.snapshot();
       history.push({
         keyCode: action.keyCode,
         ticks: action.ticks,
         reason: action.reason,
         tick: before.tick,
         state: before.gameStateName,
+        afterTick: after?.tick,
+        afterState: after?.gameStateName,
+        before: summarizeHistorySnapshot(before),
+        after: summarizeHistorySnapshot(after),
       });
       while (history.length > AGENT_HISTORY_LIMIT) {
         history.shift();
       }
 
-      hooks.step(action.keyCode, action.ticks);
       const afterTerminal = getTerminalResult(hooks);
       if (afterTerminal) {
         await finishAgentRun(
@@ -159,6 +165,27 @@ function normalizeAgentAction(action) {
     keyCode,
     ticks: Math.max(1, Math.min(20, ticks)),
     reason: String(action.reason ?? ""),
+  };
+}
+
+function summarizeHistorySnapshot(snapshot) {
+  if (!snapshot || typeof snapshot !== "object") {
+    return {};
+  }
+  const runner = snapshot.runner ?? {};
+  const gold = snapshot.gold ?? {};
+  return {
+    tick: snapshot.tick,
+    state: snapshot.gameStateName,
+    goldCount: gold.remainingCount ?? snapshot.goldCount,
+    goldComplete: gold.complete ?? snapshot.goldComplete,
+    runner: {
+      x: runner.x,
+      y: runner.y,
+      xOffset: runner.xOffset,
+      yOffset: runner.yOffset,
+      action: runner.actionName,
+    },
   };
 }
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from .config import AGENT_RULES_PATH
 from .reasoning_tools import (
@@ -8,13 +9,17 @@ from .reasoning_tools import (
     detect_progress_stall,
     find_nearest_gold_candidates,
     find_row_ladders,
+    get_dig_affordance,
+    get_escape_affordance,
+    get_ladder_affordance,
+    get_movement_affordance,
 )
 
 
-TILE_LEGEND = [
-    (" ", "empty space"),
-    ("#", "diggable brick; valid dig target when it is down-left or down-right"),
-    ("@", "solid indestructible block; never dig or pass through"),
+BASE_TILE_LEGEND = [
+    (".", "empty space"),
+    ("#", "diggable brick"),
+    ("@", "solid indestructible block"),
     ("H", "ladder"),
     ("-", "rope / bar"),
     ("X", "trap / dug hole"),
@@ -32,8 +37,18 @@ def read_agent_rules() -> str:
         )
 
 
-def format_tile_legend() -> str:
-    return "\n".join(f"- `{char}` = {meaning}" for char, meaning in TILE_LEGEND)
+def is_gold_complete(snapshot: dict) -> bool:
+    gold = snapshot.get("gold") or {}
+    if isinstance(gold, dict) and "complete" in gold:
+        return bool(gold.get("complete"))
+    return bool(snapshot.get("goldComplete"))
+
+
+def format_tile_legend(snapshot: dict) -> str:
+    legend = list(BASE_TILE_LEGEND)
+    if is_gold_complete(snapshot):
+        legend.insert(4, ("S", "revealed exit ladder"))
+    return "\n".join(f"- `{char}` = {meaning}" for char, meaning in legend)
 
 
 def get_dimensions(snapshot: dict) -> tuple[int, int]:
@@ -43,11 +58,18 @@ def get_dimensions(snapshot: dict) -> tuple[int, int]:
     return int(width), int(height)
 
 
-def get_terrain_grid(snapshot: dict) -> list[str]:
+def get_raw_terrain_grid(snapshot: dict) -> list[str]:
     terrain_grid = snapshot.get("terrainGrid")
     if isinstance(terrain_grid, list) and terrain_grid:
         return [row if isinstance(row, str) else str(row) for row in terrain_grid]
     return []
+
+
+def get_terrain_grid(snapshot: dict) -> list[str]:
+    rows = get_raw_terrain_grid(snapshot)
+    if is_gold_complete(snapshot):
+        return rows
+    return [row.replace("S", " ") for row in rows]
 
 
 def format_grid(title: str, rows: list[str]) -> str:
@@ -84,11 +106,15 @@ def format_structure_positions(
     return f"{title}: {label}=" + ", ".join(positions) + f". {usage}"
 
 
-def to_int(value) -> int | None:
+def to_int(value: Any) -> int | None:
     try:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def as_dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
 
 
 def terrain_cell(rows: list[str], x: int, y: int) -> str:
@@ -101,6 +127,29 @@ def terrain_cell(rows: list[str], x: int, y: int) -> str:
 
 
 def format_dig_validation(snapshot: dict, rows: list[str]) -> str:
+    intro_lines = [
+        (
+            "- A dig is legal only when the side cell on that dig side is empty and has no gold, "
+            "and the lower diagonal target cell is `#`."
+        ),
+    ]
+    affordance = get_dig_affordance(snapshot)
+    if affordance.get("left") and affordance.get("right"):
+        lines = ["terrainGrid validation: defensive digging", *intro_lines]
+        for label, key in (("dig_left", "left"), ("dig_right", "right")):
+            item = affordance[key]
+            side = item["sideCell"]
+            target = item["targetCell"]
+            lines.append(
+                "- "
+                f"{label}: side ({side['x']},{side['y']})={side['tile']}, "
+                f"target ({target['x']},{target['y']})={target['tile']}, "
+                f"possible={'yes' if item['canDig'] else 'no'}, "
+                f"guardCouldFall={'yes' if item['guardCouldFall'] else 'no'}, "
+                f"reason={item['reason']}"
+            )
+        return "\n".join(lines)
+
     runner = snapshot.get("runner") or {}
     runner_x = to_int(runner.get("x"))
     runner_y = to_int(runner.get("y"))
@@ -114,14 +163,7 @@ def format_dig_validation(snapshot: dict, rows: list[str]) -> str:
         ("dig_left", runner_x - 1, runner_y, runner_x - 1, runner_y + 1),
         ("dig_right", runner_x + 1, runner_y, runner_x + 1, runner_y + 1),
     ]
-    lines = [
-        "terrainGrid validation: digging",
-        "- Only `#` is diggable brick. `@` is solid indestructible terrain and is never a dig target.",
-        (
-            "- A dig action needs an open adjacent side cell and a `#` target cell "
-            "down-left or down-right from the runner."
-        ),
-    ]
+    lines = ["terrainGrid validation: digging", *intro_lines]
     for action, side_x, side_y, target_x, target_y in checks:
         side_tile = terrain_cell(rows, side_x, side_y)
         target_tile = terrain_cell(rows, target_x, target_y)
@@ -137,33 +179,36 @@ def format_dig_validation(snapshot: dict, rows: list[str]) -> str:
 
 def format_board_guide(snapshot: dict) -> str:
     width, height = get_dimensions(snapshot)
-    return "\n".join(
-        [
-            "Board format:",
-            f"- Classic level 1 is a fixed {width} x {height} ASCII grid.",
-            "- Coordinates use (x,y), with (0,0) at the top-left.",
-            "- `terrainGrid` is structural terrain only. It does not contain gold, runner, or guards.",
-            "- In terrainGrid rows, `.` means empty space. Other symbols are structural tiles at the x-column shown above.",
-            "- Runner, guards, and gold are listed separately as coordinates.",
-            "- Read terrain in physical movement terms: ladders support vertical climb up/down; ropes support horizontal crossing while open air and falling may exist below them.",
-            "- The ladder and rope coordinate lists are authoritative validation aids. If your visual read of the 2D grid disagrees with those lists, trust the coordinate lists.",
-            "- Critical tile distinction: `#` is diggable brick; `@` is solid and non-diggable. Do not plan to dig `@`.",
-            "- Offsets are in-tile movement: (0,0) means centered; nonzero offsets matter near guards, gold, ladders, ropes, and falls.",
-        ]
-    )
+    lines = [
+        "Board format:",
+        f"- Classic level 1 is a fixed {width} x {height} ASCII grid.",
+        "- Coordinates use (x,y), with (0,0) at the top-left.",
+        "- `terrainGrid` is structural terrain only. It does not contain gold, runner, or guards.",
+        "- In terrainGrid rows, `.` means empty space. Other symbols are structural tiles at the x-column shown above.",
+        "- Runner, guards, and gold are listed separately as coordinates.",
+        "- Read terrain in physical movement terms: ladders support vertical climb up/down; ropes support horizontal crossing while open air and falling may exist below them.",
+        "- The ladder and rope coordinate lists are authoritative validation aids. If your visual read of the 2D grid disagrees with those lists, trust the coordinate lists.",
+        "- Use movement affordance to confirm which directions are physically valid from the current tile.",
+        "- Moving toward a same-row guard is not creating space. Under high or critical guard pressure, move away, climb if valid now, or dig a legal trap.",
+        "- Offsets are in-tile movement: (0,0) means centered; nonzero offsets matter near guards, gold, ladders, ropes, and falls.",
+    ]
+    if is_gold_complete(snapshot):
+        lines.append(
+            "- Exit phase: `S` marks the revealed exit ladder path. Route onto `S`, then climb `S` upward to finish the level."
+        )
+    return "\n".join(lines)
 
 
 def format_exit_instruction(snapshot: dict) -> str:
-    gold = snapshot.get("gold") or {}
-    gold_complete = bool(gold.get("complete", snapshot.get("goldComplete")))
-    if not gold_complete:
+    if not is_gold_complete(snapshot):
         return ""
     return "\n".join(
         [
             "Exit instruction:",
             "- All gold is collected.",
-            "- The previously hidden exit ladder is now visible as `H` in `terrainGrid`.",
-            "- Validate its coordinates against the ladder list, then climb the visible exit ladder route to row 0.",
+            "- `S` now marks the revealed exit ladder path in `terrainGrid`.",
+            "- Validate the exit-ladder coordinates against the `S` exit-ladder list before moving.",
+            "- Move onto `S`, then keep climbing the `S` ladder path upward until the runner exits the level.",
         ]
     )
 
@@ -274,6 +319,84 @@ def format_timing(snapshot: dict) -> str:
     )
 
 
+def format_ladder_affordance(snapshot: dict) -> str:
+    affordance = get_ladder_affordance(snapshot)
+    nearest = affordance.get("nearestRowLadder")
+    nearest_label = "none"
+    if isinstance(nearest, dict):
+        nearest_label = (
+            f"({nearest.get('x')},{nearest.get('y')}) tile={nearest.get('tile')} "
+            f"distance={nearest.get('distance')} direction={nearest.get('direction')}"
+        )
+    lines = [
+        "Ladder affordance:",
+        (
+            "- "
+            f"onLadder={'yes' if affordance.get('onLadder') else 'no'} "
+            f"onExitLadder={'yes' if affordance.get('onExitLadder') else 'no'} "
+            f"adjacentToLadder={'yes' if affordance.get('adjacentToLadder') else 'no'} "
+            f"recommendedAction={affordance.get('recommendedAction')}"
+        ),
+        f"- nearestRowLadder={nearest_label}",
+        f"- {affordance.get('detail')}",
+    ]
+    if affordance.get("onLadder"):
+        lines.append(
+            "- Important: because the runner is already on the ladder, choose `up` or `down`; do not move left/right away from the ladder unless death is immediate."
+        )
+    return "\n".join(lines)
+
+
+def format_movement_affordance(snapshot: dict) -> str:
+    affordance = get_movement_affordance(snapshot)
+    lines = [
+        "Movement affordance:",
+        (
+            "- "
+            f"currentTile={affordance.get('currentTile')} "
+            f"canMoveLeft={'yes' if affordance.get('canMoveLeft') else 'no'} "
+            f"canMoveRight={'yes' if affordance.get('canMoveRight') else 'no'} "
+            f"canMoveUp={'yes' if affordance.get('canMoveUp') else 'no'} "
+            f"canMoveDown={'yes' if affordance.get('canMoveDown') else 'no'}"
+        ),
+        f"- verticalAffordance={affordance.get('verticalAffordance')}",
+    ]
+    details = affordance.get("details") or {}
+    for action in ("left", "right", "up", "down"):
+        detail = details.get(action) or {}
+        target = detail.get("target") or {}
+        lines.append(
+            "- "
+            f"{action}: target=({target.get('x')},{target.get('y')}) "
+            f"tile={target.get('tile')} reason={detail.get('reason')}"
+        )
+    return "\n".join(lines)
+
+
+def format_escape_affordance(snapshot: dict) -> str:
+    affordance = get_escape_affordance(snapshot)
+    guard = affordance.get("nearestSameRowGuard")
+    if isinstance(guard, dict):
+        guard_label = (
+            f"x={guard.get('x')} distance={guard.get('distance')} "
+            f"direction={guard.get('direction')}"
+        )
+    else:
+        guard_label = "none"
+    lines = [
+        "Guard escape affordance:",
+        f"- guardPressure={affordance.get('guardPressure')} nearestSameRowGuard={guard_label}",
+    ]
+    actions = affordance.get("recommendedActions") or []
+    if actions:
+        lines.append("- recommendedEscapeActions:")
+        for action in actions:
+            lines.append(f"  {action.get('action')} ({action.get('type')}): {action.get('reason')}")
+    else:
+        lines.append("- recommendedEscapeActions: none")
+    return "\n".join(lines)
+
+
 def format_recent_actions(snapshot: dict, history: list[dict]) -> str:
     recent = history[-4:]
     if not recent:
@@ -312,25 +435,54 @@ def format_recent_actions(snapshot: dict, history: list[dict]) -> str:
         lines.append(
             "  "
             f"tick={item.get('tick')} action={keycode_names.get(key_code, key_code)} "
-            f"ticks={item.get('ticks')} state={item.get('state')}"
+            f"ticks={item.get('ticks')} state={item.get('state')} "
+            f"runner={format_history_runner_delta(item)} gold={format_history_gold_delta(item)}"
         )
     return "\n".join(lines)
+
+
+def format_history_runner_delta(item: dict[str, Any]) -> str:
+    before = as_dict(item.get("before"))
+    after = as_dict(item.get("after"))
+    before_runner = as_dict(before.get("runner"))
+    after_runner = as_dict(after.get("runner"))
+    if not before_runner and not after_runner:
+        return "unknown"
+    return (
+        f"({before_runner.get('x')},{before_runner.get('y')})"
+        "->"
+        f"({after_runner.get('x')},{after_runner.get('y')})"
+    )
+
+
+def format_history_gold_delta(item: dict[str, Any]) -> str:
+    before = as_dict(item.get("before"))
+    after = as_dict(item.get("after"))
+    before_count = before.get("goldCount")
+    after_count = after.get("goldCount")
+    if before_count is None and after_count is None:
+        return "unknown"
+    return f"{before_count}->{after_count}"
 
 
 def format_progress_annotations(snapshot: dict, history: list[dict]) -> str:
     runner = snapshot.get("runner") or {}
     runner_y = runner.get("y")
     gold_candidates = find_nearest_gold_candidates(snapshot, limit=4)
-    row_ladders = [
-        item for item in find_row_ladders(snapshot, limit=4) if item.get("visible")
-    ]
+    row_ladders = [item for item in find_row_ladders(snapshot, limit=4) if item.get("visible")]
     stall = detect_progress_stall(snapshot, history, window=8)
     progress = assess_safe_progress_options(snapshot, history, limit=4)
+    ladder_affordance = get_ladder_affordance(snapshot)
+    escape_affordance = get_escape_affordance(snapshot)
+    visible_ladders = [item for item in row_ladders if item.get("tile") == "H"]
+    exit_ladders = [item for item in row_ladders if item.get("tile") == "S"]
 
     lines = [
         "Progress annotations:",
         f"- runnerRow={runner_y} (same row as the runner)",
         f"- rowChangeLikelyRecent={'yes' if stall.get('rowChangeLikelyRecent') else 'no'}",
+        f"- xChangeRecent={'yes' if stall.get('xChangeRecent') else 'no'}",
+        f"- goldCollectedRecent={'yes' if stall.get('goldCollectedRecent') else 'no'}",
         f"- stallDetected={'yes' if stall.get('stalled') else 'no'}",
     ]
     if stall.get("dominantDirection"):
@@ -353,9 +505,9 @@ def format_progress_annotations(snapshot: dict, history: list[dict]) -> str:
     else:
         lines.append("- nearestGoldCandidates: none visible")
 
-    if row_ladders:
+    if visible_ladders:
         lines.append("- visibleLaddersOnRunnerRow:")
-        for ladder in row_ladders:
+        for ladder in visible_ladders:
             lines.append(
                 "  "
                 f"({ladder['x']},{ladder['y']}) distance={ladder['distance']} "
@@ -363,6 +515,30 @@ def format_progress_annotations(snapshot: dict, history: list[dict]) -> str:
             )
     else:
         lines.append("- visibleLaddersOnRunnerRow: none")
+
+    if is_gold_complete(snapshot):
+        if exit_ladders:
+            lines.append("- exitLaddersOnRunnerRow:")
+            for ladder in exit_ladders:
+                lines.append(
+                    "  "
+                    f"({ladder['x']},{ladder['y']}) distance={ladder['distance']} "
+                    f"direction={ladder['direction']}"
+                )
+        else:
+            lines.append("- exitLaddersOnRunnerRow: none")
+
+    lines.append(
+        "- "
+        f"ladderAffordance: onLadder={'yes' if ladder_affordance.get('onLadder') else 'no'} "
+        f"onExitLadder={'yes' if ladder_affordance.get('onExitLadder') else 'no'} "
+        f"adjacentToLadder={'yes' if ladder_affordance.get('adjacentToLadder') else 'no'} "
+        f"recommendedAction={ladder_affordance.get('recommendedAction')}"
+    )
+    if escape_affordance.get("recommendedActions"):
+        lines.append("- escapeActions:")
+        for action in escape_affordance["recommendedActions"][:3]:
+            lines.append(f"  {action.get('action')} ({action.get('type')}): {action.get('reason')}")
 
     if progress.get("options"):
         lines.append("- safeProgressOptions:")
@@ -379,7 +555,7 @@ def format_snapshot(snapshot: dict, history: list[dict] | None = None) -> str:
         format_board_guide(snapshot),
         "",
         "Terrain tile legend:",
-        format_tile_legend(),
+        format_tile_legend(snapshot),
         "",
         exit_instruction if exit_instruction else None,
         "" if exit_instruction else None,
@@ -398,11 +574,17 @@ def format_snapshot(snapshot: dict, history: list[dict] | None = None) -> str:
         "",
         format_gold(snapshot),
         "",
+        format_ladder_affordance(snapshot),
+        "",
+        format_movement_affordance(snapshot),
+        "",
+        format_escape_affordance(snapshot),
+        "",
         format_progress_annotations(snapshot, history or []),
         "",
         format_grid("terrainGrid (structural tiles only, dot = empty):", terrain_grid),
         "",
-        "Use coordinate lists below to validate any coordinates you read from the 2D terrainGrid before planning movement:",
+        "If you read coordinates from `terrainGrid`, verify them against the coordinate lists below. If the grid reading and the lists disagree, trust the lists.",
         "",
         format_structure_positions(
             "terrainGrid validation",
@@ -412,6 +594,18 @@ def format_snapshot(snapshot: dict, history: list[dict] | None = None) -> str:
             "Use these as the authoritative climbable vertical coordinates for moving up or down.",
         ),
         "",
+        (
+            format_structure_positions(
+                "terrainGrid validation",
+                terrain_grid,
+                {"S"},
+                "exitLadders",
+                "Use these as the authoritative revealed exit-ladder coordinates. Route onto `S`, then climb `S` upward to exit.",
+            )
+            if is_gold_complete(snapshot)
+            else None
+        ),
+        "" if is_gold_complete(snapshot) else None,
         format_structure_positions(
             "terrainGrid validation",
             terrain_grid,

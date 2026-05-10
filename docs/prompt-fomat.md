@@ -55,6 +55,11 @@ Refactor the prompt input so the LLM sees a clean layered board model: structura
 
 ## Example Prompt Input:
 
+* You are choosing the next short Lode Runner input burst for Classic level 1.
+* Return exactly one next action burst. Choose one allowed keycode and a tick count from 1 to 20.
+* Allowed keycodes: stop=32, left=37, right=39, up=38, down=40, dig_left=90, dig_right=88.
+* Return this JSON shape: {"keyCode": 39, "ticks": 4, "reason": "brief explanation"}.
+
 ### Current live snapshot:
 Board format:
 - Classic level 1 is a fixed 28 x 16 ASCII grid.
@@ -64,32 +69,35 @@ Board format:
 - Runner, guards, and gold are listed separately as coordinates.
 - Read terrain in physical movement terms: ladders support vertical climb up/down; ropes support horizontal crossing while open air and falling may exist below them.
 - The ladder and rope coordinate lists are authoritative validation aids. If your visual read of the 2D grid disagrees with those lists, trust the coordinate lists.
+- If the runner is standing on an `H` ladder coordinate, horizontal movement is no longer ladder progress; choose `up` or `down` to change row.
+- Do not choose `up` unless movement affordance says `canMoveUp=yes`; a nearby ladder is not enough.
+- Moving toward a same-row guard is not creating space. Under high or critical guard pressure, move away, climb if valid now, or dig a legal trap.
 - Offsets are in-tile movement: (0,0) means centered; nonzero offsets matter near guards, gold, ladders, ropes, and falls.
 
 Terrain tile legend:
-- ` ` = empty space
-- `#` = brick / diggable block
-- `@` = solid / indestructible block
+- `.` = empty space
+- `#` = diggable brick
+- `@` = solid indestructible block
 - `H` = ladder
 - `-` = rope / bar
 - `X` = trap / dug hole
 - `?` = unknown / missing cell
 
 Game state:
-- playData=1 level=1 playMode=2 gameState=running
+- playData=1 level=1 playMode=2 gameState=start
 - lastFailureReason=""
 
 Timing:
-- recordTick=5 gameTime=0 playTickTimer=5
-- ticksPerSecond=16 secondPhase=5/16
+- recordTick=0 gameTime=0 playTickTimer=0
+- ticksPerSecond=16 secondPhase=0/16
 
 Runner:
-- position=(15,14) action=right offset=(0,0) centered=yes offsetDirection=centered lastLeftRight=2
+- position=(14,14) action=unknown offset=(0,0) centered=yes offsetDirection=centered lastLeftRight=ACT_RIGHT
 
 Guards:
-- id=0 position=(5,6) sameRowAsRunner=no action=left hasGold=0 offset=(-16,0) centered=no offsetDirection=left
-- id=1 position=(22,6) sameRowAsRunner=no action=left hasGold=0 offset=(16,0) centered=no offsetDirection=right
-- id=2 position=(14,9) sameRowAsRunner=no action=left hasGold=0 offset=(-16,0) centered=no offsetDirection=left
+- id=0 position=(5,6) sameRowAsRunner=no action=stop hasGold=0 offset=(0,0) centered=yes offsetDirection=centered
+- id=1 position=(23,6) sameRowAsRunner=no action=stop hasGold=0 offset=(0,0) centered=yes offsetDirection=centered
+- id=2 position=(14,9) sameRowAsRunner=no action=stop hasGold=0 offset=(0,0) centered=yes offsetDirection=centered
 
 Gold:
 - remainingCount=6 complete=False
@@ -117,15 +125,20 @@ y=14 | . . . . H . . . . . . . . . . . . . . . . . . . . . . H
 y=15 | # # # # # # # # # # # # # # # # # # # # # # # # # # # #
 ```
 
-Use these ladder and rope coordinate lists to validate any coordinates you read from the 2D terrainGrid before planning movement.
+Use coordinate lists below to validate any coordinates you read from the 2D terrainGrid before planning movement:
 
 terrainGrid validation: ladders=(7,2), (7,3), (7,4), (14,4), (25,4), (7,5), (14,5), (25,5), (7,6), (14,6), (25,6), (2,7), (20,7), (2,8), (20,8), (2,9), (20,9), (9,10), (20,10), (9,11), (20,11), (9,12), (20,12), (4,13), (27,13), (4,14), (27,14). Use these as the authoritative climbable vertical coordinates for moving up or down.
 
 terrainGrid validation: ropes=(8,3), (9,3), (10,3), (11,3), (12,3), (13,3), (14,3), (15,3), (16,3), (17,3), (10,12), (11,12), (12,12), (13,12), (14,12), (15,12), (16,12), (17,12), (18,12), (19,12). Use these as the authoritative horizontal crossing coordinates. Free falling may be possible from rope positions if there is no support below.
 
-#### Example Model Output:
-* Allowed keycodes: stop=32, left=37, right=39, up=38, down=40, dig_left=90, dig_right=88.
-* Return this JSON shape: {"keyCode": 39, "ticks": 4, "reason": "brief explanation"}.
+terrainGrid validation: digging
+- Only `#` is diggable brick. `@` is solid indestructible terrain and is never a dig target.
+- Legacy ok2Dig requires an empty side cell and a `#` target cell down-left or down-right from the runner.
+- dig_left: side (13,14)=., target (13,15)=#, possible=yes
+- dig_right: side (15,14)=., target (15,15)=#, possible=yes
+
+Recent behavior:
+- none
 
 ## Assumptions
 - Existing raw snapshot fields can remain for compatibility, but the LLM prompt must ignore active/live grids.

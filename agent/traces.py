@@ -3,6 +3,14 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
+from .reasoning_tools import (
+    assess_safe_progress_options,
+    get_dig_affordance,
+    get_escape_affordance,
+    get_ladder_affordance,
+    get_movement_affordance,
+)
+
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
@@ -22,7 +30,7 @@ def coerce_jsonable(value: Any) -> Any:
     return str(value)
 
 
-def summarize_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
+def summarize_snapshot(snapshot: dict[str, Any], history: list[dict[str, Any]]) -> dict[str, Any]:
     runner = snapshot.get("runner") or {}
     guards = snapshot.get("guards") or []
     return {
@@ -34,8 +42,25 @@ def summarize_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
             "x": runner.get("x"),
             "y": runner.get("y"),
             "action": runner.get("actionName"),
+            "xOffset": runner.get("xOffset"),
+            "yOffset": runner.get("yOffset"),
         },
-        "guards": len(guards),
+        "guards": [
+            {
+                "id": guard.get("id"),
+                "x": guard.get("x"),
+                "y": guard.get("y"),
+                "action": guard.get("actionName"),
+                "sameRowAsRunner": guard.get("sameRowAsRunner"),
+            }
+            for guard in guards[:6]
+            if isinstance(guard, dict)
+        ],
+        "ladderAffordance": get_ladder_affordance(snapshot),
+        "movementAffordance": get_movement_affordance(snapshot),
+        "digAffordance": get_dig_affordance(snapshot),
+        "escapeAffordance": get_escape_affordance(snapshot),
+        "progressOptions": assess_safe_progress_options(snapshot, history, limit=4),
     }
 
 
@@ -63,7 +88,7 @@ def serialize_step_trace(
         "runMode": run_mode,
         "requestedModel": requested_model,
         "selectedModel": selected_model,
-        "snapshot": summarize_snapshot(snapshot),
+        "snapshot": summarize_snapshot(snapshot, history),
         "historyTail": coerce_jsonable(history[-8:]),
         "action": coerce_jsonable(action),
         "planner": coerce_jsonable(planner),

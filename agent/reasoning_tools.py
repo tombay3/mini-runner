@@ -15,6 +15,7 @@ DIG_RIGHT_KEYCODE = 88
 HORIZONTAL_KEYCODES = {LEFT_KEYCODE: "left", RIGHT_KEYCODE: "right"}
 VERTICAL_KEYCODES = {UP_KEYCODE: "up", DOWN_KEYCODE: "down"}
 DIG_KEYCODES = {DIG_LEFT_KEYCODE: "dig_left", DIG_RIGHT_KEYCODE: "dig_right"}
+BLOCKING_TILES = {"#", "@"}
 
 
 def _to_int(value: Any) -> int | None:
@@ -38,6 +39,17 @@ def _get_grid(snapshot: dict[str, Any], key: str) -> list[str]:
 
 def _get_terrain_grid(snapshot: dict[str, Any]) -> list[str]:
     return _get_grid(snapshot, "terrainGrid")
+
+
+def _is_gold_complete(snapshot: dict[str, Any]) -> bool:
+    gold = snapshot.get("gold") or {}
+    if isinstance(gold, dict) and "complete" in gold:
+        return bool(gold.get("complete"))
+    return bool(snapshot.get("goldComplete"))
+
+
+def _active_ladder_tiles(snapshot: dict[str, Any]) -> set[str]:
+    return {"H", "S"} if _is_gold_complete(snapshot) else {"H"}
 
 
 def _get_gold_positions(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
@@ -85,6 +97,88 @@ def _is_edge(x: int, width: int) -> bool:
     return x <= 1 or x >= max(0, width - 2)
 
 
+def _terrain_at(rows: list[str], x: int, y: int) -> str | None:
+    if y < 0 or y >= len(rows):
+        return None
+    row = rows[y]
+    if x < 0 or x >= len(row):
+        return None
+    return row[x]
+
+
+def _display_tile(tile: str | None) -> str:
+    if tile is None:
+        return "out-of-bounds"
+    return "." if tile == " " else tile
+
+
+def _visible_gold_set(snapshot: dict[str, Any]) -> set[tuple[int, int]]:
+    return {(item["x"], item["y"]) for item in _get_gold_positions(snapshot)}
+
+
+def _guard_position_set(snapshot: dict[str, Any]) -> set[tuple[int, int]]:
+    positions = set()
+    for guard in snapshot.get("guards") or []:
+        if not isinstance(guard, dict):
+            continue
+        x = _to_int(guard.get("x"))
+        y = _to_int(guard.get("y"))
+        if x is not None and y is not None:
+            positions.add((x, y))
+    return positions
+
+
+def _can_enter_tile(rows: list[str], x: int, y: int, guard_positions: set[tuple[int, int]]) -> tuple[bool, str]:
+    tile = _terrain_at(rows, x, y)
+    if tile is None:
+        return False, "out-of-bounds"
+    if tile in BLOCKING_TILES:
+        return False, f"blocked by `{tile}`"
+    if (x, y) in guard_positions:
+        return False, "occupied by guard"
+    return True, "open"
+
+
+def _history_position(item: dict[str, Any], phase: str) -> dict[str, Any]:
+    phase_value = item.get(phase)
+    if isinstance(phase_value, dict):
+        runner = phase_value.get("runner")
+        if isinstance(runner, dict):
+            return runner
+    return {}
+
+
+def _history_gold_count(item: dict[str, Any], phase: str) -> int | None:
+    phase_value = item.get(phase)
+    if not isinstance(phase_value, dict):
+        return None
+    return _to_int(phase_value.get("goldCount"))
+
+
+def _history_changed_position(item: dict[str, Any]) -> tuple[bool, bool]:
+    before = _history_position(item, "before")
+    after = _history_position(item, "after")
+    before_x = _to_int(before.get("x"))
+    before_y = _to_int(before.get("y"))
+    after_x = _to_int(after.get("x"))
+    after_y = _to_int(after.get("y"))
+    if None in {before_x, before_y, after_x, after_y}:
+        return False, False
+    return before_x != after_x, before_y != after_y
+
+
+def _history_collected_gold(item: dict[str, Any]) -> bool:
+    before = _history_gold_count(item, "before")
+    after = _history_gold_count(item, "after")
+    if before is None or after is None:
+        return False
+    return after < before
+
+
+def _history_has_position_samples(history: list[dict[str, Any]]) -> bool:
+    return any(_history_position(item or {}, "before") or _history_position(item or {}, "after") for item in history)
+
+
 def find_nearest_gold_candidates(snapshot: dict[str, Any], limit: int = 4) -> list[dict[str, Any]]:
     runner = _get_runner(snapshot)
     runner_x = _to_int(runner.get("x"))
@@ -128,8 +222,9 @@ def find_row_ladders(snapshot: dict[str, Any], limit: int = 6) -> list[dict[str,
     if runner_y < 0 or runner_y >= len(rows):
         return []
     row = rows[runner_y]
+    ladder_tiles = _active_ladder_tiles(snapshot)
     for x, char in enumerate(row):
-        if char != "H":
+        if char not in ladder_tiles:
             continue
         ladders.append(
             {
@@ -138,12 +233,231 @@ def find_row_ladders(snapshot: dict[str, Any], limit: int = 6) -> list[dict[str,
                 "distance": abs(x - runner_x),
                 "direction": _direction_label(runner_x, x),
                 "visible": True,
-                "tile": "H",
+                "tile": char,
             }
         )
 
     ladders.sort(key=lambda item: (item["distance"], item["x"]))
     return ladders[: max(1, limit)]
+
+
+def get_ladder_affordance(snapshot: dict[str, Any]) -> dict[str, Any]:
+    runner = _get_runner(snapshot)
+    runner_x = _to_int(runner.get("x"))
+    runner_y = _to_int(runner.get("y"))
+    rows = _get_terrain_grid(snapshot)
+    if runner_x is None or runner_y is None:
+        return {
+            "onLadder": False,
+            "adjacentToLadder": False,
+            "nearestRowLadder": None,
+            "recommendedAction": None,
+            "detail": "Runner coordinates are unavailable.",
+        }
+
+    row_ladders = find_row_ladders(snapshot, limit=6)
+    nearest = row_ladders[0] if row_ladders else None
+    current_tile = _terrain_at(rows, runner_x, runner_y)
+    gold_complete = _is_gold_complete(snapshot)
+    ladder_tiles = _active_ladder_tiles(snapshot)
+    on_ladder = current_tile in ladder_tiles
+    on_exit_ladder = gold_complete and current_tile == "S"
+    adjacent = bool(nearest and nearest["distance"] == 1)
+    recommended_action = None
+    if on_ladder:
+        recommended_action = "up" if runner_y > 0 else "down"
+    elif adjacent and nearest:
+        recommended_action = nearest["direction"]
+
+    if on_exit_ladder:
+        detail = (
+            f"Runner is standing on the revealed exit ladder `S` at ({runner_x},{runner_y}); "
+            f"use {recommended_action} to climb the exit route."
+        )
+    elif on_ladder:
+        detail = (
+            f"Runner is standing on a visible ladder `{current_tile}` at ({runner_x},{runner_y}); "
+            f"use {recommended_action} to change row instead of moving horizontally."
+        )
+    elif adjacent and nearest:
+        detail = (
+            f"Runner is adjacent to a visible ladder `{nearest['tile']}` at ({nearest['x']},{nearest['y']}); "
+            f"move {nearest['direction']} to line up, then climb."
+        )
+    elif nearest:
+        detail = (
+            f"Nearest visible ladder `{nearest['tile']}` on runner row is ({nearest['x']},{nearest['y']}), "
+            f"{nearest['distance']} tiles to the {nearest['direction']}."
+        )
+    else:
+        detail = "No active ladder is on the runner row."
+
+    return {
+        "onLadder": on_ladder,
+        "onExitLadder": on_exit_ladder,
+        "adjacentToLadder": adjacent,
+        "nearestRowLadder": nearest,
+        "recommendedAction": recommended_action,
+        "detail": detail,
+    }
+
+
+def get_movement_affordance(snapshot: dict[str, Any]) -> dict[str, Any]:
+    runner = _get_runner(snapshot)
+    runner_x = _to_int(runner.get("x"))
+    runner_y = _to_int(runner.get("y"))
+    rows = _get_terrain_grid(snapshot)
+    guard_positions = _guard_position_set(snapshot)
+    if runner_x is None or runner_y is None:
+        return {
+            "currentTile": None,
+            "canMoveLeft": False,
+            "canMoveRight": False,
+            "canMoveUp": False,
+            "canMoveDown": False,
+            "verticalAffordance": "runner coordinates unavailable",
+            "details": {},
+        }
+
+    current_tile = _terrain_at(rows, runner_x, runner_y)
+    above_tile = _terrain_at(rows, runner_x, runner_y - 1)
+    below_tile = _terrain_at(rows, runner_x, runner_y + 1)
+    left_ok, left_reason = _can_enter_tile(rows, runner_x - 1, runner_y, guard_positions)
+    right_ok, right_reason = _can_enter_tile(rows, runner_x + 1, runner_y, guard_positions)
+
+    ladder_tiles = _active_ladder_tiles(snapshot)
+    can_move_up = current_tile in ladder_tiles
+    can_move_down = current_tile in ladder_tiles or below_tile in ladder_tiles
+    vertical_affordance = (
+        "up/down currently valid on ladder"
+        if current_tile in ladder_tiles
+        else "down valid because ladder continues below"
+        if below_tile in ladder_tiles
+        else "no vertical climb is valid from current tile"
+    )
+
+    return {
+        "currentTile": _display_tile(current_tile),
+        "canMoveLeft": left_ok,
+        "canMoveRight": right_ok,
+        "canMoveUp": can_move_up,
+        "canMoveDown": can_move_down,
+        "verticalAffordance": vertical_affordance,
+        "details": {
+            "left": {
+                "target": {"x": runner_x - 1, "y": runner_y, "tile": _display_tile(_terrain_at(rows, runner_x - 1, runner_y))},
+                "reason": left_reason,
+            },
+            "right": {
+                "target": {"x": runner_x + 1, "y": runner_y, "tile": _display_tile(_terrain_at(rows, runner_x + 1, runner_y))},
+                "reason": right_reason,
+            },
+            "up": {
+                "target": {"x": runner_x, "y": runner_y - 1, "tile": _display_tile(above_tile)},
+                "reason": "runner is on ladder" if can_move_up else "runner is not on a ladder",
+            },
+            "down": {
+                "target": {"x": runner_x, "y": runner_y + 1, "tile": _display_tile(below_tile)},
+                "reason": "runner is on or above ladder" if can_move_down else "no ladder below/current",
+            },
+        },
+    }
+
+
+def get_dig_affordance(snapshot: dict[str, Any]) -> dict[str, Any]:
+    runner = _get_runner(snapshot)
+    runner_x = _to_int(runner.get("x"))
+    runner_y = _to_int(runner.get("y"))
+    rows = _get_terrain_grid(snapshot)
+    gold_positions = _visible_gold_set(snapshot)
+    guard_positions = _guard_position_set(snapshot)
+    risk = assess_guard_risk(snapshot)
+    nearest_guard = risk.get("nearestSameRowGuard") or {}
+
+    if runner_x is None or runner_y is None:
+        return {
+            "canDigLeft": False,
+            "canDigRight": False,
+            "left": None,
+            "right": None,
+            "detail": "runner coordinates unavailable",
+        }
+
+    def side_info(direction: str, dx: int) -> dict[str, Any]:
+        side_x = runner_x + dx
+        side_y = runner_y
+        target_x = runner_x + dx
+        target_y = runner_y + 1
+        side_tile = _terrain_at(rows, side_x, side_y)
+        target_tile = _terrain_at(rows, target_x, target_y)
+        side_clear = side_tile == " " and (side_x, side_y) not in gold_positions and (side_x, side_y) not in guard_positions
+        target_diggable = target_tile == "#"
+        can_dig = side_clear and target_diggable
+        guard_could_fall = (
+            can_dig
+            and nearest_guard.get("direction") == direction
+            and (_to_int(nearest_guard.get("distance")) or 99) <= 4
+        )
+        reason = "valid defensive dig target" if can_dig else "blocked"
+        if not side_clear:
+            reason = "side cell is not empty"
+        elif not target_diggable:
+            reason = "lower target is not `#`"
+        return {
+            "side": direction,
+            "sideCell": {"x": side_x, "y": side_y, "tile": _display_tile(side_tile)},
+            "targetCell": {"x": target_x, "y": target_y, "tile": _display_tile(target_tile)},
+            "canDig": can_dig,
+            "guardCouldFall": guard_could_fall,
+            "reason": reason,
+        }
+
+    left = side_info("left", -1)
+    right = side_info("right", 1)
+    return {
+        "canDigLeft": left["canDig"],
+        "canDigRight": right["canDig"],
+        "left": left,
+        "right": right,
+        "detail": (
+            "dig trap available"
+            if left["canDig"] or right["canDig"]
+            else "no legal dig target from current tile"
+        ),
+    }
+
+
+def get_escape_affordance(snapshot: dict[str, Any]) -> dict[str, Any]:
+    risk = assess_guard_risk(snapshot)
+    movement = get_movement_affordance(snapshot)
+    dig = get_dig_affordance(snapshot)
+    nearest_guard = risk.get("nearestSameRowGuard") or {}
+    guard_direction = nearest_guard.get("direction")
+    pressure = risk.get("risk") in {"high", "critical"}
+    actions = []
+
+    if pressure:
+        if movement["canMoveUp"]:
+            actions.append({"action": "up", "type": "climb", "reason": "valid climb away from same-row pressure"})
+        elif movement["canMoveDown"]:
+            actions.append({"action": "down", "type": "climb", "reason": "valid ladder descent away from same-row pressure"})
+
+        if guard_direction == "left" and dig["canDigLeft"]:
+            actions.append({"action": "dig_left", "type": "trap", "reason": "dig left can trap approaching guard"})
+        if guard_direction == "right" and dig["canDigRight"]:
+            actions.append({"action": "dig_right", "type": "trap", "reason": "dig right can trap approaching guard"})
+
+        if guard_direction == "left" and movement["canMoveRight"]:
+            actions.append({"action": "right", "type": "retreat", "reason": "move away from guard on the left"})
+        if guard_direction == "right" and movement["canMoveLeft"]:
+            actions.append({"action": "left", "type": "retreat", "reason": "move away from guard on the right"})
+
+    return {
+        "guardPressure": risk.get("risk"),
+        "nearestSameRowGuard": nearest_guard or None,
+        "recommendedActions": actions,
+        "detail": actions[0]["reason"] if actions else "no urgent escape action identified",
+    }
 
 
 def assess_guard_risk(snapshot: dict[str, Any]) -> dict[str, Any]:
@@ -233,6 +547,16 @@ def detect_progress_stall(
     vertical_recent = any(name in {"up", "down"} for name in action_names)
     dig_recent = any(name.startswith("dig_") for name in action_names)
     stop_recent = any(name == "stop" for name in action_names)
+    has_position_samples = _history_has_position_samples(recent)
+    x_change_recent = False
+    row_change_recent = False
+    gold_collected_recent = False
+    if has_position_samples:
+        for item in recent:
+            x_changed, y_changed = _history_changed_position(item or {})
+            x_change_recent = x_change_recent or x_changed
+            row_change_recent = row_change_recent or y_changed
+            gold_collected_recent = gold_collected_recent or _history_collected_gold(item or {})
     same_state_streak = bool(recent) and all(
         (item or {}).get("state") == snapshot.get("gameStateName") for item in recent
     )
@@ -249,9 +573,14 @@ def detect_progress_stall(
         edge_direction = "right"
     edge_pressure = bool(edge_direction and dominant_direction == edge_direction)
 
-    no_progress_signals = not vertical_recent and not dig_recent
+    row_progress_recent = row_change_recent or vertical_recent
+    no_progress_signals = not row_progress_recent and not dig_recent and not gold_collected_recent
+    horizontal_position_progress = x_change_recent and not oscillating and not edge_pressure
+    repeated_stuck_direction = repeated_same_direction and (
+        not has_position_samples or not horizontal_position_progress
+    )
     stalled = bool(recent) and no_progress_signals and (
-        repeated_same_direction or oscillating or edge_pressure or (stop_recent and same_state_streak)
+        repeated_stuck_direction or oscillating or edge_pressure or (stop_recent and same_state_streak)
     )
 
     return {
@@ -262,7 +591,10 @@ def detect_progress_stall(
         "oscillating": oscillating,
         "edgePressure": edge_pressure,
         "edgeDirection": edge_direction,
-        "rowChangeLikelyRecent": vertical_recent,
+        "rowChangeLikelyRecent": row_progress_recent,
+        "xChangeRecent": x_change_recent,
+        "goldCollectedRecent": gold_collected_recent,
+        "hasPositionSamples": has_position_samples,
         "digRecent": dig_recent,
         "sameStateStreak": same_state_streak,
         "recentActions": action_names[-8:],
@@ -275,33 +607,65 @@ def assess_safe_progress_options(
     risk = assess_guard_risk(snapshot)
     nearest_gold = find_nearest_gold_candidates(snapshot, limit=4)
     row_ladders = find_row_ladders(snapshot, limit=4)
+    ladder_affordance = get_ladder_affordance(snapshot)
+    escape_affordance = get_escape_affordance(snapshot)
     stall = detect_progress_stall(snapshot, history)
+    gold_complete = _is_gold_complete(snapshot)
 
     options = []
     same_row_gold = [item for item in nearest_gold if item["sameRow"]]
-    visible_ladders = [item for item in row_ladders if item["visible"]]
+    visible_ladders = [item for item in row_ladders if item["visible"] and item["tile"] == "H"]
+    exit_ladders = [item for item in row_ladders if item["visible"] and item["tile"] == "S"]
+
+    if risk["risk"] in {"critical", "high"} and escape_affordance["recommendedActions"]:
+        for action in escape_affordance["recommendedActions"][:2]:
+            options.append(
+                {
+                    "type": f"escape_{action['type']}",
+                    "detail": action["reason"],
+                }
+            )
 
     if risk["risk"] not in {"critical", "high"}:
-        for gold in same_row_gold[:2]:
+        if ladder_affordance["onLadder"]:
             options.append(
                 {
-                    "type": "collect_gold",
-                    "detail": (
-                        f"Gold at ({gold['x']},{gold['y']}) is nearby on the same row, "
-                        f"{gold['distance']} tiles away to the {gold['direction']}."
-                    ),
+                    "type": "climb_current_ladder",
+                    "detail": ladder_affordance["detail"],
                 }
             )
-        for ladder in visible_ladders[:2]:
-            options.append(
-                {
-                    "type": "climb_ladder",
-                    "detail": (
-                        f"Ladder at ({ladder['x']},{ladder['y']}) is on the runner row, "
-                        f"{ladder['distance']} tiles away to the {ladder['direction']}."
-                    ),
-                }
-            )
+        if gold_complete:
+            for ladder in exit_ladders[:2]:
+                options.append(
+                    {
+                        "type": "climb_exit_ladder",
+                        "detail": (
+                            f"Revealed exit ladder `S` at ({ladder['x']},{ladder['y']}) is on the runner row, "
+                            f"{ladder['distance']} tiles away to the {ladder['direction']}."
+                        ),
+                    }
+                )
+        else:
+            for gold in same_row_gold[:2]:
+                options.append(
+                    {
+                        "type": "collect_gold",
+                        "detail": (
+                            f"Gold at ({gold['x']},{gold['y']}) is nearby on the same row, "
+                            f"{gold['distance']} tiles away to the {gold['direction']}."
+                        ),
+                    }
+                )
+            for ladder in visible_ladders[:2]:
+                options.append(
+                    {
+                        "type": "climb_ladder",
+                        "detail": (
+                            f"Ladder at ({ladder['x']},{ladder['y']}) is on the runner row, "
+                            f"{ladder['distance']} tiles away to the {ladder['direction']}."
+                        ),
+                    }
+                )
 
     if not options and nearest_gold:
         gold = nearest_gold[0]
@@ -330,6 +694,11 @@ def assess_safe_progress_options(
         "immediateBlocker": risk["risk"] == "critical",
         "sameRowGoldCount": len(same_row_gold),
         "rowLadderCount": len(visible_ladders),
+        "exitLadderCount": len(exit_ladders),
+        "ladderAffordance": ladder_affordance,
+        "movementAffordance": get_movement_affordance(snapshot),
+        "digAffordance": get_dig_affordance(snapshot),
+        "escapeAffordance": escape_affordance,
         "stallDetected": stall["stalled"],
         "options": options[: max(1, limit)],
     }
@@ -357,6 +726,10 @@ def build_reasoning_tools(snapshot: dict[str, Any], history: list[dict[str, Any]
             "goldComplete": snapshot.get("goldComplete"),
             "gameState": snapshot.get("gameStateName"),
             "tick": snapshot.get("tick"),
+            "ladderAffordance": get_ladder_affordance(snapshot),
+            "movementAffordance": get_movement_affordance(snapshot),
+            "digAffordance": get_dig_affordance(snapshot),
+            "escapeAffordance": get_escape_affordance(snapshot),
         }
 
     def detect_looping(window: int = 8) -> dict[str, Any]:
@@ -380,9 +753,29 @@ def build_reasoning_tools(snapshot: dict[str, Any], history: list[dict[str, Any]
         return {"candidates": find_nearest_gold_candidates(snapshot, limit=max(1, int(limit)))}
 
     def find_row_ladders_tool(limit: int = 6) -> dict[str, Any]:
-        """List visible ladder opportunities on the runner row for safe upward progress."""
+        """List active ladder opportunities on the runner row for safe upward progress or exit climbing."""
 
         return {"ladders": find_row_ladders(snapshot, limit=max(1, int(limit)))}
+
+    def inspect_ladder_affordance() -> dict[str, Any]:
+        """Explain whether the runner is on or next to a ladder and what vertical action changes route."""
+
+        return get_ladder_affordance(snapshot)
+
+    def inspect_movement_affordance() -> dict[str, Any]:
+        """List which movement directions are physically valid from the current tile."""
+
+        return get_movement_affordance(snapshot)
+
+    def inspect_dig_affordance() -> dict[str, Any]:
+        """List legal defensive dig targets using the legacy ok2Dig side/target-cell rules."""
+
+        return get_dig_affordance(snapshot)
+
+    def inspect_escape_affordance() -> dict[str, Any]:
+        """Recommend valid escape actions under same-row guard pressure."""
+
+        return get_escape_affordance(snapshot)
 
     def detect_progress_stall_tool(window: int = 8) -> dict[str, Any]:
         """Detect repeated retreat or oscillation patterns that are not producing puzzle progress."""
@@ -405,10 +798,23 @@ def build_reasoning_tools(snapshot: dict[str, Any], history: list[dict[str, Any]
         progress = assess_safe_progress_options(snapshot, history, limit=3)
         nearest_gold = find_nearest_gold_candidates(snapshot, limit=1)
         row_ladders = [item for item in find_row_ladders(snapshot, limit=2) if item["visible"]]
+        ladder_affordance = get_ladder_affordance(snapshot)
+        escape_affordance = get_escape_affordance(snapshot)
 
-        if snapshot.get("goldComplete"):
+        if _is_gold_complete(snapshot):
+            exit_ladder = next((item for item in row_ladders if item["tile"] == "S"), None)
             objective = "reach_exit_ladder"
-            detail = "All gold is collected. Move toward the revealed exit path."
+            detail = (
+                f"All gold is collected. Move onto revealed exit ladder `S` at ({exit_ladder['x']},{exit_ladder['y']}) and climb."
+                if exit_ladder
+                else "All gold is collected. Move onto the revealed exit ladder `S` and climb upward."
+            )
+        elif progress["risk"] in {"critical", "high"} and escape_affordance["recommendedActions"]:
+            objective = "escape_guard_pressure"
+            detail = escape_affordance["recommendedActions"][0]["reason"]
+        elif progress["risk"] not in {"critical", "high"} and ladder_affordance["onLadder"]:
+            objective = "climb_current_ladder"
+            detail = ladder_affordance["detail"]
         elif progress["risk"] not in {"critical", "high"} and nearest_gold and nearest_gold[0]["sameRow"]:
             gold = nearest_gold[0]
             objective = "collect_nearby_gold"
@@ -463,6 +869,10 @@ def build_reasoning_tools(snapshot: dict[str, Any], history: list[dict[str, Any]
         detect_looping,
         find_nearest_gold_candidates_tool,
         find_row_ladders_tool,
+        inspect_ladder_affordance,
+        inspect_movement_affordance,
+        inspect_dig_affordance,
+        inspect_escape_affordance,
         detect_progress_stall_tool,
         assess_guard_risk_tool,
         assess_safe_progress_options_tool,

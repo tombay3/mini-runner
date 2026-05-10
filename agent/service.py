@@ -15,15 +15,23 @@ from .config import (
 from .errors import AgentConfigError, AgentExecutionError
 from .prompt import build_agent_prompt
 from .reasoning_tools import (
+    DIG_LEFT_KEYCODE,
+    DIG_RIGHT_KEYCODE,
     LEFT_KEYCODE,
+    DOWN_KEYCODE,
     RIGHT_KEYCODE,
     STOP_KEYCODE,
+    UP_KEYCODE,
     assess_guard_risk,
     assess_safe_progress_options,
     build_reasoning_tools,
     detect_progress_stall,
     find_nearest_gold_candidates,
     find_row_ladders,
+    get_dig_affordance,
+    get_escape_affordance,
+    get_ladder_affordance,
+    get_movement_affordance,
 )
 from .traces import serialize_step_trace
 from .validation import normalize_agent_action
@@ -32,6 +40,19 @@ PROGRESS_RETRY_NOTE = (
     "The previous candidate repeated a stalled retreat pattern. Choose a progress action instead: "
     "collect nearby safe gold, climb a reachable visible ladder, or otherwise change row or route. "
     "Do not repeat the same retreat direction or stop unless danger is immediate."
+)
+LADDER_RETRY_NOTE = (
+    "The previous candidate reached an active ladder but did not climb it. The runner is on a ladder now; "
+    "choose a vertical climb action, preferably up for Classic level 1 row 14, unless doing so causes immediate death."
+)
+SAFETY_RETRY_NOTE = (
+    "The previous candidate moved toward same-row guard danger or chose an invalid escape. Choose a physically valid "
+    "safety action: climb only if movementAffordance says up/down is valid now, dig a legal trap if available, "
+    "or move away from the nearest same-row guard."
+)
+FEASIBILITY_RETRY_NOTE = (
+    "The previous candidate is not physically valid from the current tile. Use movementAffordance and digAffordance: "
+    "do not choose up/down unless currently climbable, and do not choose a dig action unless its canDig flag is true."
 )
 
 
@@ -213,9 +234,15 @@ def apply_guardrail_retry(
         "stallDetected": first_evaluation["stallDetected"],
         "stallSummary": first_evaluation["stallSummary"],
         "progressOptions": first_evaluation["progressOptions"],
+        "ladderAffordance": first_evaluation["ladderAffordance"],
+        "movementAffordance": first_evaluation["movementAffordance"],
+        "digAffordance": first_evaluation["digAffordance"],
+        "escapeAffordance": first_evaluation["escapeAffordance"],
+        "risk": first_evaluation["risk"],
         "firstAction": result["action"],
         "firstActionVetoed": first_evaluation["vetoed"],
         "firstVetoReason": first_evaluation["reason"],
+        "firstVetoSeverity": first_evaluation["severity"],
         "retryAttempted": False,
         "retryAccepted": False,
         "acceptedActionSource": "initial",
@@ -224,12 +251,31 @@ def apply_guardrail_retry(
         result["guardrail"] = guardrail
         return result
 
-    retry_result = run_model_turn(client, model, snapshot, history, retry_note=PROGRESS_RETRY_NOTE)
+    retry_result = run_model_turn(
+        client,
+        model,
+        snapshot,
+        history,
+        retry_note=first_evaluation["retryNote"] or PROGRESS_RETRY_NOTE,
+    )
     retry_evaluation = evaluate_action_guardrail(snapshot, history, retry_result["action"])
     guardrail["retryAttempted"] = True
     guardrail["retryAction"] = retry_result["action"]
     guardrail["retryAccepted"] = not retry_evaluation["vetoed"]
     guardrail["retryVetoReason"] = retry_evaluation["reason"]
+    guardrail["retryVetoSeverity"] = retry_evaluation["severity"]
+    guardrail["retryEvaluation"] = {
+        "stallDetected": retry_evaluation["stallDetected"],
+        "risk": retry_evaluation["risk"],
+        "ladderAffordance": retry_evaluation["ladderAffordance"],
+        "movementAffordance": retry_evaluation["movementAffordance"],
+        "digAffordance": retry_evaluation["digAffordance"],
+        "escapeAffordance": retry_evaluation["escapeAffordance"],
+    }
+    if retry_evaluation["vetoed"] and retry_evaluation["severity"] == "hard":
+        retry_result["guardrail"] = guardrail
+        raise AgentExecutionError(f"guardrail rejected retry: {retry_evaluation['reason']}")
+
     guardrail["acceptedActionSource"] = "retry"
     retry_result["guardrail"] = guardrail
     return retry_result
@@ -241,27 +287,61 @@ def evaluate_action_guardrail(
     stall = detect_progress_stall(snapshot, history, window=8)
     progress = assess_safe_progress_options(snapshot, history, limit=4)
     risk = assess_guard_risk(snapshot)
+    ladder_affordance = get_ladder_affordance(snapshot)
+    movement_affordance = get_movement_affordance(snapshot)
+    dig_affordance = get_dig_affordance(snapshot)
+    escape_affordance = get_escape_affordance(snapshot)
     same_row_gold = [item for item in find_nearest_gold_candidates(snapshot, limit=3) if item["sameRow"]]
     row_ladders = [item for item in find_row_ladders(snapshot, limit=3) if item["visible"]]
 
     key_code = action.get("keyCode")
     action_direction = {LEFT_KEYCODE: "left", RIGHT_KEYCODE: "right"}.get(key_code)
+    feasibility_reason = action_feasibility_reason(action, movement_affordance, dig_affordance)
     veto_reason = None
+    severity = None
+    retry_note = None
 
-    if not stall["stalled"]:
+    if feasibility_reason:
+        veto_reason = feasibility_reason
+        severity = "hard"
+        retry_note = FEASIBILITY_RETRY_NOTE
+    elif moves_toward_dangerous_guard(action, risk):
+        veto_reason = "action moves toward high-or-critical same-row guard pressure"
+        severity = "hard"
+        retry_note = SAFETY_RETRY_NOTE
+    elif (
+        stall["stalled"]
+        and ladder_affordance["onLadder"]
+        and risk["risk"] != "critical"
+        and key_code not in {UP_KEYCODE, DOWN_KEYCODE}
+    ):
+        veto_reason = "stall detected while standing on an active ladder; choose a vertical climb action"
+        severity = "hard"
+        retry_note = LADDER_RETRY_NOTE
+    elif not stall["stalled"]:
         return {
             "stallDetected": False,
             "stallSummary": stall,
             "progressOptions": progress,
+            "ladderAffordance": ladder_affordance,
+            "movementAffordance": movement_affordance,
+            "digAffordance": dig_affordance,
+            "escapeAffordance": escape_affordance,
+            "risk": risk,
             "vetoed": False,
             "reason": None,
+            "severity": None,
+            "retryNote": None,
         }
-
-    if key_code == STOP_KEYCODE and risk["risk"] not in {"critical", "high"}:
+    elif key_code == STOP_KEYCODE and risk["risk"] not in {"critical", "high"}:
         veto_reason = "stall detected and stop would preserve the same non-progress state"
+        severity = "soft"
+        retry_note = PROGRESS_RETRY_NOTE
     elif action_direction is not None and not allow_short_escape(action, risk):
         if stall.get("edgePressure") and action_direction == stall.get("edgeDirection"):
             veto_reason = f"stall detected and action keeps pressing into the {stall['edgeDirection']} edge"
+            severity = "soft"
+            retry_note = PROGRESS_RETRY_NOTE
         elif stall.get("dominantDirection") and action_direction == stall["dominantDirection"]:
             if same_row_gold or row_ladders:
                 veto_reason = (
@@ -270,14 +350,52 @@ def evaluate_action_guardrail(
                 )
             else:
                 veto_reason = "stall detected and action repeats the dominant retreat direction"
+            severity = "soft"
+            retry_note = PROGRESS_RETRY_NOTE
 
     return {
         "stallDetected": stall["stalled"],
         "stallSummary": stall,
         "progressOptions": progress,
+        "ladderAffordance": ladder_affordance,
+        "movementAffordance": movement_affordance,
+        "digAffordance": dig_affordance,
+        "escapeAffordance": escape_affordance,
+        "risk": risk,
         "vetoed": veto_reason is not None,
         "reason": veto_reason,
+        "severity": severity,
+        "retryNote": retry_note,
     }
+
+
+def action_feasibility_reason(
+    action: dict[str, Any],
+    movement: dict[str, Any],
+    dig: dict[str, Any],
+) -> str | None:
+    key_code = action.get("keyCode")
+    if key_code == LEFT_KEYCODE and not movement.get("canMoveLeft"):
+        return "left is not physically valid from the current tile"
+    if key_code == RIGHT_KEYCODE and not movement.get("canMoveRight"):
+        return "right is not physically valid from the current tile"
+    if key_code == UP_KEYCODE and not movement.get("canMoveUp"):
+        return "up is not physically valid because the runner is not on a climbable ladder tile"
+    if key_code == DOWN_KEYCODE and not movement.get("canMoveDown"):
+        return "down is not physically valid because no ladder descent is available"
+    if key_code == DIG_LEFT_KEYCODE and not dig.get("canDigLeft"):
+        return "dig_left is not physically valid because ok2Dig-left conditions are not met"
+    if key_code == DIG_RIGHT_KEYCODE and not dig.get("canDigRight"):
+        return "dig_right is not physically valid because ok2Dig-right conditions are not met"
+    return None
+
+
+def moves_toward_dangerous_guard(action: dict[str, Any], risk: dict[str, Any]) -> bool:
+    action_direction = {LEFT_KEYCODE: "left", RIGHT_KEYCODE: "right"}.get(action.get("keyCode"))
+    if action_direction is None or risk.get("risk") not in {"high", "critical"}:
+        return False
+    nearest_same_row = risk.get("nearestSameRowGuard") or {}
+    return nearest_same_row.get("direction") == action_direction
 
 
 def allow_short_escape(action: dict[str, Any], risk: dict[str, Any]) -> bool:
