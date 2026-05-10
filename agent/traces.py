@@ -5,10 +5,12 @@ from typing import Any
 
 from .reasoning_tools import (
     assess_safe_progress_options,
+    detect_progress_stall,
     get_dig_affordance,
     get_escape_affordance,
     get_ladder_affordance,
     get_movement_affordance,
+    get_route_access_affordance,
 )
 
 
@@ -36,8 +38,10 @@ def summarize_snapshot(snapshot: dict[str, Any], history: list[dict[str, Any]]) 
     return {
         "gameState": snapshot.get("gameStateName"),
         "tick": snapshot.get("tick"),
+        "godMode": snapshot.get("godMode"),
         "goldCount": snapshot.get("goldCount"),
         "goldComplete": snapshot.get("goldComplete"),
+        "gold": snapshot.get("gold"),
         "runner": {
             "x": runner.get("x"),
             "y": runner.get("y"),
@@ -59,7 +63,9 @@ def summarize_snapshot(snapshot: dict[str, Any], history: list[dict[str, Any]]) 
         "ladderAffordance": get_ladder_affordance(snapshot),
         "movementAffordance": get_movement_affordance(snapshot),
         "digAffordance": get_dig_affordance(snapshot),
+        "routeAccessAffordance": get_route_access_affordance(snapshot),
         "escapeAffordance": get_escape_affordance(snapshot),
+        "stallSummary": detect_progress_stall(snapshot, history),
         "progressOptions": assess_safe_progress_options(snapshot, history, limit=4),
     }
 

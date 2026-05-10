@@ -122,6 +122,41 @@ body {
   border-color: rgba(122, 192, 255, 0.58);
 }
 
+.recording-rail[data-playback="true"] .recording-rail-button[data-action="play"] {
+  color: #16311d;
+  border-color: rgba(124, 214, 160, 0.82);
+  background: #7cd6a0;
+  box-shadow: 0 0 0 1px rgba(124, 214, 160, 0.22), 0 0 14px rgba(124, 214, 160, 0.28);
+}
+
+.recording-rail[data-playback="true"] .recording-rail-button[data-action="play"]::before {
+  transform: translateX(1px);
+}
+
+.recording-rail[data-god-mode="true"] .recording-rail-button[data-action="god"] {
+  color: #2a2000;
+  border-color: rgba(255, 214, 72, 0.9);
+  background: #ffd648;
+  box-shadow: 0 0 0 1px rgba(255, 214, 72, 0.28), 0 0 18px rgba(255, 214, 72, 0.38);
+}
+
+.recording-rail-button[data-action="god"]::before {
+  font-size: 20px;
+  transform: translateY(-1px);
+}
+
+.recording-rail[data-fullscreen="true"] .recording-rail-button[data-action="fullscreen"] {
+  color: #70e0ff;
+  border-color: rgba(112, 224, 255, 0.86);
+  background: rgba(112, 224, 255, 0.12);
+  box-shadow: 0 0 0 1px rgba(112, 224, 255, 0.24), 0 0 16px rgba(112, 224, 255, 0.32);
+}
+
+.recording-rail-button[data-action="fullscreen"]::before {
+  font-size: 20px;
+  transform: translateY(-1px);
+}
+
 .recording-rail[data-busy="save"] .recording-rail-button[data-action="refresh"] {
   color: #7ac0ff;
   border-color: rgba(122, 192, 255, 0.58);
@@ -133,7 +168,7 @@ body {
 }
 
 .recording-rail[data-busy="agent"] .recording-rail-button[data-action="agent"] {
-  color: #7ac0ff;
-  border-color: rgba(122, 192, 255, 0.58);
-  background: rgba(122, 192, 255, 0.12);
+  color: #ff7a6e;
+  border-color: rgba(255, 122, 110, 0.62);
+  background: rgba(255, 122, 110, 0.14);
 }

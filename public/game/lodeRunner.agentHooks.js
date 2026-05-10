@@ -17,6 +17,7 @@
 		if (!isSupportedContext(playDataValue, levelValue)) {
 			throw new Error("Only Classic level 1 is supported");
 		}
+		var preserveGodMode = !!godMode;
 		saveState();
 		active = true;
 		lastFailureReason = "";
@@ -29,6 +30,11 @@
 		recordMode = RECORD_KEY;
 		curDemoData = { ai: AI_VERSION, time: 0 };
 		startGame(1);
+		if (preserveGodMode) {
+			godMode = 1;
+			godModeKeyPressed = 1;
+			sometimePlayInGodMode = 1;
+		}
 		stopPlayTicker();
 		disableAutoDemoTimer();
 		return snapshot();
@@ -77,6 +83,8 @@
 			playData: playData,
 			level: curLevel,
 			playMode: playMode,
+			godMode: !!godMode,
+			godModeKeyPressed: !!godModeKeyPressed,
 			gameState: gameState,
 			gameStateName: gameStateName(gameState),
 			tick: recordCount || 0,

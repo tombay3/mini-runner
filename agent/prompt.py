@@ -13,6 +13,7 @@ from .reasoning_tools import (
     get_escape_affordance,
     get_ladder_affordance,
     get_movement_affordance,
+    get_route_access_affordance,
 )
 
 
@@ -201,7 +202,13 @@ def format_board_guide(snapshot: dict) -> str:
 
 def format_exit_instruction(snapshot: dict) -> str:
     if not is_gold_complete(snapshot):
-        return ""
+        return "\n".join(
+            [
+                "Exit instruction:",
+                "- Exit ladder is not active yet because gold remains.",
+                "- Collect all visible/carried gold before planning an exit route.",
+            ]
+        )
     return "\n".join(
         [
             "Exit instruction:",
@@ -209,6 +216,22 @@ def format_exit_instruction(snapshot: dict) -> str:
             "- `S` now marks the revealed exit ladder path in `terrainGrid`.",
             "- Validate the exit-ladder coordinates against the `S` exit-ladder list before moving.",
             "- Move onto `S`, then keep climbing the `S` ladder path upward until the runner exits the level.",
+        ]
+    )
+
+
+def format_god_mode(snapshot: dict) -> str:
+    if not snapshot.get("godMode"):
+        return ""
+    return "\n".join(
+        [
+            "God mode:",
+            "- Active for this run. Guard contact will not kill the runner.",
+            "- If movement affordance says a guard-occupied side cell is passable in god mode, you may move through that guard to make route progress.",
+            "- Do not over-prioritize retreat or defensive digging only to avoid death.",
+            "- Prefer puzzle progress: collect gold, line up ladders, change rows, use ropes, dig for access, and route toward the exit when ready.",
+            "- Only switch into escape behavior when guards physically block the route or a movement affordance says the progress move is invalid.",
+            "- Guards still block paths, carry gold, and affect routing, so account for their positions.",
         ]
     )
 
@@ -344,6 +367,9 @@ def format_ladder_affordance(snapshot: dict) -> str:
         lines.append(
             "- Important: because the runner is already on the ladder, choose `up` or `down`; do not move left/right away from the ladder unless death is immediate."
         )
+        lines.append(
+            "- If remaining gold is below on this same x-column and canMoveDown=yes, choose `down`; do not climb back up."
+        )
     return "\n".join(lines)
 
 
@@ -373,6 +399,43 @@ def format_movement_affordance(snapshot: dict) -> str:
     return "\n".join(lines)
 
 
+def format_route_access_affordance(snapshot: dict) -> str:
+    affordance = get_route_access_affordance(snapshot)
+    target = affordance.get("offRowGoldTarget")
+    target_label = "none"
+    if isinstance(target, dict):
+        target_label = (
+            f"({target.get('x')},{target.get('y')}) "
+            f"distance={target.get('distance')} direction={target.get('direction')} "
+            f"verticalDirection={target.get('verticalDirection')}"
+        )
+    lines = [
+        "Route-access dig affordance:",
+        (
+            "- "
+            f"available={'yes' if affordance.get('available') else 'no'} "
+            f"recommendedAction={affordance.get('recommendedAction')} "
+            f"offRowGoldTarget={target_label}"
+        ),
+        f"- {affordance.get('reason')}",
+        "- Digging can open a descent/access route to lower gold; it is not only for trapping guards.",
+        "- Key mapping: dig_left=90, dig_right=88.",
+        "- If a route-access dig is recommended, choose that exact dig side and matching keyCode.",
+        "- In god mode, do not switch to horizontal space creation while remaining gold requires this access dig.",
+        "- After a route-access dig, use the opened descent/access path or continue the same access action if it is still valid.",
+        "- If repeatedDigLoop=yes, do not dig again; move into or descend through the opened access route.",
+        "- If the remaining lower gold is on the same x-column and canMoveDown=yes, choose down instead of digging.",
+    ]
+    for option in affordance.get("options") or []:
+        cell = option.get("targetCell") or {}
+        lines.append(
+            "- "
+            f"{option.get('action')}: target=({cell.get('x')},{cell.get('y')}) "
+            f"distanceToGoldX={option.get('distanceToGoldX')} reason={option.get('reason')}"
+        )
+    return "\n".join(lines)
+
+
 def format_escape_affordance(snapshot: dict) -> str:
     affordance = get_escape_affordance(snapshot)
     guard = affordance.get("nearestSameRowGuard")
@@ -385,7 +448,13 @@ def format_escape_affordance(snapshot: dict) -> str:
         guard_label = "none"
     lines = [
         "Guard escape affordance:",
-        f"- guardPressure={affordance.get('guardPressure')} nearestSameRowGuard={guard_label}",
+        (
+            "- "
+            f"guardPressure={affordance.get('guardPressure')} "
+            f"godMode={'yes' if affordance.get('godMode') else 'no'} "
+            f"blockedInPlace={'yes' if affordance.get('blockedInPlace') else 'no'} "
+            f"nearestSameRowGuard={guard_label}"
+        ),
     ]
     actions = affordance.get("recommendedActions") or []
     if actions:
@@ -417,6 +486,12 @@ def format_recent_actions(snapshot: dict, history: list[dict]) -> str:
         "Recent behavior:",
         f"- stallDetected={'yes' if stall.get('stalled') else 'no'}",
         f"- rowChangeLikelyRecent={'yes' if stall.get('rowChangeLikelyRecent') else 'no'}",
+        f"- sameTileStreak={stall.get('sameTileStreak')}",
+        f"- repeatedDigLoop={'yes' if stall.get('repeatedDigLoop') else 'no'}",
+        f"- routeAccessStall={'yes' if stall.get('routeAccessStall') else 'no'}",
+        f"- accessDigAvailable={'yes' if stall.get('accessDigAvailable') else 'no'}",
+        f"- boundedHorizontalLoop={'yes' if stall.get('boundedHorizontalLoop') else 'no'}",
+        f"- recentXRange={stall.get('recentXRange')} netXDelta={stall.get('netXDelta')} directionChanges={stall.get('directionChanges')}",
     ]
     if stall.get("dominantDirection"):
         lines.append(
@@ -484,6 +559,13 @@ def format_progress_annotations(snapshot: dict, history: list[dict]) -> str:
         f"- xChangeRecent={'yes' if stall.get('xChangeRecent') else 'no'}",
         f"- goldCollectedRecent={'yes' if stall.get('goldCollectedRecent') else 'no'}",
         f"- stallDetected={'yes' if stall.get('stalled') else 'no'}",
+        f"- repeatedDigLoop={'yes' if stall.get('repeatedDigLoop') else 'no'}",
+        f"- routeAccessStall={'yes' if stall.get('routeAccessStall') else 'no'}",
+        f"- accessDigAvailable={'yes' if stall.get('accessDigAvailable') else 'no'}",
+        f"- boundedHorizontalLoop={'yes' if stall.get('boundedHorizontalLoop') else 'no'}",
+        f"- recentXRange={stall.get('recentXRange')} netXDelta={stall.get('netXDelta')} directionChanges={stall.get('directionChanges')}",
+        f"- targetX={stall.get('targetX')} targetDirection={stall.get('targetDirection')} targetDistanceDelta={stall.get('targetDistanceDelta')}",
+        f"- sameTileStreak={stall.get('sameTileStreak')}",
     ]
     if stall.get("dominantDirection"):
         lines.append(
@@ -551,6 +633,7 @@ def format_progress_annotations(snapshot: dict, history: list[dict]) -> str:
 def format_snapshot(snapshot: dict, history: list[dict] | None = None) -> str:
     terrain_grid = get_terrain_grid(snapshot)
     exit_instruction = format_exit_instruction(snapshot)
+    god_mode = format_god_mode(snapshot)
     meta = [
         format_board_guide(snapshot),
         "",
@@ -559,10 +642,13 @@ def format_snapshot(snapshot: dict, history: list[dict] | None = None) -> str:
         "",
         exit_instruction if exit_instruction else None,
         "" if exit_instruction else None,
+        god_mode if god_mode else None,
+        "" if god_mode else None,
         "Game state:",
         (
             f"- playData={snapshot.get('playData')} level={snapshot.get('level')} "
-            f"playMode={snapshot.get('playMode')} gameState={snapshot.get('gameStateName')}"
+            f"playMode={snapshot.get('playMode')} godMode={snapshot.get('godMode')} "
+            f"gameState={snapshot.get('gameStateName')}"
         ),
         f"- lastFailureReason={json.dumps(snapshot.get('lastFailureReason', ''))}",
         "",
@@ -577,6 +663,8 @@ def format_snapshot(snapshot: dict, history: list[dict] | None = None) -> str:
         format_ladder_affordance(snapshot),
         "",
         format_movement_affordance(snapshot),
+        "",
+        format_route_access_affordance(snapshot),
         "",
         format_escape_affordance(snapshot),
         "",

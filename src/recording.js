@@ -26,6 +26,7 @@ export function installRecording() {
     currentRecord: null,
     currentState: "idle",
     busyAction: "",
+    playbackKey: "",
     saveTimer: 0,
     refreshTimer: 0,
     els: {},
@@ -153,6 +154,22 @@ function createOverlay(state) {
       aria-label="Delete stored recording"
       title="Delete stored recording"
     ></button>
+    <button
+      type="button"
+      class="recording-rail-button"
+      data-action="god"
+      data-icon="★"
+      aria-label="Toggle god mode"
+      title="Toggle god mode"
+    ></button>
+    <button
+      type="button"
+      class="recording-rail-button"
+      data-action="fullscreen"
+      data-icon="⛶"
+      aria-label="Toggle full screen"
+      title="Toggle full screen"
+    ></button>
   `;
   document.body.appendChild(overlay);
 
@@ -161,16 +178,23 @@ function createOverlay(state) {
   state.els.refresh = overlay.querySelector("[data-action='refresh']");
   state.els.delete = overlay.querySelector("[data-action='delete']");
   state.els.agent = overlay.querySelector("[data-action='agent']");
+  state.els.god = overlay.querySelector("[data-action='god']");
+  state.els.fullscreen = overlay.querySelector("[data-action='fullscreen']");
 
   state.els.play.addEventListener("click", () => void playCurrentRecording(state));
   state.els.refresh.addEventListener("click", () => void refreshStatus(state, true));
   state.els.delete.addEventListener("click", () => void deleteCurrentRecording(state));
+  state.els.god.addEventListener("click", () => toggleGodModeFromRail(state));
+  state.els.fullscreen.addEventListener("click", () => void toggleFullscreenFromRail(state));
+  document.addEventListener("fullscreenchange", () => syncOverlayState(state));
+  document.addEventListener("webkitfullscreenchange", () => syncOverlayState(state));
   agentController.bindButton(state, state.els.agent);
 
   syncOverlayState(state);
 }
 
 async function refreshWhenLevelChanges(state) {
+  syncPlaybackState(state);
   const key = getCurrentKey();
   if (key && key !== state.currentKey) {
     await refreshStatus(state);
@@ -234,6 +258,7 @@ async function playCurrentRecording(state) {
       (await apiFetch(`${API_BASE}/${context.playData}/${context.level}`));
     const demo = normalizeDemo(record.demo, context.playData, context.level);
     startStoredDemo(demo, context);
+    state.playbackKey = getContextKey(context);
     state.currentRecord = record;
     setUiState(state, "available");
   } catch (_error) {
@@ -316,6 +341,80 @@ function setUiState(state, nextState, busyAction = "") {
   syncOverlayState(state);
 }
 
+function toggleGodModeFromRail(state) {
+  if (typeof window.toggleGodMode !== "function") {
+    setUiState(state, "error");
+    return;
+  }
+  window.toggleGodMode();
+  syncOverlayState(state);
+}
+
+async function toggleFullscreenFromRail(state) {
+  if (!isFullscreenSupported()) {
+    setUiState(state, "error");
+    return;
+  }
+
+  setUiState(state, state.currentState, "fullscreen");
+  try {
+    if (isFullscreenActive()) {
+      await exitFullscreen();
+    } else {
+      await enterFullscreen();
+    }
+    setUiState(state, state.currentRecord ? "available" : "missing");
+  } catch (_error) {
+    setUiState(state, "error");
+  }
+}
+
+function isFullscreenSupported() {
+  const root = document.documentElement;
+  return Boolean(
+    document.fullscreenEnabled ||
+      document.webkitFullscreenEnabled ||
+      root.requestFullscreen ||
+      root.webkitRequestFullscreen
+  );
+}
+
+function isFullscreenActive() {
+  return Boolean(document.fullscreenElement || document.webkitFullscreenElement);
+}
+
+function enterFullscreen() {
+  const root = document.documentElement;
+  if (root.requestFullscreen) {
+    return root.requestFullscreen();
+  }
+  return root.webkitRequestFullscreen();
+}
+
+function exitFullscreen() {
+  if (document.exitFullscreen) {
+    return document.exitFullscreen();
+  }
+  return document.webkitExitFullscreen();
+}
+
+function syncPlaybackState(state) {
+  const playbackKey = state.playbackKey;
+  if (!playbackKey) {
+    return false;
+  }
+
+  const context = getCurrentContext();
+  const matchesContext = Boolean(context && getContextKey(context) === playbackKey);
+  const isDemoOnce = Number(window.playMode) === Number(window.PLAY_DEMO_ONCE);
+  const active = matchesContext && isDemoOnce;
+
+  if (!active) {
+    state.playbackKey = "";
+  }
+  return active;
+}
+
 function syncOverlayState(state) {
   const overlay = state.els.overlay;
   if (!overlay) {
@@ -323,8 +422,16 @@ function syncOverlayState(state) {
   }
 
   const hasRecord = Boolean(state.currentRecord);
+  const playbackActive = syncPlaybackState(state);
+  const godModeActive = Number(window.godMode) === 1;
+  const godModeSupported = typeof window.toggleGodMode === "function";
+  const fullscreenActive = isFullscreenActive();
+  const fullscreenSupported = isFullscreenSupported();
   overlay.dataset.state = state.currentState;
   overlay.dataset.hasRecord = hasRecord ? "true" : "false";
+  overlay.dataset.playback = playbackActive ? "true" : "false";
+  overlay.dataset.godMode = godModeActive ? "true" : "false";
+  overlay.dataset.fullscreen = fullscreenActive ? "true" : "false";
 
   if (state.busyAction) {
     overlay.dataset.busy = state.busyAction;
@@ -337,11 +444,27 @@ function syncOverlayState(state) {
   state.els.refresh.disabled = Boolean(state.busyAction);
   const agentButtonState = agentController.getButtonState(state);
   state.els.agent.disabled = agentButtonState.disabled;
+  state.els.god.disabled = !godModeSupported || Boolean(state.busyAction);
+  state.els.fullscreen.disabled = !fullscreenSupported || Boolean(state.busyAction);
 
-  state.els.play.title = hasRecord ? "Play stored recording" : "No stored recording for this level";
+  state.els.play.title = playbackActive
+    ? "Stored recording is playing"
+    : hasRecord
+      ? "Play stored recording"
+      : "No stored recording for this level";
   state.els.delete.title = hasRecord ? "Delete stored recording" : "No stored recording to delete";
   state.els.refresh.title = getRefreshTitle(state.currentState);
   state.els.agent.title = agentButtonState.title;
+  state.els.god.title = godModeSupported
+    ? godModeActive
+      ? "God mode is on"
+      : "God mode is off"
+    : "God mode unavailable";
+  state.els.fullscreen.title = fullscreenSupported
+    ? fullscreenActive
+      ? "Exit full screen"
+      : "Enter full screen"
+    : "Full screen unavailable";
 }
 
 function getRefreshTitle(uiState) {

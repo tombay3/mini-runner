@@ -32,6 +32,7 @@ from .reasoning_tools import (
     get_escape_affordance,
     get_ladder_affordance,
     get_movement_affordance,
+    get_route_access_affordance,
 )
 from .traces import serialize_step_trace
 from .validation import normalize_agent_action
@@ -54,6 +55,53 @@ FEASIBILITY_RETRY_NOTE = (
     "The previous candidate is not physically valid from the current tile. Use movementAffordance and digAffordance: "
     "do not choose up/down unless currently climbable, and do not choose a dig action unless its canDig flag is true."
 )
+GOD_MODE_PROGRESS_RETRY_NOTE = (
+    "God mode is active, so guard contact is non-lethal. Do not waste the move on survival-only retreat. "
+    "Choose a physically valid progress action: collect gold, line up a ladder, climb if valid now, or change route."
+)
+ROUTE_ACCESS_RETRY_NOTE = (
+    "Gold remains and no same-row ladder or same-row gold is available. A legal route-access dig is available. "
+    "Use the exact recommended dig action and matching keyCode to open a descent/access route instead of moving "
+    "horizontally to create space."
+)
+ROUTE_ACCESS_EXIT_RETRY_NOTE = (
+    "The route-access dig has already been repeated from the same tile without row or gold progress. "
+    "Do not dig again. Move into the opened access path toward the remaining lower gold."
+)
+ROUTE_DESCENT_RETRY_NOTE = (
+    "The remaining gold is below on the current x-column and movementAffordance says down is valid. "
+    "Do not dig; descend now."
+)
+LADDER_DESCENT_RETRY_NOTE = (
+    "The runner is on a ladder and remaining gold is below on the current x-column. "
+    "Do not climb up; continue down toward the lower gold."
+)
+ROUTE_ACCESS_MIN_TICKS = 8
+PROGRESS_APPROACH_MIN_TICKS = 8
+
+ACTION_NAMES = {
+    STOP_KEYCODE: "stop",
+    LEFT_KEYCODE: "left",
+    RIGHT_KEYCODE: "right",
+    UP_KEYCODE: "up",
+    DOWN_KEYCODE: "down",
+    DIG_LEFT_KEYCODE: "dig_left",
+    DIG_RIGHT_KEYCODE: "dig_right",
+}
+
+DIG_ACTION_KEYCODES = {
+    "dig_left": DIG_LEFT_KEYCODE,
+    "dig_right": DIG_RIGHT_KEYCODE,
+}
+
+ACTION_KEYCODES = {
+    "stop": STOP_KEYCODE,
+    "left": LEFT_KEYCODE,
+    "right": RIGHT_KEYCODE,
+    "up": UP_KEYCODE,
+    "down": DOWN_KEYCODE,
+    **DIG_ACTION_KEYCODES,
+}
 
 
 def plan_next_action(
@@ -237,8 +285,15 @@ def apply_guardrail_retry(
         "ladderAffordance": first_evaluation["ladderAffordance"],
         "movementAffordance": first_evaluation["movementAffordance"],
         "digAffordance": first_evaluation["digAffordance"],
+        "routeAccessAffordance": first_evaluation["routeAccessAffordance"],
         "escapeAffordance": first_evaluation["escapeAffordance"],
         "risk": first_evaluation["risk"],
+        "godMode": first_evaluation["godMode"],
+        "progressOriented": first_evaluation["progressOriented"],
+        "actionName": first_evaluation["actionName"],
+        "routeAccessRecommendedAction": first_evaluation["routeAccessRecommendedAction"],
+        "routeAccessActionMatched": first_evaluation["routeAccessActionMatched"],
+        "reasonActionMismatch": first_evaluation["reasonActionMismatch"],
         "firstAction": result["action"],
         "firstActionVetoed": first_evaluation["vetoed"],
         "firstVetoReason": first_evaluation["reason"],
@@ -248,6 +303,17 @@ def apply_guardrail_retry(
         "acceptedActionSource": "initial",
     }
     if not first_evaluation["vetoed"]:
+        maybe_normalize_action_ticks(result["action"], first_evaluation)
+        result["guardrail"] = guardrail
+        return result
+
+    repaired_action = get_guardrail_repair(first_evaluation, result["action"])
+    if repaired_action:
+        result["action"] = repaired_action
+        guardrail["repairedAction"] = repaired_action
+        guardrail["repairReason"] = guardrail_repair_reason(first_evaluation)
+        guardrail["acceptedActionSource"] = "guardrail_repair"
+        guardrail["retryAccepted"] = True
         result["guardrail"] = guardrail
         return result
 
@@ -270,13 +336,34 @@ def apply_guardrail_retry(
         "ladderAffordance": retry_evaluation["ladderAffordance"],
         "movementAffordance": retry_evaluation["movementAffordance"],
         "digAffordance": retry_evaluation["digAffordance"],
+        "routeAccessAffordance": retry_evaluation["routeAccessAffordance"],
         "escapeAffordance": retry_evaluation["escapeAffordance"],
+        "godMode": retry_evaluation["godMode"],
+        "progressOriented": retry_evaluation["progressOriented"],
+        "actionName": retry_evaluation["actionName"],
+        "routeAccessRecommendedAction": retry_evaluation["routeAccessRecommendedAction"],
+        "routeAccessActionMatched": retry_evaluation["routeAccessActionMatched"],
+        "reasonActionMismatch": retry_evaluation["reasonActionMismatch"],
     }
+    repaired_retry_action = get_guardrail_repair(retry_evaluation, retry_result["action"])
+    if repaired_retry_action:
+        retry_result["action"] = repaired_retry_action
+        guardrail["repairedAction"] = repaired_retry_action
+        guardrail["repairReason"] = guardrail_repair_reason(retry_evaluation)
+        guardrail["acceptedActionSource"] = "guardrail_repair_after_retry"
+        guardrail["retryAccepted"] = True
+        retry_result["guardrail"] = guardrail
+        return retry_result
+
     if retry_evaluation["vetoed"] and retry_evaluation["severity"] == "hard":
         retry_result["guardrail"] = guardrail
         raise AgentExecutionError(f"guardrail rejected retry: {retry_evaluation['reason']}")
+    if retry_evaluation["vetoed"] and retry_evaluation["retryNote"] == ROUTE_ACCESS_RETRY_NOTE:
+        retry_result["guardrail"] = guardrail
+        raise AgentExecutionError(f"route-access guardrail rejected retry: {retry_evaluation['reason']}")
 
     guardrail["acceptedActionSource"] = "retry"
+    maybe_normalize_action_ticks(retry_result["action"], retry_evaluation)
     retry_result["guardrail"] = guardrail
     return retry_result
 
@@ -290,13 +377,22 @@ def evaluate_action_guardrail(
     ladder_affordance = get_ladder_affordance(snapshot)
     movement_affordance = get_movement_affordance(snapshot)
     dig_affordance = get_dig_affordance(snapshot)
+    route_access_affordance = get_route_access_affordance(snapshot)
     escape_affordance = get_escape_affordance(snapshot)
     same_row_gold = [item for item in find_nearest_gold_candidates(snapshot, limit=3) if item["sameRow"]]
     row_ladders = [item for item in find_row_ladders(snapshot, limit=3) if item["visible"]]
+    god_mode = bool(snapshot.get("godMode"))
 
     key_code = action.get("keyCode")
+    action_name = ACTION_NAMES.get(key_code, f"keyCode:{key_code}")
     action_direction = {LEFT_KEYCODE: "left", RIGHT_KEYCODE: "right"}.get(key_code)
+    route_access_recommended_action = route_access_affordance.get("recommendedAction")
+    route_access_action_matched = route_access_action_matches(action, route_access_affordance)
+    reason_action_mismatch = detect_reason_action_mismatch(action)
     feasibility_reason = action_feasibility_reason(action, movement_affordance, dig_affordance)
+    progress_oriented = is_progress_oriented_action(
+        action, progress, ladder_affordance, dig_affordance, same_row_gold, row_ladders
+    )
     veto_reason = None
     severity = None
     retry_note = None
@@ -305,10 +401,45 @@ def evaluate_action_guardrail(
         veto_reason = feasibility_reason
         severity = "hard"
         retry_note = FEASIBILITY_RETRY_NOTE
-    elif moves_toward_dangerous_guard(action, risk):
+    elif reason_action_mismatch:
+        veto_reason = reason_action_mismatch
+        severity = "soft"
+        retry_note = ROUTE_ACCESS_RETRY_NOTE
+    elif route_access_action_mismatch(action, route_access_affordance):
+        veto_reason = (
+            "route-access dig side mismatch: use "
+            f"{route_access_recommended_action} with keyCode {DIG_ACTION_KEYCODES.get(route_access_recommended_action)}"
+        )
+        severity = "soft"
+        retry_note = ROUTE_ACCESS_RETRY_NOTE
+    elif (
+        stall.get("repeatedDigLoop")
+        and route_access_affordance.get("available")
+        and key_code in {DIG_LEFT_KEYCODE, DIG_RIGHT_KEYCODE}
+    ):
+        veto_reason = "route-access dig loop detected; stop digging and move into the opened access route"
+        severity = "soft"
+        retry_note = ROUTE_ACCESS_EXIT_RETRY_NOTE
+    elif route_descent_available(action, route_access_affordance, movement_affordance):
+        veto_reason = "aligned descent is available toward lower gold; choose down instead of digging"
+        severity = "soft"
+        retry_note = ROUTE_DESCENT_RETRY_NOTE
+    elif ladder_descent_available(snapshot, action, movement_affordance):
+        veto_reason = "aligned lower gold is below this ladder; choose down instead of up"
+        severity = "soft"
+        retry_note = LADDER_DESCENT_RETRY_NOTE
+    elif (
+        ladder_affordance["onLadder"]
+        and risk["risk"] != "critical"
+        and key_code not in {UP_KEYCODE, DOWN_KEYCODE}
+    ):
+        veto_reason = "runner is standing on an active ladder; choose a vertical climb action before leaving it"
+        severity = "hard"
+        retry_note = LADDER_RETRY_NOTE
+    elif moves_toward_dangerous_guard(action, risk, god_mode=god_mode, progress_oriented=progress_oriented):
         veto_reason = "action moves toward high-or-critical same-row guard pressure"
         severity = "hard"
-        retry_note = SAFETY_RETRY_NOTE
+        retry_note = GOD_MODE_PROGRESS_RETRY_NOTE if god_mode else SAFETY_RETRY_NOTE
     elif (
         stall["stalled"]
         and ladder_affordance["onLadder"]
@@ -318,6 +449,15 @@ def evaluate_action_guardrail(
         veto_reason = "stall detected while standing on an active ladder; choose a vertical climb action"
         severity = "hard"
         retry_note = LADDER_RETRY_NOTE
+    elif (
+        god_mode
+        and route_access_affordance.get("available")
+        and key_code in {LEFT_KEYCODE, RIGHT_KEYCODE, STOP_KEYCODE}
+        and not snapshot.get("goldComplete")
+    ):
+        veto_reason = "god-mode route-access dig is available; horizontal spacing or stopping delays remaining-gold progress"
+        severity = "soft"
+        retry_note = ROUTE_ACCESS_RETRY_NOTE
     elif not stall["stalled"]:
         return {
             "stallDetected": False,
@@ -326,8 +466,15 @@ def evaluate_action_guardrail(
             "ladderAffordance": ladder_affordance,
             "movementAffordance": movement_affordance,
             "digAffordance": dig_affordance,
+            "routeAccessAffordance": route_access_affordance,
             "escapeAffordance": escape_affordance,
             "risk": risk,
+            "godMode": god_mode,
+            "progressOriented": progress_oriented,
+            "actionName": action_name,
+            "routeAccessRecommendedAction": route_access_recommended_action,
+            "routeAccessActionMatched": route_access_action_matched,
+            "reasonActionMismatch": reason_action_mismatch,
             "vetoed": False,
             "reason": None,
             "severity": None,
@@ -337,6 +484,19 @@ def evaluate_action_guardrail(
         veto_reason = "stall detected and stop would preserve the same non-progress state"
         severity = "soft"
         retry_note = PROGRESS_RETRY_NOTE
+    elif (
+        god_mode
+        and stall.get("boundedHorizontalLoop")
+        and action_direction is not None
+        and stall.get("targetDirection") in {"left", "right"}
+        and action_direction != stall.get("targetDirection")
+    ):
+        veto_reason = (
+            "god-mode bounded horizontal loop detected; action moves away from the current "
+            f"route target at x={stall.get('targetX')}"
+        )
+        severity = "soft"
+        retry_note = GOD_MODE_PROGRESS_RETRY_NOTE
     elif action_direction is not None and not allow_short_escape(action, risk):
         if stall.get("edgePressure") and action_direction == stall.get("edgeDirection"):
             veto_reason = f"stall detected and action keeps pressing into the {stall['edgeDirection']} edge"
@@ -360,13 +520,246 @@ def evaluate_action_guardrail(
         "ladderAffordance": ladder_affordance,
         "movementAffordance": movement_affordance,
         "digAffordance": dig_affordance,
+        "routeAccessAffordance": route_access_affordance,
         "escapeAffordance": escape_affordance,
         "risk": risk,
+        "godMode": god_mode,
+        "progressOriented": progress_oriented,
+        "actionName": action_name,
+        "routeAccessRecommendedAction": route_access_recommended_action,
+        "routeAccessActionMatched": route_access_action_matched,
+        "reasonActionMismatch": reason_action_mismatch,
         "vetoed": veto_reason is not None,
         "reason": veto_reason,
         "severity": severity,
         "retryNote": retry_note,
     }
+
+
+def route_access_action_mismatch(action: dict[str, Any], route_access: dict[str, Any]) -> bool:
+    if not route_access.get("available"):
+        return False
+    recommended = route_access.get("recommendedAction")
+    if recommended not in DIG_ACTION_KEYCODES:
+        return False
+    key_code = action.get("keyCode")
+    if key_code not in {DIG_LEFT_KEYCODE, DIG_RIGHT_KEYCODE}:
+        return False
+    return key_code != DIG_ACTION_KEYCODES[recommended]
+
+
+def route_access_action_matches(action: dict[str, Any], route_access: dict[str, Any]) -> bool | None:
+    if not route_access.get("available"):
+        return None
+    recommended = route_access.get("recommendedAction")
+    if recommended not in DIG_ACTION_KEYCODES:
+        return None
+    key_code = action.get("keyCode")
+    if key_code not in {DIG_LEFT_KEYCODE, DIG_RIGHT_KEYCODE}:
+        return False
+    return key_code == DIG_ACTION_KEYCODES[recommended]
+
+
+def detect_reason_action_mismatch(action: dict[str, Any]) -> str | None:
+    reason = str(action.get("reason") or "").lower()
+    key_code = action.get("keyCode")
+    mentions_left = "dig_left" in reason or "dig left" in reason
+    mentions_right = "dig_right" in reason or "dig right" in reason
+    if mentions_left and key_code == DIG_RIGHT_KEYCODE and not mentions_right:
+        return "action reason says dig_left but keyCode is dig_right"
+    if mentions_right and key_code == DIG_LEFT_KEYCODE and not mentions_left:
+        return "action reason says dig_right but keyCode is dig_left"
+    return None
+
+
+def route_descent_available(
+    action: dict[str, Any],
+    route_access: dict[str, Any],
+    movement: dict[str, Any],
+) -> bool:
+    if action.get("keyCode") not in {DIG_LEFT_KEYCODE, DIG_RIGHT_KEYCODE}:
+        return False
+    if not route_access.get("available"):
+        return False
+    target = route_access.get("offRowGoldTarget")
+    if not isinstance(target, dict):
+        return False
+    return (
+        target.get("direction") == "same"
+        and target.get("verticalDirection") == "below"
+        and bool(movement.get("canMoveDown"))
+    )
+
+
+def ladder_descent_available(
+    snapshot: dict[str, Any],
+    action: dict[str, Any],
+    movement: dict[str, Any],
+) -> bool:
+    if action.get("keyCode") != UP_KEYCODE:
+        return False
+    if not movement.get("canMoveDown"):
+        return False
+    runner = snapshot.get("runner") or {}
+    runner_x = runner.get("x")
+    runner_y = runner.get("y")
+    if not isinstance(runner_x, int) or not isinstance(runner_y, int):
+        return False
+    gold = snapshot.get("gold") or {}
+    visible_positions = gold.get("visiblePositions") or []
+    return any(
+        isinstance(item, dict)
+        and item.get("x") == runner_x
+        and isinstance(item.get("y"), int)
+        and item["y"] > runner_y
+        for item in visible_positions
+    )
+
+
+def get_guardrail_repair(evaluation: dict[str, Any], action: dict[str, Any]) -> dict[str, Any] | None:
+    ladder_descent_repair = get_ladder_descent_repair(evaluation)
+    if ladder_descent_repair:
+        return ladder_descent_repair
+
+    descent_repair = get_route_descent_repair(evaluation)
+    if descent_repair:
+        return descent_repair
+
+    route_repair = get_route_access_exit_repair(evaluation)
+    if route_repair:
+        return route_repair
+
+    if not evaluation.get("vetoed"):
+        return None
+    ladder = evaluation.get("ladderAffordance") or {}
+    if not ladder.get("onLadder"):
+        return None
+    recommended = ladder.get("recommendedAction")
+    if recommended not in {"up", "down"}:
+        return None
+    key_code = ACTION_KEYCODES[recommended]
+    if action.get("keyCode") == key_code:
+        return None
+    return {
+        "keyCode": key_code,
+        "ticks": PROGRESS_APPROACH_MIN_TICKS,
+        "reason": (
+            "Guardrail repair: runner is already on an active ladder, so climb "
+            f"{recommended} instead of leaving the ladder."
+        ),
+    }
+
+
+def get_route_access_exit_repair(evaluation: dict[str, Any]) -> dict[str, Any] | None:
+    if not evaluation.get("vetoed"):
+        return None
+    if evaluation.get("retryNote") != ROUTE_ACCESS_EXIT_RETRY_NOTE:
+        return None
+
+    route_access = evaluation.get("routeAccessAffordance") or {}
+    target = route_access.get("offRowGoldTarget") if isinstance(route_access, dict) else None
+    movement = evaluation.get("movementAffordance") or {}
+    if not isinstance(target, dict):
+        return None
+
+    direction = target.get("direction")
+    if direction == "right" and movement.get("canMoveRight"):
+        return {
+            "keyCode": RIGHT_KEYCODE,
+            "ticks": PROGRESS_APPROACH_MIN_TICKS,
+            "reason": "Guardrail repair: route-access dig loop detected, so move right into the opened access route.",
+        }
+    if direction == "left" and movement.get("canMoveLeft"):
+        return {
+            "keyCode": LEFT_KEYCODE,
+            "ticks": PROGRESS_APPROACH_MIN_TICKS,
+            "reason": "Guardrail repair: route-access dig loop detected, so move left into the opened access route.",
+        }
+    if movement.get("canMoveDown"):
+        return {
+            "keyCode": DOWN_KEYCODE,
+            "ticks": PROGRESS_APPROACH_MIN_TICKS,
+            "reason": "Guardrail repair: route-access dig loop detected, so descend through the opened access route.",
+        }
+    return None
+
+
+def get_route_descent_repair(evaluation: dict[str, Any]) -> dict[str, Any] | None:
+    if not evaluation.get("vetoed"):
+        return None
+    if evaluation.get("retryNote") != ROUTE_DESCENT_RETRY_NOTE:
+        return None
+    movement = evaluation.get("movementAffordance") or {}
+    if not movement.get("canMoveDown"):
+        return None
+    return {
+        "keyCode": DOWN_KEYCODE,
+        "ticks": PROGRESS_APPROACH_MIN_TICKS,
+        "reason": "Guardrail repair: lower gold is aligned below and down is valid, so descend instead of digging.",
+    }
+
+
+def get_ladder_descent_repair(evaluation: dict[str, Any]) -> dict[str, Any] | None:
+    if not evaluation.get("vetoed"):
+        return None
+    if evaluation.get("retryNote") != LADDER_DESCENT_RETRY_NOTE:
+        return None
+    movement = evaluation.get("movementAffordance") or {}
+    if not movement.get("canMoveDown"):
+        return None
+    return {
+        "keyCode": DOWN_KEYCODE,
+        "ticks": PROGRESS_APPROACH_MIN_TICKS,
+        "reason": "Guardrail repair: lower gold is aligned below this ladder, so continue down instead of climbing up.",
+    }
+
+
+def guardrail_repair_reason(evaluation: dict[str, Any]) -> str:
+    if evaluation.get("retryNote") == LADDER_DESCENT_RETRY_NOTE:
+        return "aligned lower-gold ladder route requires descending instead of climbing up"
+    if evaluation.get("retryNote") == ROUTE_DESCENT_RETRY_NOTE:
+        return "aligned lower-gold route requires descending instead of digging"
+    if evaluation.get("retryNote") == ROUTE_ACCESS_EXIT_RETRY_NOTE:
+        return "route-access dig loop requires moving into the opened path"
+    return "current-tile ladder affordance requires vertical movement"
+
+
+def maybe_normalize_action_ticks(action: dict[str, Any], evaluation: dict[str, Any]) -> None:
+    maybe_normalize_route_access_ticks(action, evaluation)
+    maybe_normalize_progress_approach_ticks(action, evaluation)
+
+
+def maybe_normalize_route_access_ticks(action: dict[str, Any], evaluation: dict[str, Any]) -> None:
+    if evaluation.get("routeAccessActionMatched") is not True:
+        return
+    current_ticks = action.get("ticks")
+    if not isinstance(current_ticks, int):
+        return
+    if current_ticks < ROUTE_ACCESS_MIN_TICKS:
+        action["ticks"] = ROUTE_ACCESS_MIN_TICKS
+
+
+def maybe_normalize_progress_approach_ticks(action: dict[str, Any], evaluation: dict[str, Any]) -> None:
+    key_code = action.get("keyCode")
+    action_direction = {LEFT_KEYCODE: "left", RIGHT_KEYCODE: "right"}.get(key_code)
+    if action_direction is None:
+        return
+    if (evaluation.get("risk") or {}).get("risk") in {"high", "critical"}:
+        return
+
+    ladder = evaluation.get("ladderAffordance") or {}
+    nearest = ladder.get("nearestRowLadder") if isinstance(ladder, dict) else None
+    if isinstance(nearest, dict) and nearest.get("direction") == action_direction:
+        distance = nearest.get("distance")
+        if isinstance(distance, int) and distance > 2:
+            action["ticks"] = max(int(action.get("ticks") or 1), PROGRESS_APPROACH_MIN_TICKS)
+            return
+
+    for option in (evaluation.get("progressOptions") or {}).get("options", []):
+        detail = str(option.get("detail") or "").lower()
+        if action_direction in detail and "on the runner row" in detail:
+            action["ticks"] = max(int(action.get("ticks") or 1), PROGRESS_APPROACH_MIN_TICKS)
+            return
 
 
 def action_feasibility_reason(
@@ -384,18 +777,60 @@ def action_feasibility_reason(
     if key_code == DOWN_KEYCODE and not movement.get("canMoveDown"):
         return "down is not physically valid because no ladder descent is available"
     if key_code == DIG_LEFT_KEYCODE and not dig.get("canDigLeft"):
-        return "dig_left is not physically valid because ok2Dig-left conditions are not met"
+        return "dig_left is not physically valid because the side cell or lower brick target is invalid"
     if key_code == DIG_RIGHT_KEYCODE and not dig.get("canDigRight"):
-        return "dig_right is not physically valid because ok2Dig-right conditions are not met"
+        return "dig_right is not physically valid because the side cell or lower brick target is invalid"
     return None
 
 
-def moves_toward_dangerous_guard(action: dict[str, Any], risk: dict[str, Any]) -> bool:
+def moves_toward_dangerous_guard(
+    action: dict[str, Any],
+    risk: dict[str, Any],
+    *,
+    god_mode: bool,
+    progress_oriented: bool,
+) -> bool:
     action_direction = {LEFT_KEYCODE: "left", RIGHT_KEYCODE: "right"}.get(action.get("keyCode"))
     if action_direction is None or risk.get("risk") not in {"high", "critical"}:
         return False
+    if god_mode and progress_oriented:
+        return False
     nearest_same_row = risk.get("nearestSameRowGuard") or {}
     return nearest_same_row.get("direction") == action_direction
+
+
+def is_progress_oriented_action(
+    action: dict[str, Any],
+    progress: dict[str, Any],
+    ladder_affordance: dict[str, Any],
+    dig_affordance: dict[str, Any],
+    same_row_gold: list[dict[str, Any]],
+    row_ladders: list[dict[str, Any]],
+) -> bool:
+    key_code = action.get("keyCode")
+    if key_code in {UP_KEYCODE, DOWN_KEYCODE}:
+        return True
+    if key_code == DIG_LEFT_KEYCODE:
+        return bool(dig_affordance.get("left", {}).get("canDig"))
+    if key_code == DIG_RIGHT_KEYCODE:
+        return bool(dig_affordance.get("right", {}).get("canDig"))
+
+    action_direction = {LEFT_KEYCODE: "left", RIGHT_KEYCODE: "right"}.get(key_code)
+    if action_direction is None:
+        return False
+    if ladder_affordance.get("adjacentToLadder") and ladder_affordance.get("recommendedAction") == action_direction:
+        return True
+    for gold in same_row_gold:
+        if gold.get("direction") == action_direction:
+            return True
+    for ladder in row_ladders:
+        if ladder.get("direction") == action_direction:
+            return True
+    for option in progress.get("options", []):
+        detail = str(option.get("detail", "")).lower()
+        if action_direction in detail:
+            return True
+    return False
 
 
 def allow_short_escape(action: dict[str, Any], risk: dict[str, Any]) -> bool:

@@ -4,7 +4,6 @@ var runnerDebug = 0;
 
 function pressShiftKey(code)
 {
-/*	cheat key code disable 5/16/2015
 	switch(code) {
 	case KEYCODE_PERIOD: //SHIFT-. = '>', change to next level
 		shiftLevelNum = 1;	
@@ -30,7 +29,6 @@ function pressShiftKey(code)
 		if(runnerDebug) debugKeyPress(code);
 		break;
 	}
-*/	
 }
 
 function pressCtrlKey(code)
@@ -59,9 +57,9 @@ function pressCtrlKey(code)
 	case KEYCODE_X: //CTRL-X 
 		toggleTrapTile();
 		break;
-//	case KEYCODE_Z: //CTRL-Z, toggle god mode
-//		toggleGodMode();
-//		break;	
+	case KEYCODE_Z: //CTRL-Z, toggle god mode
+		toggleGodMode();
+		break;	
 	case KEYCODE_S: //CTRL-S, toggle sound 
 		if( (soundOff ^= 1) == 1) {
 			soundStop(soundDig);

@@ -69,8 +69,7 @@ Board format:
 - Runner, guards, and gold are listed separately as coordinates.
 - Read terrain in physical movement terms: ladders support vertical climb up/down; ropes support horizontal crossing while open air and falling may exist below them.
 - The ladder and rope coordinate lists are authoritative validation aids. If your visual read of the 2D grid disagrees with those lists, trust the coordinate lists.
-- If the runner is standing on an `H` ladder coordinate, horizontal movement is no longer ladder progress; choose `up` or `down` to change row.
-- Do not choose `up` unless movement affordance says `canMoveUp=yes`; a nearby ladder is not enough.
+- Use movement affordance to confirm which directions are physically valid from the current tile.
 - Moving toward a same-row guard is not creating space. Under high or critical guard pressure, move away, climb if valid now, or dig a legal trap.
 - Offsets are in-tile movement: (0,0) means centered; nonzero offsets matter near guards, gold, ladders, ropes, and falls.
 
@@ -84,7 +83,7 @@ Terrain tile legend:
 - `?` = unknown / missing cell
 
 Game state:
-- playData=1 level=1 playMode=2 gameState=start
+- playData=1 level=1 playMode=2 godMode=False gameState=start
 - lastFailureReason=""
 
 Timing:
@@ -124,16 +123,14 @@ y=13 | . . . . H # # # # # # . . . . . . . . . # # # # # # # H
 y=14 | . . . . H . . . . . . . . . . . . . . . . . . . . . . H
 y=15 | # # # # # # # # # # # # # # # # # # # # # # # # # # # #
 ```
-
-Use coordinate lists below to validate any coordinates you read from the 2D terrainGrid before planning movement:
+If you read coordinates from `terrainGrid`, verify them against the coordinate lists below. If the grid reading and the lists disagree, trust the lists.
 
 terrainGrid validation: ladders=(7,2), (7,3), (7,4), (14,4), (25,4), (7,5), (14,5), (25,5), (7,6), (14,6), (25,6), (2,7), (20,7), (2,8), (20,8), (2,9), (20,9), (9,10), (20,10), (9,11), (20,11), (9,12), (20,12), (4,13), (27,13), (4,14), (27,14). Use these as the authoritative climbable vertical coordinates for moving up or down.
 
 terrainGrid validation: ropes=(8,3), (9,3), (10,3), (11,3), (12,3), (13,3), (14,3), (15,3), (16,3), (17,3), (10,12), (11,12), (12,12), (13,12), (14,12), (15,12), (16,12), (17,12), (18,12), (19,12). Use these as the authoritative horizontal crossing coordinates. Free falling may be possible from rope positions if there is no support below.
 
 terrainGrid validation: digging
-- Only `#` is diggable brick. `@` is solid indestructible terrain and is never a dig target.
-- Legacy ok2Dig requires an empty side cell and a `#` target cell down-left or down-right from the runner.
+- A dig is legal only when the side cell on that dig side is empty and has no gold, and the lower diagonal target cell is `#`.
 - dig_left: side (13,14)=., target (13,15)=#, possible=yes
 - dig_right: side (15,14)=., target (15,15)=#, possible=yes
 
