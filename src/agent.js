@@ -91,6 +91,7 @@ async function runAgent(state, deps) {
       hooks.step(action.keyCode, action.ticks);
       const after = hooks.snapshot();
       history.push({
+        candidateId: response.candidateId,
         keyCode: action.keyCode,
         ticks: action.ticks,
         reason: action.reason,

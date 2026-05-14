@@ -51,22 +51,9 @@ localPort = 8283
 externalPort = 80
 
 [[ports]]
-localPort = 5001
-externalPort = 3001
-
-[[ports]]
-localPort = 8000
-externalPort = 8000
-exposeLocalhost = true
-
-[[ports]]
 localPort = 8080
 externalPort = 8080
 exposeLocalhost = true
-
-[[ports]]
-localPort = 8285
-externalPort = 3000
 
 [deployment]
 deploymentTarget = "autoscale"

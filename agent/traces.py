@@ -36,12 +36,14 @@ def summarize_snapshot(snapshot: dict[str, Any], history: list[dict[str, Any]]) 
         "guards": analysis.get("guards"),
         "gold": analysis.get("gold"),
         "nearestGold": analysis.get("nearestGold"),
+        "primaryProgressTarget": analysis.get("primaryProgressTarget"),
         "rowLadders": analysis.get("rowLadders"),
         "risk": analysis.get("risk"),
         "movement": analysis.get("movement"),
         "dig": analysis.get("dig"),
         "ladder": analysis.get("ladder"),
         "routeAccess": analysis.get("routeAccess"),
+        "stallReport": analysis.get("stallReport") or analysis.get("progressMonitor"),
     }
 
 

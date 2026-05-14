@@ -1,65 +1,32 @@
 # Classic Level 1 Agent Rules
 
-This file is intentionally short and easy to edit. It is read directly into the LLM prompt for the Classic level 1 agent. Add, remove, or rewrite instructions here to steer the agent.
+Choose one backend-generated candidate. Do not invent actions, keycodes, or coordinates.
 
 ## Goal
 
-- Collect all gold.
-- After the last gold is collected, take the exit route.
+- Collect all gold first.
+- After `goldComplete=true`, choose exit-ladder candidates.
 
-## Movement Basics
+## Candidate Ranking
 
-- The runner can move left, right, up, and down.
-- Ladders are for vertical movement: use them to climb up or down.
-- Reaching a ladder is not enough. If the runner is standing on a ladder tile (`H`), choose `up` or `down` to change row.
-- A nearby ladder does not make `up` valid. Choose `up` only when movement affordance says `canMoveUp=yes`.
-- Ropes are for horizontal crossing: use them to move sideways while open air and falling may exist below.
-- The runner can climb ladders, move across ropes, and fall.
-- The runner cannot jump.
-- The runner can dig down-left or down-right into brick.
+- Prefer candidates that collect visible gold.
+- Prefer candidates that change row through a ladder or valid route-access dig.
+- Prefer current-ladder climb candidates over leaving the ladder horizontally.
+- Prefer route-access dig when remaining gold is below and no same-row gold or ladder route is available.
+- Use stop/wait only when every progress or safety candidate is worse.
 
-## Digging Rules
+## Guard Policy
 
-- `#` is diggable brick. It is the only normal terrain tile the runner can dig.
-- `@` is solid indestructible wall or floor. Never plan to dig or pass through `@`.
-- Before choosing `dig_left` or `dig_right`, verify the adjacent lower target tile is `#`, not `@`.
-- Defensive digging can trap an approaching same-row guard, but only choose a dig action when dig affordance says that side is possible.
-- Do not treat every floor-like tile as diggable. The exact symbol matters.
+- In normal mode, immediate guard danger can outrank progress.
+- In god mode, guard contact is non-lethal, so progress usually outranks retreat or defensive digging.
+- Do not choose repeated spacing or retreat when a progress candidate is available.
 
-## State Layers
+## Stall Policy
 
-- `terrainGrid` is structural movement terrain only.
-- Runner, guards, and gold are dynamic state and are listed separately from terrain.
-- Gold is an objective list, not permanent terrain. Track visible gold positions and any guard carrying gold.
-- Offsets show in-tile movement. Use them mainly near guards, gold pickup, ladders, ropes, and falls.
+- If recent actions oscillate around a ladder or target, choose the candidate that precisely aligns or climbs.
+- If a candidate is labeled as anti-stall or fine-alignment, prefer it over broad horizontal movement.
 
-## Danger Basics
+## Output
 
-- Touching a guard kills the runner.
-- A short retreat is valid only when danger is immediate.
-- Moving toward a same-row guard is not creating space.
-- Under high or critical same-row guard pressure, prefer a valid climb, a valid defensive dig trap, or movement away from the guard.
-- Repeating the same retreat direction without gaining space, gold, or a route change is usually a mistake.
-
-## Decision Rubric
-
-1. First avoid immediate death.
-2. If danger is not immediate, prefer nearby safe gold.
-3. Same-row gold is a high-priority progress target.
-4. Visible ladders on the runner row are strong route options.
-5. If the runner is stalled on one row and is on a ladder, climb instead of repeating horizontal movement.
-6. If the runner is stalled on one row, change the route instead of repeating the same retreat.
-
-## Classic Level 1 Bias
-
-- Once the runner is not in immediate lethal danger, favor nearby gold, reachable ladders, or changing row or route over more retreat.
-- Do not drift along the bottom row without collecting nearby gold.
-- Do not ignore obvious nearby gold on the current row.
-- Do not get trapped into left-edge or right-edge oscillation.
-- If a reachable ladder can break the stall safely, prefer climbing it over another retreat.
-
-## Output Style
-
-- Choose one short action burst.
-- Keep the action focused on survival first, then progress.
-- Prefer simple progress over elaborate long-term plans when a nearby gold or ladder is already available.
+Return only:
+`{"candidateId":"...","reason":"..."}`

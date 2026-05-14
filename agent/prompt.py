@@ -33,6 +33,9 @@ def build_agent_prompt(
         format_state_summary(snapshot, analysis),
         format_candidates(candidates),
     ]
+    stall_report = format_stall_report(analysis)
+    if stall_report:
+        sections.insert(-1, stall_report)
     behavior = format_recent_behavior(history)
     if behavior:
         sections.append(behavior)
@@ -48,6 +51,8 @@ def format_state_summary(snapshot: dict[str, Any], analysis: dict[str, Any]) -> 
     ladder = _dict(analysis.get("ladder"))
     route_access = _dict(analysis.get("routeAccess"))
     movement = _dict(analysis.get("movement"))
+    stall_report = _dict(analysis.get("stallReport") or analysis.get("progressMonitor"))
+    primary_target = _dict(analysis.get("primaryProgressTarget"))
     return "\n".join(
         [
             "Current state:",
@@ -64,6 +69,7 @@ def format_state_summary(snapshot: dict[str, Any], analysis: dict[str, Any]) -> 
                 f"remainingGold={gold.get('remainingCount', snapshot.get('goldCount'))} "
                 f"visibleGold={json.dumps(gold.get('visiblePositions', []), sort_keys=True)}"
             ),
+            f"- primaryProgressTarget={json.dumps(primary_target, sort_keys=True)}",
             (
                 f"- guardRisk={risk.get('risk')} nearestSameRowGuard="
                 f"{json.dumps(risk.get('nearestSameRowGuard'), sort_keys=True)}"
@@ -75,8 +81,50 @@ def format_state_summary(snapshot: dict[str, Any], analysis: dict[str, Any]) -> 
             f"- ladder={ladder.get('detail')}",
             (
                 f"- routeAccess={{available:{route_access.get('available')}, "
-                f"recommended:{route_access.get('recommendedAction')}, reason:{route_access.get('reason')}}}"
+                f"recommended:{route_access.get('recommendedAction')}, "
+                f"followAvailable:{route_access.get('followAvailable')}, "
+                f"followAction:{route_access.get('followAction')}, "
+                f"reason:{route_access.get('reason')}}}"
             ),
+            (
+                f"- stall={{severity:{stall_report.get('severity')}, "
+                f"type:{stall_report.get('type')}, "
+                f"blocked:{json.dumps(stall_report.get('blockedCandidateIds', []), sort_keys=True)}, "
+                f"preferred:{json.dumps(stall_report.get('preferredCandidateKinds', []), sort_keys=True)}}}"
+            ),
+        ]
+    )
+
+
+def format_stall_report(analysis: dict[str, Any]) -> str:
+    stall_report = _dict(analysis.get("stallReport") or analysis.get("progressMonitor"))
+    if stall_report.get("severity") in {None, "none"}:
+        return ""
+    return "\n".join(
+        [
+            "Stall report:",
+            (
+                f"- severity={stall_report.get('severity')} type={stall_report.get('type')} "
+                f"reason={stall_report.get('reason')}"
+            ),
+            f"- recentPositions={json.dumps(stall_report.get('recentPositions', []), sort_keys=True)}",
+            f"- recentCandidateIds={json.dumps(stall_report.get('recentCandidateIds', []), sort_keys=True)}",
+            (
+                f"- blockedCandidateIds={json.dumps(stall_report.get('blockedCandidateIds', []), sort_keys=True)} "
+                f"blockedKinds={json.dumps(stall_report.get('blockedCandidateKinds', []), sort_keys=True)}"
+            ),
+            (
+                f"- preferredRecoveryKinds="
+                f"{json.dumps(stall_report.get('preferredCandidateKinds', []), sort_keys=True)}"
+            ),
+            (
+                f"- blockedLadderDirections="
+                f"{json.dumps(stall_report.get('blockedLadderDirections', []), sort_keys=True)} "
+                f"preferredVerticalDirection={stall_report.get('preferredVerticalDirection')} "
+                f"ladderExitDirection={stall_report.get('ladderExitDirection')}"
+            ),
+            f"- recoveryHint={stall_report.get('recoveryHint')}",
+            "If severity=stalled, do not choose blocked candidates; prefer a recovery candidate.",
         ]
     )
 
@@ -87,12 +135,17 @@ def format_candidates(candidates: list[dict[str, Any]]) -> str:
         action = _dict(candidate.get("firstAction"))
         target = candidate.get("target")
         target_text = f" target={json.dumps(target, sort_keys=True)}" if target else ""
+        stall_text = ""
+        if candidate.get("stallBlocked"):
+            stall_text = f" stallBlocked={candidate.get('stallBlockReason')}"
+        elif candidate.get("stallRecovery"):
+            stall_text = " stallRecovery=true"
         lines.extend(
             [
                 (
                     f"- id={candidate.get('id')} kind={candidate.get('kind')} score={candidate.get('score')} "
                     f"risk={candidate.get('risk')} keyCode={action.get('keyCode')} ticks={action.get('ticks')}"
-                    f"{target_text}"
+                    f"{target_text}{stall_text}"
                 ),
                 f"  goal={candidate.get('goal')}",
                 f"  reason={candidate.get('reason')}",
