@@ -95,11 +95,13 @@ function ensureTitle() {
 
 function ensureFavicon() {
   let icon = document.querySelector("link[rel~='icon']");
-  if (!icon) {
-    icon = document.createElement("link");
-    icon.rel = "shortcut icon";
-    document.head.appendChild(icon);
+  if (icon) {
+    return;
   }
+
+  icon = document.createElement("link");
+  icon.rel = "shortcut icon";
+  document.head.appendChild(icon);
   icon.href = "/game/lodeRunner.ico";
 }
 

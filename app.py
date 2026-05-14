@@ -204,7 +204,6 @@ def append_trace_step(run_id: str, step_trace: dict[str, Any]) -> dict[str, Any]
         run["stepCount"] = len(run["steps"])
         run["latestAction"] = stored_step.get("action")
         run["latestPlanner"] = stored_step.get("planner")
-        run["latestBenchmark"] = stored_step.get("benchmark")
 
         store["latestRuns"][context_key] = {
             "traceId": run_id,
@@ -383,18 +382,6 @@ def next_agent_action():
         )
         return jsonify({"error": "failed to persist agent trace"}), 500
 
-    if plan.get("benchmark"):
-        log_event(
-            LOGGER,
-            logging.INFO,
-            "agent_benchmark_selected",
-            trace_id=run_id,
-            run_id=run_id,
-            run_mode="benchmark",
-            model=plan["planner"].get("model"),
-            selected_model=plan["benchmark"].get("chosenModel"),
-            candidate_count=len(plan["benchmark"].get("candidates", [])),
-        )
     log_event(
         LOGGER,
         logging.INFO,
@@ -407,8 +394,8 @@ def next_agent_action():
         run_mode=step_trace.get("runMode"),
         key_code=plan["action"].get("keyCode"),
         ticks=plan["action"].get("ticks"),
+        candidate_id=plan.get("candidateId"),
         step_count=run.get("stepCount"),
-        benchmark="yes" if plan.get("benchmark") else "no",
     )
 
     return jsonify(
@@ -416,8 +403,11 @@ def next_agent_action():
             "action": plan["action"],
             "planner": plan["planner"],
             "traceId": run_id,
-            "benchmark": plan.get("benchmark"),
             "stepCount": run.get("stepCount"),
+            "candidateId": plan.get("candidateId"),
+            "candidate": plan.get("candidate"),
+            "candidates": plan.get("candidates"),
+            "validation": plan.get("validation"),
         }
     )
 

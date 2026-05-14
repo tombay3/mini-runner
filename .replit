@@ -29,7 +29,7 @@ author = "agent"
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "npm run dev"
-waitForPort = 5000
+waitForPort = 8283
 
 [workflows.workflow.metadata]
 outputType = "webview"
@@ -47,7 +47,7 @@ args = ".venv/bin/python app.py"
 waitForPort = 8080
 
 [[ports]]
-localPort = 5000
+localPort = 8283
 externalPort = 80
 
 [[ports]]
@@ -70,5 +70,5 @@ externalPort = 3000
 
 [deployment]
 deploymentTarget = "autoscale"
-run = ["bash", "-c", ".venv/bin/python app.py & npx vite preview --port 5000 --host 0.0.0.0"]
+run = ["bash", "-c", ".venv/bin/python app.py & npx vite preview --port 8283 --host 0.0.0.0"]
 build = ["bash", "-c", "npm run build"]

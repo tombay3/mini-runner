@@ -11,7 +11,6 @@ export function createAgentController(deps) {
       state.agentAbort = null;
       state.agentPlanner = null;
       state.agentTraceId = null;
-      state.agentBenchmark = null;
       state.agentRunId = null;
     },
 
@@ -50,7 +49,6 @@ async function runAgent(state, deps) {
   state.agentAbort = new AbortController();
   state.agentPlanner = null;
   state.agentTraceId = null;
-  state.agentBenchmark = null;
   state.agentRunId = createRunId();
   deps.setUiState(state, state.currentRecord ? "available" : "missing", "agent");
 
@@ -89,7 +87,6 @@ async function runAgent(state, deps) {
       const action = normalizeAgentAction(response.action);
       state.agentPlanner = response.planner ?? null;
       state.agentTraceId = response.traceId ?? state.agentRunId;
-      state.agentBenchmark = response.benchmark ?? null;
 
       hooks.step(action.keyCode, action.ticks);
       const after = hooks.snapshot();
@@ -215,7 +212,6 @@ async function saveAgentResult(state, deps, demoData, result, reason) {
     generatedAt: state.agentPlanner?.generatedAt ?? new Date().toISOString(),
     responseId: state.agentPlanner?.responseId ?? null,
     traceId: state.agentTraceId ?? null,
-    benchmark: state.agentBenchmark ?? null,
     failureReason: result === "failure" ? reason : null,
   };
   const record = await deps.apiFetch(`${deps.recordingApiBase}/${AGENT_PLAY_DATA}/${AGENT_LEVEL}`, {
@@ -261,14 +257,6 @@ function getAgentRequestOptions() {
   const requestOptions = {};
   if (typeof options.model === "string" && options.model.trim()) {
     requestOptions.model = options.model.trim();
-  }
-  if (options.runMode === "benchmark") {
-    requestOptions.runMode = "benchmark";
-  }
-  if (Array.isArray(options.benchmarkModels)) {
-    requestOptions.benchmarkModels = options.benchmarkModels
-      .filter((item) => typeof item === "string" && item.trim())
-      .map((item) => item.trim());
   }
   return requestOptions;
 }

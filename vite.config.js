@@ -5,7 +5,7 @@ export default defineConfig({
   server: {
     host: "0.0.0.0",
     allowedHosts: true,
-    port: 5000,
+    port: 8283,
     // strictPort: true,
     // open: true // Open browser on server start
     // cors: true,
