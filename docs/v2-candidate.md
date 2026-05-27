@@ -1,20 +1,22 @@
 # V2 Candidate-Action Lode Runner Agent
 
 ## Summary
-Refactor the current LLM agent from “free-form raw keyCode planner plus many guardrails” into a simpler candidate-action planner for Classic level 1. The backend will compute a small set of legal, useful candidates from the live snapshot; the LLM will choose one `candidateId`; the backend will translate that candidate into `{ keyCode, ticks }`; the legacy browser runtime remains the only executor and recorder.
+V2 is the current agent architecture. It replaced the earlier free-form raw-keyCode planner with a candidate-action planner for Classic level 1.
 
-This intentionally excludes demo-path guidance, few-shot examples, Python simulation, full pathfinding, and runtime multi-model benchmarking for v2.
+The backend computes a small set of legal, useful candidates from the live snapshot. The LLM chooses one `candidateId`. The backend translates that candidate into `{ keyCode, ticks }`. The legacy browser runtime remains the only executor and recorder.
+
+This intentionally excludes demo-path guidance, few-shot examples, Python simulation, full pathfinding, default `aisuite` tool-calling, and runtime multi-model benchmarking.
 
 ## Key Changes
 
 ### Backend Agent Flow
 - Keep `/api/agent/next-action` as the browser-facing endpoint.
-- Internally replace raw action planning with:
+- Internally use:
   `snapshot + history -> candidate analysis -> LLM candidate choice -> backend action translation -> guard validation -> response`.
 - Keep `aisuite` as the single-model provider abstraction.
-- Disable or remove automatic tool-heavy reasoning from the normal runtime path; candidate generation should happen in Python before the LLM call.
+- Disable automatic tool-heavy reasoning from the normal runtime path; candidate generation happens deterministically in Python before the LLM call.
 - Keep traces, but restructure them around:
-  `snapshotSummary`, `candidates`, `selectedCandidateId`, `translatedAction`, `validation`, and `planner`.
+  `snapshotSummary`, `primaryProgressTarget`, `stallReport`, `candidates`, `selectedCandidateId`, `translatedAction`, `validation`, and `planner`.
 
 ### Candidate Model
 - Add a backend candidate representation with fields like:
@@ -26,13 +28,13 @@ This intentionally excludes demo-path guidance, few-shot examples, Python simula
   ```json
   { "candidateId": "collect_gold_17_14_right", "reason": "Nearest same-row gold is reachable by moving right." }
   ```
-- Backend rejects unknown candidate IDs. Optional v2 fallback: if the LLM returns invalid JSON or unknown ID, choose the highest-scored candidate and mark trace `fallbackUsed=true`.
+- Backend rejects unknown candidate IDs and can fall back to the highest-ranked non-blocked candidate with trace `fallbackUsed=true`.
 
 ### Candidate Generation
 - Generate candidates from existing snapshot facts:
   terrain grid, runner position, guard positions, gold positions, `goldComplete`, `godMode`, current ladder, legal movement, legal dig, and recent history.
-- Start with these candidate kinds:
-  `collect_same_row_gold`, `align_ladder`, `climb_ladder`, `route_access_dig`, `descend_route`, `defensive_dig`, `retreat_from_guard`, `godmode_progress`, `exit_ladder_route`, `wait_or_stop`.
+- Current candidate kinds include:
+  `collect_same_row_gold`, `align_ladder`, `climb_ladder`, `route_access_dig`, `route_access_follow`, `descend_route`, `continue_fall`, `defensive_dig`, `retreat_from_guard`, `godmode_progress`, `exit_ladder_route`, `wait_or_stop`.
 - Only emit candidates whose first action is physically valid from the current snapshot.
 - Use simple ranking:
   if `goldComplete=true`: exit ladder route first.
@@ -41,23 +43,30 @@ This intentionally excludes demo-path guidance, few-shot examples, Python simula
   in god mode: progress candidates outrank survival candidates unless movement is physically blocked.
 - Return only the top 4-7 candidates to the LLM.
 
+### Stall Supervisor
+- `agent/stall_tools.py` produces a deterministic `stallReport`.
+- Current stall types include:
+  `horizontal_oscillation`, `vertical_ladder_oscillation`, `same_candidate_no_progress`, `same_tile_no_progress`, `route_access_loop`, `exit_ladder_loop`, and `wait_loop`.
+- Candidate generation uses the report to suppress or penalize loop candidates and boost recovery candidates.
+- Service-level validation retries once when the model chooses a blocked candidate, then falls back to the highest-ranked non-blocked candidate when possible.
+
 ### Prompt Simplification
 - Make `agent/prompt.py` present only:
   current concise state summary, candidate list, selection rules, and strict JSON output contract.
 - Move durable gameplay policy into `public/AGENT_RULES.md`, but keep it shorter because candidates already encode legality.
 - Remove prompt sections that duplicate candidate analysis, especially detailed movement/dig/escape/route-access blocks.
-- Keep terrain grid optional or minimized. For v2, prefer object-centric summaries and candidate targets over asking the model to parse the full board every step.
+- Keep terrain grid optional or minimized. V2 prefers object-centric summaries, progress targets, candidate targets, and stall reports over asking the model to parse the full board every step.
 
 ### Streamlining `agent/`
-- Split current reasoning logic into clearer layers:
-  `state_analysis`: extracts normalized live facts from snapshot/history.
-  `candidates`: generates and scores candidate actions.
+- Current backend layers:
+  `candidates`: extracts normalized facts and generates/scored candidate actions.
+  `reasoning_tools`: deterministic movement, guard, dig, and route helpers.
+  `stall_tools`: deterministic loop/stall diagnosis and recovery hints.
   `prompt`: formats candidate-selection prompt.
-  `service`: orchestrates model call, candidate validation, trace assembly.
-- Retire most one-off guardrails once candidates enforce legality:
-  repeated ladder vetoes, route-access side mismatch, reason/keyCode mismatch, route-access tick repair, and many god-mode progress retries should become unnecessary.
-- Keep only minimal validation:
-  selected candidate exists, translated action is still physically valid, ticks are bounded, and unsupported level returns `400`.
+  `service`: orchestrates model call, candidate validation, retry/fallback, and trace assembly.
+- Most V1 one-off guardrails are retired because candidates encode legality. Persistent-loop handling lives in `stall_tools`.
+- Keep service validation focused:
+  selected candidate exists, selected candidate is not stall-blocked, translated action is physically valid, ticks are bounded, and unsupported level returns `400`.
 - Keep old helper functions only if reused by candidate generation; otherwise delete or quarantine them after tests pass.
 
 ## API / Interface Changes

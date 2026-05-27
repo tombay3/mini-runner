@@ -4,6 +4,7 @@ const INSTALL_KEY = "__lodeRunnerRecording";
 const API_BASE = "/api/recordings";
 const OVERLAY_ID = "recording-overlay";
 const FULLSCREEN_RESTART_DELAY_MS = 180;
+const FAILED_DEMO_STOP_POLL_MS = 100;
 
 const agentController = createAgentController({
   apiFetch,
@@ -31,6 +32,7 @@ export function installRecording() {
     saveTimer: 0,
     refreshTimer: 0,
     fullscreenRestartTimer: 0,
+    playbackStopTimer: 0,
     els: {},
   };
   agentController.initState(state);
@@ -259,7 +261,7 @@ async function playCurrentRecording(state) {
       state.currentRecord ??
       (await apiFetch(`${API_BASE}/${context.playData}/${context.level}`));
     const demo = normalizeDemo(record.demo, context.playData, context.level);
-    startStoredDemo(demo, context);
+    startStoredDemo(state, demo, context);
     state.playbackKey = getContextKey(context);
     state.currentRecord = record;
     setUiState(state, "available");
@@ -285,10 +287,12 @@ async function deleteCurrentRecording(state) {
   }
 }
 
-function startStoredDemo(demo, context) {
+function startStoredDemo(state, demo, context) {
   if (typeof window.startGame !== "function") {
     throw new Error("legacy startGame is unavailable");
   }
+
+  clearStoredDemoStopTimer(state);
 
   if (!Array.isArray(window.playerDemoData)) {
     window.playerDemoData = [];
@@ -307,6 +311,50 @@ function startStoredDemo(demo, context) {
   window.startGame(1);
   if (typeof window.showTipsText === "function") {
     window.setTimeout(() => window.showTipsText("HIT ANY KEY TO STOP DEMO", 3500), 50);
+  }
+  scheduleFailedDemoStop(state, demo, context);
+}
+
+function scheduleFailedDemoStop(state, demo, context) {
+  const demoTime = Number(demo?.time);
+  if (Number(demo?.state) === 1 || !Number.isFinite(demoTime) || demoTime <= 0) {
+    return;
+  }
+
+  state.playbackStopTimer = window.setInterval(() => {
+    const stillPlayingDemo =
+      Number(window.playMode) === Number(window.PLAY_DEMO_ONCE) &&
+      Number(window.playData) === Number(context.playData) &&
+      Number(window.curLevel) === Number(context.level);
+    if (!stillPlayingDemo) {
+      clearStoredDemoStopTimer(state);
+      return;
+    }
+    if (Number(window.demoTickCount) >= demoTime) {
+      stopFailedDemoPlayback(state);
+    }
+  }, FAILED_DEMO_STOP_POLL_MS);
+}
+
+function stopFailedDemoPlayback(state) {
+  clearStoredDemoStopTimer(state);
+  if ("ACT_STOP" in window) {
+    window.keyAction = window.ACT_STOP;
+  }
+  if (typeof window.stopPlayTicker === "function") {
+    window.stopPlayTicker();
+  }
+  state.playbackKey = "";
+  setUiState(state, state.currentRecord ? "available" : "missing");
+  if (typeof window.showTipsText === "function") {
+    window.showTipsText("FAILED DEMO ENDED", 2500);
+  }
+}
+
+function clearStoredDemoStopTimer(state) {
+  if (state.playbackStopTimer) {
+    window.clearInterval(state.playbackStopTimer);
+    state.playbackStopTimer = 0;
   }
 }
 
@@ -388,6 +436,7 @@ function scheduleLegacyFullscreenRestart(state) {
 function restartLegacyForFullscreen(state) {
   state.fullscreenRestartTimer = 0;
   state.playbackKey = "";
+  clearStoredDemoStopTimer(state);
 
   try {
     state.agentAbort?.abort();
@@ -484,6 +533,7 @@ function syncPlaybackState(state) {
 
   if (!active) {
     state.playbackKey = "";
+    clearStoredDemoStopTimer(state);
   }
   return active;
 }
@@ -528,6 +578,7 @@ function syncOverlayState(state) {
   state.els.delete.title = hasRecord ? "Delete stored recording" : "No stored recording to delete";
   state.els.refresh.title = getRefreshTitle(state.currentState);
   state.els.agent.title = agentButtonState.title;
+  state.els.agent.setAttribute("aria-label", agentButtonState.title);
   state.els.god.title = godModeSupported
     ? godModeActive
       ? "God mode is on"

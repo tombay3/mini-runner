@@ -1,4 +1,14 @@
-﻿Here is a quick overview of the GitHub repository `SimonHung/LodeRunner_TotalRecall`:
+﻿Here is a quick overview of the GitHub repository `SimonHung/LodeRunner_TotalRecall`.
+
+Current local additions on top of the original legacy game:
+- root Vite entrypoint in [index.html](../index.html) and [src/app.js](../src/app.js)
+- wrapper icon rail and recording controls in [src/recording.js](../src/recording.js)
+- browser-side AI loop in [src/agent.js](../src/agent.js)
+- Flask recording/agent API in [app.py](../app.py)
+- V2 candidate-agent backend in [agent/](../agent)
+
+The original `public/game/*` CreateJS runtime remains the gameplay source of truth.
+
 - Standalone browser-only Web-based platform game clone, written in pure-Vanilla Javascript
 - Open-source HTML5 "Total Recall" remake of the classic 1983 retro game **Lode Runner**
 - Goal: collect gold while avoiding enemies with ladders/ropes, and digging traps
@@ -83,7 +93,7 @@ Here is a one-page summary documenting the project's technical details.
 
 ### Notable Information
 
-* **No Build Step Required:** The project is written to run directly in the browser without any transpiration or bundling.
-* **Local Server Needed:** To play locally, it requires a simple web server (like `python -m http.server`). This is a standard requirement for web applications that use features blocked by browser security on `file://` protocols (such as local storage for saving custom levels).
-* **Self-Contained:** The repository includes all necessary assets (images, sounds, level data) to run the game.
-
+* **Legacy runtime:** The original game can still run as static browser code under `public/game`.
+* **Current wrapper:** The local repo now uses Vite at the root for serving/building the wrapper page.
+* **Backend features:** Recording persistence and the LLM agent use Flask APIs and JSON stores under `__data1`.
+* **Self-Contained Assets:** The repository includes the game assets, sounds, level data, and bundled demo data needed by the legacy runtime.

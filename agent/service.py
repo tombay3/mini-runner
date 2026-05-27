@@ -12,8 +12,13 @@ from .config import (
     AGENT_LEVEL,
     AGENT_PLAY_DATA,
     AGENT_TEMPERATURE,
+    ResolvedAgentModel,
+    get_default_model_profile_name,
     get_default_agent_model,
+    get_explicit_provider_configs,
     normalize_model_name,
+    reload_dotenv_files,
+    resolve_model_profile,
 )
 from .errors import AgentConfigError, AgentExecutionError, AgentRequestError
 from .prompt import build_agent_prompt
@@ -23,12 +28,15 @@ from .traces import serialize_step_trace
 
 class AisuiteAgentClient:
     def __init__(self) -> None:
-        self._client = ai.Client()
+        self._clients: dict[str, ai.Client] = {}
 
-    def resolve_model_name(self, model: str | None, *, source: str) -> str:
-        normalized = normalize_model_name(model)
+    def resolve_model_name(self, model: str | None, *, source: str) -> ResolvedAgentModel:
+        error_cls = AgentRequestError if source == "request" else AgentConfigError
+        try:
+            normalized = normalize_model_name(model, require_provider=True)
+        except ValueError as exc:
+            raise error_cls(str(exc)) from exc
         if not normalized:
-            error_cls = AgentRequestError if source == "request" else AgentConfigError
             raise error_cls("agent model is required")
 
         provider_key, _model_name = normalized.split(":", 1)
@@ -38,10 +46,46 @@ class AisuiteAgentClient:
             raise error_cls(
                 f"unsupported provider '{provider_key}'. Supported providers: {sorted(supported)}"
             )
-        return normalized
+        return ResolvedAgentModel(
+            profile="explicit",
+            provider=provider_key,
+            model=normalized,
+            aisuite_provider=provider_key,
+            aisuite_model=normalized,
+            provider_configs=get_explicit_provider_configs(provider_key),
+            source=source,
+        )
 
-    def create_completion(self, model: str, messages: list[dict], **kwargs):
-        return self._client.chat.completions.create(model=model, messages=messages, **kwargs)
+    def resolve_model_profile(self, profile: str | None, *, source: str) -> ResolvedAgentModel:
+        error_cls = AgentRequestError if source == "request" else AgentConfigError
+        try:
+            resolved = resolve_model_profile(profile, source=source)
+        except ValueError as exc:
+            raise error_cls(str(exc)) from exc
+        if resolved is None:
+            raise error_cls("modelProfile is required")
+
+        supported = ProviderFactory.get_supported_providers()
+        if resolved.aisuite_provider not in supported:
+            raise error_cls(
+                f"unsupported provider '{resolved.aisuite_provider}' for profile "
+                f"'{resolved.profile}'. Supported providers: {sorted(supported)}"
+            )
+        return resolved
+
+    def create_completion(self, model: ResolvedAgentModel, messages: list[dict], **kwargs):
+        client = self._get_client(model.provider_configs)
+        return client.chat.completions.create(
+            model=model.aisuite_model,
+            messages=messages,
+            **kwargs,
+        )
+
+    def _get_client(self, provider_configs: dict[str, dict[str, Any]]):
+        cache_key = json.dumps(provider_configs, sort_keys=True)
+        if cache_key not in self._clients:
+            self._clients[cache_key] = ai.Client(provider_configs=provider_configs)
+        return self._clients[cache_key]
 
 
 _CLIENT: AisuiteAgentClient | None = None
@@ -77,6 +121,10 @@ def validate_agent_request(payload: Any) -> tuple[dict[str, Any], list[dict[str,
     if model is not None and not isinstance(model, str):
         raise AgentRequestError("model must be a string")
 
+    model_profile = payload.get("modelProfile")
+    if model_profile is not None and not isinstance(model_profile, str):
+        raise AgentRequestError("modelProfile must be a string")
+
     run_mode = payload.get("runMode", "single")
     if run_mode != "single":
         raise AgentRequestError("runMode must be single")
@@ -87,6 +135,7 @@ def validate_agent_request(payload: Any) -> tuple[dict[str, Any], list[dict[str,
 
     return snapshot, history, {
         "model": model,
+        "modelProfile": model_profile,
         "runMode": run_mode,
         "runId": run_id,
     }
@@ -95,20 +144,31 @@ def validate_agent_request(payload: Any) -> tuple[dict[str, Any], list[dict[str,
 def plan_next_action(
     snapshot: dict[str, Any], history: list[dict[str, Any]], options: dict[str, Any]
 ) -> dict[str, Any]:
+    reload_dotenv_files()
     client = get_aisuite_agent_client()
     requested_model = resolve_requested_model(client, options)
     run_mode = options.get("runMode", "single")
     return run_candidate_selection(snapshot, history, run_mode, requested_model, client)
 
 
-def resolve_requested_model(client, options: dict[str, Any]) -> str:
+def resolve_requested_model(client, options: dict[str, Any]) -> ResolvedAgentModel:
     requested = options.get("model")
     if requested:
         return client.resolve_model_name(requested, source="request")
 
+    requested_profile = options.get("modelProfile")
+    if requested_profile:
+        return client.resolve_model_profile(requested_profile, source="request")
+
+    default_profile = get_default_model_profile_name()
+    if default_profile:
+        return client.resolve_model_profile(default_profile, source="config")
+
     default_model = get_default_agent_model()
     if not default_model:
-        raise AgentConfigError("AGENT_DEFAULT_MODEL or OPENAI_MODEL must be configured")
+        raise AgentConfigError(
+            "AGENT_MODEL_PROFILE or AGENT_DEFAULT_MODEL must be configured"
+        )
     return client.resolve_model_name(default_model, source="config")
 
 
@@ -116,7 +176,7 @@ def run_candidate_selection(
     snapshot: dict[str, Any],
     history: list[dict[str, Any]],
     run_mode: str,
-    requested_model: str,
+    requested_model: ResolvedAgentModel,
     client,
 ) -> dict[str, Any]:
     candidates, analysis = generate_candidates(snapshot, history, limit=7)
@@ -186,8 +246,8 @@ def run_candidate_selection(
         snapshot=snapshot,
         history=history,
         run_mode=run_mode,
-        requested_model=requested_model,
-        selected_model=requested_model,
+        requested_model=requested_model.model,
+        selected_model=requested_model.model,
         action=action,
         planner=planner,
         response=result.get("response"),
@@ -210,7 +270,7 @@ def run_candidate_selection(
 
 def run_model_turn(
     client,
-    model: str,
+    model: ResolvedAgentModel,
     snapshot: dict[str, Any],
     history: list[dict[str, Any]],
     candidates: list[dict[str, Any]],
@@ -377,17 +437,18 @@ def parse_candidate_response(response: Any) -> tuple[dict[str, Any] | None, str 
 
 def build_planner(
     result: dict[str, Any],
-    model: str,
+    model: ResolvedAgentModel,
     selected: dict[str, Any],
     validation: dict[str, Any],
 ) -> dict[str, Any]:
-    provider, _model_name = model.split(":", 1)
     response = result.get("response")
     choices = getattr(response, "choices", None)
     message = getattr(choices[0], "message", None) if choices else None
     return {
-        "provider": provider,
-        "model": model,
+        "modelProfile": model.profile,
+        "provider": model.provider,
+        "model": model.model,
+        "modelSource": model.source,
         "mode": "candidate-selection",
         "generatedAt": getattr(response, "created", None),
         "responseId": getattr(response, "id", None),

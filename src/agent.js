@@ -1,7 +1,10 @@
 const AGENT_API = "/api/agent/next-action";
 const AGENT_PLAY_DATA = 1;
 const AGENT_LEVEL = 1;
-const AGENT_MAX_ITERATIONS = 240;
+const AGENT_MAX_PLAYBACK_TIME = 2 * 60;
+const AGENT_PLAYBACK_TICKS_PER_SECOND = 16;
+const AGENT_MAX_PLAYBACK_TICKS = AGENT_MAX_PLAYBACK_TIME * AGENT_PLAYBACK_TICKS_PER_SECOND;
+const AGENT_MAX_STEPS = 200;
 const AGENT_HISTORY_LIMIT = 24;
 
 export function createAgentController(deps) {
@@ -58,7 +61,7 @@ async function runAgent(state, deps) {
   try {
     hooks.startLevel(AGENT_PLAY_DATA, AGENT_LEVEL);
 
-    for (let iteration = 0; iteration < AGENT_MAX_ITERATIONS; iteration += 1) {
+    for (let stepCount = 0; stepCount < AGENT_MAX_STEPS; stepCount += 1) {
       if (state.agentAbort.signal.aborted) {
         failureReason = "agent cancelled";
         break;
@@ -69,6 +72,10 @@ async function runAgent(state, deps) {
       if (terminal) {
         await finishAgentRun(state, deps, hooks, terminal.demo, terminal.result, terminal.reason);
         return;
+      }
+      if (hasExceededPlaybackTime(before)) {
+        failureReason = "agent max playback time reached";
+        break;
       }
 
       const response = await deps.apiFetch(AGENT_API, {
@@ -106,6 +113,11 @@ async function runAgent(state, deps) {
         history.shift();
       }
 
+      if (hasExceededPlaybackTime(after)) {
+        failureReason = "agent max playback time reached";
+        break;
+      }
+
       const afterTerminal = getTerminalResult(hooks);
       if (afterTerminal) {
         await finishAgentRun(
@@ -119,7 +131,7 @@ async function runAgent(state, deps) {
         return;
       }
     }
-    failureReason = failureReason === "agent stopped" ? "agent max iterations reached" : failureReason;
+    failureReason = failureReason === "agent stopped" ? "agent safety step limit reached" : failureReason;
   } catch (error) {
     failureReason = getErrorMessage(error);
   }
@@ -166,6 +178,21 @@ function normalizeAgentAction(action) {
   };
 }
 
+function hasExceededPlaybackTime(snapshot) {
+  const gameTime = getNumericSnapshotValue(snapshot?.timing?.gameTime ?? snapshot?.time);
+  if (gameTime !== null && gameTime >= AGENT_MAX_PLAYBACK_TIME) {
+    return true;
+  }
+
+  const recordTick = getNumericSnapshotValue(snapshot?.timing?.recordTick ?? snapshot?.tick);
+  return recordTick !== null && recordTick >= AGENT_MAX_PLAYBACK_TICKS;
+}
+
+function getNumericSnapshotValue(value) {
+  const numericValue = Number(value);
+  return Number.isFinite(numericValue) ? numericValue : null;
+}
+
 function summarizeHistorySnapshot(snapshot) {
   if (!snapshot || typeof snapshot !== "object") {
     return {};
@@ -208,6 +235,7 @@ async function saveAgentResult(state, deps, demoData, result, reason) {
   const demo = deps.normalizeDemo(demoData, AGENT_PLAY_DATA, AGENT_LEVEL);
   demo.state = result === "success" ? 1 : 0;
   const solver = {
+    modelProfile: state.agentPlanner?.modelProfile ?? null,
     provider: state.agentPlanner?.provider ?? "openai",
     model: state.agentPlanner?.model ?? null,
     generatedAt: state.agentPlanner?.generatedAt ?? new Date().toISOString(),
@@ -251,15 +279,27 @@ function getErrorMessage(error) {
 
 function getAgentRequestOptions() {
   const options = window.__lodeRunnerAgentOptions;
-  if (!options || typeof options !== "object") {
-    return {};
-  }
-
   const requestOptions = {};
-  if (typeof options.model === "string" && options.model.trim()) {
+  if (options && typeof options === "object" && typeof options.model === "string" && options.model.trim()) {
     requestOptions.model = options.model.trim();
   }
+  const modelProfile = getAgentModelProfileOption(options);
+  if (modelProfile) {
+    requestOptions.modelProfile = modelProfile;
+  }
   return requestOptions;
+}
+
+function getAgentModelProfileOption(options) {
+  const params = new URLSearchParams(window.location.search);
+  const queryProfile = params.get("profile") || params.get("agentModelProfile");
+  if (queryProfile?.trim()) {
+    return queryProfile.trim();
+  }
+  if (options && typeof options === "object" && typeof options.modelProfile === "string") {
+    return options.modelProfile.trim() || null;
+  }
+  return null;
 }
 
 function createRunId() {

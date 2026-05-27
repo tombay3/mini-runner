@@ -164,7 +164,23 @@ def validate_solver(value: Any) -> dict[str, Any] | None:
         return None
     if not isinstance(value, dict):
         raise ValueError("solver must be an object")
-    return value
+
+    allowed_keys = {
+        "modelProfile",
+        "provider",
+        "model",
+        "generatedAt",
+        "responseId",
+        "traceId",
+        "failureReason",
+    }
+    solver = {key: value[key] for key in allowed_keys if key in value and value[key] is not None}
+    for key in ("modelProfile", "provider", "model", "responseId", "traceId", "failureReason"):
+        if key in solver and not isinstance(solver[key], str):
+            raise ValueError(f"solver.{key} must be a string")
+    if "generatedAt" in solver and not isinstance(solver["generatedAt"], (int, float, str)):
+        raise ValueError("solver.generatedAt must be a number or string")
+    return solver or None
 
 
 def validate_trace_ref(value: Any) -> str | None:
@@ -334,6 +350,7 @@ def next_agent_action():
             play_data=snapshot.get("playData", AGENT_PLAY_DATA),
             level=snapshot.get("level", AGENT_LEVEL),
             model=options.get("model"),
+            model_profile=options.get("modelProfile"),
             run_mode=options.get("runMode"),
         )
         plan = plan_next_action(snapshot, history, options)
@@ -391,6 +408,7 @@ def next_agent_action():
         play_data=step_trace["playData"],
         level=step_trace["level"],
         model=plan["planner"].get("model"),
+        model_profile=plan["planner"].get("modelProfile"),
         run_mode=step_trace.get("runMode"),
         key_code=plan["action"].get("keyCode"),
         ticks=plan["action"].get("ticks"),

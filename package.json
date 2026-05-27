@@ -4,7 +4,7 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "api": ".venv/bin/python app.py",
+    "api": "python app.py",
     "dev": "vite --force",
     "build": "vite build"
   },

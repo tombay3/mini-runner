@@ -4,8 +4,9 @@ No files were changed during the contextualization pass. This document is the ru
 
 ## Environment
 
-- Entrypoint is [public/game/lodeRunner.html:1](../public/game/lodeRunner.html), a plain HTML page that loads ordered global scripts and calls `init()` on body load.
-- The game is not currently wired as a normal Vite app. Verification: `npm run build` fails with `Could not resolve entry module "index.html"`, so the repo is effectively a static HTML app wrapped by Vite config rather than a Vite entrypoint.
+- The legacy entrypoint remains [public/game/lodeRunner.html:1](../public/game/lodeRunner.html), a plain HTML page that loads ordered global scripts and calls `init()` on body load.
+- The current repo also has a root Vite entrypoint at [index.html](../index.html). It loads [src/app.js](../src/app.js), recreates the legacy DOM/path context, loads the legacy scripts as globals, and calls `window.init()`.
+- The Vite wrapper preserves `public/game/*` as the gameplay source of truth. Wrapper-owned features live in `src/*`, `app.py`, and `agent/*`.
 
 ## Load Order
 
@@ -25,6 +26,7 @@ No files were changed during the contextualization pass. This document is the ru
   hi-score, info, menu, icon classes, runner, guard, demo, demoData1, edit, preload, theme/color selector, gamepad
 - Orchestration last:
   [public/game/lodeRunner.main.js:64](../public/game/lodeRunner.main.js),
+  wrapper-injected [public/game/lodeRunner.agentHooks.js](../public/game/lodeRunner.agentHooks.js),
   [public/game/lodeRunner.win.js:1](../public/game/lodeRunner.win.js),
   [public/game/lodeRunner.share.js:1](../public/game/lodeRunner.share.js)
 - Practical rule: this codebase is load-order dependent. Later scripts assume earlier globals already exist.
@@ -74,6 +76,7 @@ No files were changed during the contextualization pass. This document is the ru
 ## External Boundaries
 
 - Runtime gameplay is fully local once assets are present.
+- The root Vite wrapper adds a Flask-backed recording and agent API. User and agent recordings are stored in [__data1/recordings.json](../__data1/recordings.json), and the latest agent trace is stored in [__data1/agent-traces.json](../__data1/agent-traces.json).
 - “World demo” data is bundled in UTF-16 [public/game/lodeRunner.wData.js:1](../public/game/lodeRunner.wData.js), and `getDemoData()` in [public/game/lodeRunner.misc.js:275](../public/game/lodeRunner.misc.js) reads those globals directly.
 - Share links are local URL encodings of compressed maps plus metadata in [public/game/lodeRunner.share.js:1](../public/game/lodeRunner.share.js).
 - Backup/restore for custom levels is browser-side file import/export through menu dialogs, not a server workflow.
@@ -87,7 +90,7 @@ No files were changed during the contextualization pass. This document is the ru
 - Editor/test/play flows share persistent transient state. Changing custom-level behavior means touching both `edit.js` and `storage.js`.
 - Theme changes are runtime bitmap rewrites, not CSS skinning. Visual changes usually involve `preload`, `colorTheme`, `iconClass`, and asset assumptions.
 - There is a likely broken edge in share mode: [public/game/lodeRunner.share.js:103](../public/game/lodeRunner.share.js) assigns `PLAY_DATA_SHARE`, but that constant is not defined anywhere in the loaded runtime. Treat share-path work as fragile until that is resolved.
-- The repo includes Vite config, but packaging assumptions do not match the actual HTML entry structure. Any build-system work should be handled as a separate task from gameplay changes.
+- The Vite wrapper and legacy runtime are intentionally separate. Changes to wrapper UI, API, recording, fullscreen, or AI should avoid changing `public/game/*` unless the legacy hook surface explicitly needs to grow.
 
 ## Code Generation Handoff
 
