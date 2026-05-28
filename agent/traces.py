@@ -3,8 +3,6 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from .candidates import analyze_state
-
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
@@ -24,8 +22,8 @@ def coerce_jsonable(value: Any) -> Any:
     return str(value)
 
 
-def summarize_snapshot(snapshot: dict[str, Any], history: list[dict[str, Any]]) -> dict[str, Any]:
-    analysis = analyze_state(snapshot, history)
+def summarize_state(snapshot: dict[str, Any], analysis: dict[str, Any] | None) -> dict[str, Any]:
+    analysis = analysis or {}
     return {
         "gameState": analysis.get("gameState"),
         "tick": snapshot.get("tick"),
@@ -47,46 +45,45 @@ def summarize_snapshot(snapshot: dict[str, Any], history: list[dict[str, Any]]) 
     }
 
 
+def summarize_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": candidate.get("id"),
+        "kind": candidate.get("kind"),
+        "score": candidate.get("score"),
+        "baseScore": candidate.get("baseScore"),
+        "stallBlocked": candidate.get("stallBlocked", False),
+        "stallRecovery": candidate.get("stallRecovery", False),
+        "target": candidate.get("target"),
+        "firstAction": candidate.get("firstAction"),
+        "goal": candidate.get("goal"),
+        "reason": candidate.get("reason"),
+    }
+
+
+def summarize_candidates(candidates: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    return [summarize_candidate(candidate) for candidate in candidates or []]
+
+
 def serialize_step_trace(
     *,
     snapshot: dict[str, Any],
     history: list[dict[str, Any]],
-    run_mode: str,
-    requested_model: str,
-    selected_model: str,
     action: dict[str, Any],
     planner: dict[str, Any],
-    response: Any,
-    guardrail: dict[str, Any] | None = None,
     candidates: list[dict[str, Any]] | None = None,
     selected_candidate: dict[str, Any] | None = None,
     validation: dict[str, Any] | None = None,
     analysis: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    final_message = None
-    intermediate_messages = []
-    if hasattr(response, "choices") and response.choices:
-        final_message = getattr(response.choices[0], "message", None)
-        intermediate_messages = getattr(response.choices[0], "intermediate_messages", []) or []
-
     return {
         "createdAt": utc_now(),
-        "runMode": run_mode,
-        "requestedModel": requested_model,
-        "selectedModel": selected_model,
-        "snapshot": summarize_snapshot(snapshot, history),
-        "analysis": coerce_jsonable(analysis),
-        "candidates": coerce_jsonable(candidates),
-        "selectedCandidate": coerce_jsonable(selected_candidate),
+        "state": coerce_jsonable(summarize_state(snapshot, analysis)),
+        "candidates": coerce_jsonable(summarize_candidates(candidates)),
+        "selectedCandidateId": (selected_candidate or {}).get("id"),
+        "selectedCandidateKind": (selected_candidate or {}).get("kind"),
         "validation": coerce_jsonable(validation),
         "historyTail": coerce_jsonable(history[-8:]),
         "action": coerce_jsonable(action),
         "planner": coerce_jsonable(planner),
-        "guardrail": coerce_jsonable(guardrail),
-        "finalMessage": coerce_jsonable(final_message),
-        "intermediateMessages": coerce_jsonable(intermediate_messages),
-        "response": {
-            "id": getattr(response, "id", None),
-            "model": getattr(response, "model", None),
-        },
+        "stallSupervisor": coerce_jsonable((planner or {}).get("stallSupervisor")),
     }

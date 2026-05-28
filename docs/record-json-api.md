@@ -3,48 +3,50 @@
 ## Summary
 The wrapper persists replayable demos through the Flask API while leaving `public/game/*` as the gameplay source of truth.
 
-Current mutable store:
+Mutable store:
 
 - [__data1/recordings.json](../__data1/recordings.json)
 
-The store keeps one latest recording per `playData` / `level` slot. User recordings and agent recordings share the same replay path.
+The store is a flat V2-only map of up to 10 newest records. There is no nested `playData` / `level` bucket schema and no migration from older shapes.
 
 ## API
-- `GET /api/recordings`: returns the full store.
-- `GET /api/recordings/<playData>/<level>`: returns one record or `404`.
-- `PUT /api/recordings/<playData>/<level>`: upserts one record.
-- `DELETE /api/recordings/<playData>/<level>`: removes one record.
+- `GET /api/recordings`: returns the full flat store.
+- `GET /api/recordings/<playData>/<level>`: returns the newest matching record or `404`.
+- `PUT /api/recordings/<playData>/<level>`: saves a new flat record and prunes the store to 10 newest records.
+- `DELETE /api/recordings/<playData>/<level>`: deletes the newest matching record and its linked trace when present.
+- `DELETE /api/recordings/<playData>/<level>?traceId=<traceId>`: deletes that record id and the matching agent trace.
 
 Agent trace helpers:
 
-- `GET /api/agent/traces/<trace_id>`: returns the latest retained trace payload.
+- `GET /api/agent/traces/<trace_id>`: returns one retained trace run.
 - `GET /api/agent/runs/<playData>/<level>`: returns latest run metadata plus saved recording if present.
 
-## Record Shape
-Records are stored by numeric string keys:
-
+## Store Shape
 ```json
 {
   "version": 1,
-  "updatedAt": "2026-05-03T00:00:00.000Z",
-  "recordings": {
-    "1": {
-      "1": {
-        "playData": 1,
-        "level": 1,
-        "savedAt": "2026-05-03T00:00:00.000Z",
-        "source": "agent",
-        "result": "failure",
-        "solver": {
-          "traceId": "..."
-        },
-        "traceRef": "...",
-        "demo": {}
-      }
+  "updatedAt": "2026-05-28T00:00:00.000Z",
+  "records": {
+    "<recordId>": {
+      "id": "<recordId>",
+      "playData": 1,
+      "level": 1,
+      "savedAt": "2026-05-28T00:00:00.000Z",
+      "source": "agent",
+      "result": "failure",
+      "traceId": "<traceId>",
+      "solver": {},
+      "demo": {}
     }
   }
 }
 ```
+
+Record ids:
+
+- Agent recordings use `traceId` as `id`.
+- User recordings use `user:<timestamp>` unless an explicit `id` is sent.
+- Incoming `traceRef` is accepted only as a temporary request alias and is stored as `traceId`.
 
 `source` is usually:
 
@@ -65,6 +67,7 @@ Manual user recordings are persisted only when the legacy runtime promotes a com
 - `PLAY_MODERN`
 
 Failed manual attempts are not saved by default.
+Stored-demo playback started from the wrapper `Play` button is also not saved as a new user recording, even if the replay completes successfully.
 
 ## Agent Recording Flow
 [src/agent.js](../src/agent.js) runs the AI loop through [public/game/lodeRunner.agentHooks.js](../public/game/lodeRunner.agentHooks.js).
@@ -73,7 +76,8 @@ At the end of an agent run:
 
 - success saves `source="agent"` and `result="success"`.
 - failure saves `source="agent"` and `result="failure"`.
-- solver metadata and `traceRef` link the recording to the latest agent trace.
+- `traceId` links the recording to the matching agent trace.
+- the recording `id` is the same value as `traceId`.
 
 Solver metadata is intentionally logical/user-facing:
 
@@ -99,6 +103,14 @@ The wrapper playback button:
 
 Playback still uses the legacy demo engine. The wrapper does not introduce a new legacy `PLAY_*` constant.
 
+## Deletion
+The delete button removes the current stored recording.
+
+- If the current record has `traceId`, the wrapper calls `DELETE ...?traceId=<traceId>`.
+- The backend deletes the flat record whose `id` equals that value.
+- The backend also deletes the matching retained trace run.
+- The response includes `latestRecord`, which lets the rail fall back to the next newest matching recording when one exists.
+
 ## Wrapper UI
 The recording UI is a CSS-first left icon rail in [src/recording.js](../src/recording.js) and [src/style.css](../src/style.css).
 
@@ -107,7 +119,7 @@ Current rail actions:
 - `AI`: run the Classic level 1 agent.
 - `Play`: play the stored recording.
 - `Refresh`: refresh recording availability.
-- `Delete`: delete the stored recording.
+- `Delete`: delete the current stored recording and linked agent trace when `traceId` exists.
 - `Star`: toggle legacy god mode.
 - `Fullscreen`: enter/exit fullscreen and soft-reinitialize the legacy game.
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,6 +23,12 @@ from agent import (
 )
 from agent.logging_utils import configure_logging, get_logger, log_event, normalize_flask_logger
 
+
+if "--debug" in sys.argv:
+    sys.argv.remove("--debug")
+    os.environ["AGENT_DEBUG_LOG"] = "1"
+    os.environ["APP_LOG_LEVEL"] = "DEBUG"
+
 configure_logging()
 LOGGER = get_logger("app")
 
@@ -32,6 +39,8 @@ STORE_PATH = Path(__file__).resolve().parent / "__data1" / "recordings.json"
 TRACE_STORE_PATH = Path(__file__).resolve().parent / "__data1" / "agent-traces.json"
 STORE_VERSION = 1
 TRACE_STORE_VERSION = 1
+TRACE_RUN_LIMIT = 10
+RECORDING_RUN_LIMIT = 10
 _store_lock = Lock()
 _trace_store_lock = Lock()
 
@@ -50,11 +59,11 @@ def utc_now() -> str:
 
 
 def empty_store() -> dict[str, Any]:
-    return {"version": STORE_VERSION, "updatedAt": None, "recordings": {}}
+    return {"version": STORE_VERSION, "updatedAt": None, "records": {}}
 
 
 def empty_trace_store() -> dict[str, Any]:
-    return {"version": TRACE_STORE_VERSION, "updatedAt": None, "runs": {}, "latestRuns": {}}
+    return {"version": TRACE_STORE_VERSION, "updatedAt": None, "runs": {}}
 
 
 def normalize_id(value: str, name: str) -> str:
@@ -107,13 +116,61 @@ def load_store() -> dict[str, Any]:
     data = load_json_store(STORE_PATH, empty_store)
     data.setdefault("version", STORE_VERSION)
     data.setdefault("updatedAt", None)
-    if not isinstance(data.get("recordings"), dict):
-        data["recordings"] = {}
+    if not isinstance(data.get("records"), dict):
+        data["records"] = {}
     return data
 
 
 def save_store(store: dict[str, Any]) -> None:
     save_json_store(STORE_PATH, store)
+
+
+def recording_sort_key(record: dict[str, Any]) -> str:
+    value = record.get("savedAt") or ""
+    return str(value)
+
+
+def sorted_record_items(records: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+    retained = sorted(
+        (
+            (index, str(record_id), record)
+            for index, (record_id, record) in enumerate(records.items())
+            if isinstance(record, dict)
+        ),
+        key=lambda item: (recording_sort_key(item[2]), item[0]),
+        reverse=True,
+    )
+    return [(record_id, record) for _index, record_id, record in retained]
+
+
+def prune_recordings(store: dict[str, Any]) -> None:
+    records = store.get("records")
+    if not isinstance(records, dict):
+        store["records"] = {}
+        return
+    store["records"] = dict(sorted_record_items(records)[:RECORDING_RUN_LIMIT])
+
+
+def find_latest_recording(store: dict[str, Any], play_data: str, level: str) -> dict[str, Any] | None:
+    records = store.get("records", {})
+    if not isinstance(records, dict):
+        return None
+    for _record_id, record in sorted_record_items(records):
+        if str(record.get("playData")) == play_data and str(record.get("level")) == level:
+            return record
+    return None
+
+
+def delete_trace_run(trace_id: str | None) -> bool:
+    if not trace_id:
+        return False
+    with _trace_store_lock:
+        store = load_trace_store()
+        existed = store["runs"].pop(trace_id, None) is not None
+        if existed:
+            store["updatedAt"] = utc_now()
+            save_trace_store(store)
+        return existed
 
 
 def load_trace_store() -> dict[str, Any]:
@@ -122,8 +179,6 @@ def load_trace_store() -> dict[str, Any]:
     data.setdefault("updatedAt", None)
     if not isinstance(data.get("runs"), dict):
         data["runs"] = {}
-    if not isinstance(data.get("latestRuns"), dict):
-        data["latestRuns"] = {}
     return data
 
 
@@ -183,17 +238,82 @@ def validate_solver(value: Any) -> dict[str, Any] | None:
     return solver or None
 
 
-def validate_trace_ref(value: Any) -> str | None:
+def validate_trace_id(value: Any) -> str | None:
     if value is None:
         return None
     if not isinstance(value, str) or not value.strip():
-        raise ValueError("traceRef must be a string")
+        raise ValueError("traceId must be a string")
     return value.strip()
+
+
+def validate_record_id(value: Any) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("id must be a string")
+    return value.strip()
+
+
+def trace_model_summary(planner: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(planner, dict):
+        return None
+    summary = {
+        key: planner.get(key)
+        for key in ("modelProfile", "provider", "model", "modelSource")
+        if planner.get(key) is not None
+    }
+    return summary or None
+
+
+def trace_sort_key(run: dict[str, Any]) -> str:
+    value = run.get("updatedAt") or run.get("createdAt") or ""
+    return str(value)
+
+
+def prune_trace_runs(store: dict[str, Any]) -> None:
+    runs = store.get("runs", {})
+    if not isinstance(runs, dict) or len(runs) <= TRACE_RUN_LIMIT:
+        return
+    retained = sorted(
+        runs.items(),
+        key=lambda item: trace_sort_key(item[1]) if isinstance(item[1], dict) else "",
+        reverse=True,
+    )[:TRACE_RUN_LIMIT]
+    store["runs"] = dict(retained)
+
+
+def summarize_trace_run(trace_id: str, run: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "traceId": trace_id,
+        "playData": run.get("playData"),
+        "level": run.get("level"),
+        "updatedAt": run.get("updatedAt"),
+        "stepCount": run.get("stepCount", 0),
+        "latestAction": run.get("latestAction"),
+        "model": run.get("model"),
+    }
+
+
+def find_latest_trace_run(store: dict[str, Any], play_data: str, level: str) -> dict[str, Any] | None:
+    latest: tuple[str, dict[str, Any]] | None = None
+    runs = store.get("runs", {})
+    if not isinstance(runs, dict):
+        return None
+
+    for trace_id, run in runs.items():
+        if not isinstance(run, dict):
+            continue
+        if str(run.get("playData")) != play_data or str(run.get("level")) != level:
+            continue
+        if latest is None or trace_sort_key(run) > trace_sort_key(latest[1]):
+            latest = (trace_id, run)
+    if latest is None:
+        return None
+    return summarize_trace_run(*latest)
 
 
 def append_trace_step(run_id: str, step_trace: dict[str, Any]) -> dict[str, Any]:
     now = utc_now()
-    context_key = f"{step_trace['playData']}:{step_trace['level']}"
 
     with _trace_store_lock:
         store = load_trace_store()
@@ -205,13 +325,10 @@ def append_trace_step(run_id: str, step_trace: dict[str, Any]) -> dict[str, Any]
                 "updatedAt": now,
                 "playData": step_trace["playData"],
                 "level": step_trace["level"],
-                "requestedModel": step_trace["requestedModel"],
-                "runMode": step_trace["runMode"],
+                "model": trace_model_summary(step_trace.get("planner")),
                 "steps": [],
             }
-            # Retain only the newest trace run. A new run replaces the previous persisted trace.
-            store["runs"] = {run_id: run}
-            store["latestRuns"] = {}
+            store["runs"][run_id] = run
         step_index = len(run["steps"])
         stored_step = dict(step_trace)
         stored_step["stepIndex"] = step_index
@@ -219,21 +336,12 @@ def append_trace_step(run_id: str, step_trace: dict[str, Any]) -> dict[str, Any]
         run["updatedAt"] = now
         run["stepCount"] = len(run["steps"])
         run["latestAction"] = stored_step.get("action")
-        run["latestPlanner"] = stored_step.get("planner")
+        run["model"] = trace_model_summary(stored_step.get("planner"))
 
-        store["latestRuns"][context_key] = {
-            "traceId": run_id,
-            "playData": step_trace["playData"],
-            "level": step_trace["level"],
-            "runMode": step_trace["runMode"],
-            "requestedModel": step_trace["requestedModel"],
-            "updatedAt": now,
-            "stepCount": run["stepCount"],
-            "latestAction": stored_step.get("action"),
-        }
+        prune_trace_runs(store)
         store["updatedAt"] = now
         save_trace_store(store)
-        return run
+        return store["runs"][run_id]
 
 
 @app.get("/api/health")
@@ -257,7 +365,7 @@ def get_recording(play_data: str, level: str):
 
     with _store_lock:
         store = load_store()
-        record = store["recordings"].get(play_data_key, {}).get(level_key)
+        record = find_latest_recording(store, play_data_key, level_key)
     if record is None:
         return jsonify({"error": "recording not found"}), 404
     return jsonify(record)
@@ -275,7 +383,12 @@ def put_recording(play_data: str, level: str):
         source = validate_source(payload.get("source"))
         result = validate_result(payload.get("result"), demo)
         solver = validate_solver(payload.get("solver"))
-        trace_ref = validate_trace_ref(payload.get("traceRef"))
+        trace_id = validate_trace_id(payload.get("traceId", payload.get("traceRef")))
+        record_id = validate_record_id(payload.get("id"))
+        if source == "agent" and trace_id is None:
+            raise ValueError("agent recording requires traceId")
+        if source == "agent" and record_id is not None and record_id != trace_id:
+            raise ValueError("agent recording id must match traceId")
     except ValueError as exc:
         log_event(
             LOGGER,
@@ -288,7 +401,9 @@ def put_recording(play_data: str, level: str):
         return jsonify({"error": str(exc)}), 400
 
     now = utc_now()
+    record_id = trace_id if source == "agent" else record_id or f"user:{now}"
     record = {
+        "id": record_id,
         "playData": int(play_data_key),
         "level": int(level_key),
         "savedAt": now,
@@ -298,15 +413,16 @@ def put_recording(play_data: str, level: str):
     }
     if solver is not None:
         record["solver"] = solver
-    if trace_ref is not None:
-        record["traceRef"] = trace_ref
+    if trace_id is not None:
+        record["traceId"] = trace_id
 
     with _store_lock:
         try:
             store = load_store()
             store["version"] = STORE_VERSION
             store["updatedAt"] = now
-            store["recordings"].setdefault(play_data_key, {})[level_key] = record
+            store["records"][record_id] = record
+            prune_recordings(store)
             save_store(store)
         except Exception as exc:
             log_event(
@@ -329,7 +445,7 @@ def put_recording(play_data: str, level: str):
             play_data=play_data_key,
             level=level_key,
             result=result,
-            trace_id=trace_ref,
+            trace_id=trace_id,
             model=(solver or {}).get("model"),
         )
 
@@ -342,24 +458,13 @@ def next_agent_action():
     try:
         snapshot, history, options = validate_agent_request(payload)
         run_id = options.get("runId") or f"trace-{utc_now()}"
-        log_event(
-            LOGGER,
-            logging.INFO,
-            "agent_request_received",
-            run_id=run_id,
-            play_data=snapshot.get("playData", AGENT_PLAY_DATA),
-            level=snapshot.get("level", AGENT_LEVEL),
-            model=options.get("model"),
-            model_profile=options.get("modelProfile"),
-            run_mode=options.get("runMode"),
-        )
         plan = plan_next_action(snapshot, history, options)
     except AgentRequestError as exc:
         log_event(
             LOGGER,
             logging.WARNING,
             "agent_request_invalid",
-            run_id=(payload or {}).get("runId"),
+            trace_id=(payload or {}).get("runId"),
             error=exc,
         )
         return jsonify({"error": str(exc)}), 400
@@ -368,7 +473,7 @@ def next_agent_action():
             LOGGER,
             logging.ERROR,
             "agent_config_error",
-            run_id=(payload or {}).get("runId"),
+            trace_id=(payload or {}).get("runId"),
             error=exc,
         )
         return jsonify({"error": str(exc)}), 503
@@ -377,7 +482,7 @@ def next_agent_action():
             LOGGER,
             logging.ERROR,
             "agent_execution_failed",
-            run_id=(payload or {}).get("runId"),
+            trace_id=(payload or {}).get("runId"),
             error=exc,
         )
         return jsonify({"error": "agent execution failed", "detail": str(exc)}), 502
@@ -392,7 +497,7 @@ def next_agent_action():
             LOGGER,
             logging.ERROR,
             "agent_trace_persist_failed",
-            run_id=run_id,
+            trace_id=run_id,
             play_data=step_trace["playData"],
             level=step_trace["level"],
             error=exc,
@@ -404,12 +509,10 @@ def next_agent_action():
         logging.INFO,
         "agent_step_selected",
         trace_id=run_id,
-        run_id=run_id,
         play_data=step_trace["playData"],
         level=step_trace["level"],
         model=plan["planner"].get("model"),
         model_profile=plan["planner"].get("modelProfile"),
-        run_mode=step_trace.get("runMode"),
         key_code=plan["action"].get("keyCode"),
         ticks=plan["action"].get("ticks"),
         candidate_id=plan.get("candidateId"),
@@ -448,13 +551,12 @@ def get_agent_run(play_data: str, level: str):
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
 
-    context_key = f"{play_data_key}:{level_key}"
     with _trace_store_lock:
         trace_store = load_trace_store()
-        latest_run = trace_store["latestRuns"].get(context_key)
+        latest_run = find_latest_trace_run(trace_store, play_data_key, level_key)
     with _store_lock:
         recording_store = load_store()
-        recording = recording_store["recordings"].get(play_data_key, {}).get(level_key)
+        recording = find_latest_recording(recording_store, play_data_key, level_key)
     if latest_run is None and recording is None:
         return jsonify({"error": "agent run not found"}), 404
     return jsonify({"latestRun": latest_run, "recording": recording})
@@ -468,17 +570,38 @@ def delete_recording(play_data: str, level: str):
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
 
+    selected_trace_id = request.args.get("traceId") or None
+    deleted_trace_id = None
+    latest_record = None
     with _store_lock:
         store = load_store()
-        version_records = store["recordings"].get(play_data_key, {})
-        existed = level_key in version_records
-        version_records.pop(level_key, None)
-        if not version_records:
-            store["recordings"].pop(play_data_key, None)
+        records = store.get("records", {})
+        existed = False
+        if isinstance(records, dict):
+            if selected_trace_id:
+                record_key = selected_trace_id
+                record = records.pop(record_key, None)
+            else:
+                record = find_latest_recording(store, play_data_key, level_key)
+                record_key = record.get("id") if isinstance(record, dict) else None
+                if record_key:
+                    record = records.pop(str(record_key), None)
+            existed = isinstance(record, dict)
+            deleted_trace_id = record.get("traceId") if existed else selected_trace_id
+            prune_recordings(store)
+            latest_record = find_latest_recording(store, play_data_key, level_key)
         store["updatedAt"] = utc_now()
         save_store(store)
 
-    return jsonify({"deleted": existed})
+    trace_deleted = delete_trace_run(deleted_trace_id) if existed else False
+    return jsonify(
+        {
+            "deleted": existed,
+            "traceDeleted": trace_deleted,
+            "traceId": deleted_trace_id,
+            "latestRecord": latest_record,
+        }
+    )
 
 
 if __name__ == "__main__":

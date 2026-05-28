@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 import aisuite as ai
@@ -20,10 +21,15 @@ from .config import (
     reload_dotenv_files,
     resolve_model_profile,
 )
+from .debug_io import append_model_io_debug
 from .errors import AgentConfigError, AgentExecutionError, AgentRequestError
+from .logging_utils import get_logger, log_event, refresh_app_log_level
 from .prompt import build_agent_prompt
 from .stall_tools import is_candidate_blocked
 from .traces import serialize_step_trace
+
+
+LOGGER = get_logger("service")
 
 
 class AisuiteAgentClient:
@@ -125,10 +131,6 @@ def validate_agent_request(payload: Any) -> tuple[dict[str, Any], list[dict[str,
     if model_profile is not None and not isinstance(model_profile, str):
         raise AgentRequestError("modelProfile must be a string")
 
-    run_mode = payload.get("runMode", "single")
-    if run_mode != "single":
-        raise AgentRequestError("runMode must be single")
-
     run_id = payload.get("runId")
     if run_id is not None and not isinstance(run_id, str):
         raise AgentRequestError("runId must be a string")
@@ -136,7 +138,6 @@ def validate_agent_request(payload: Any) -> tuple[dict[str, Any], list[dict[str,
     return snapshot, history, {
         "model": model,
         "modelProfile": model_profile,
-        "runMode": run_mode,
         "runId": run_id,
     }
 
@@ -145,10 +146,10 @@ def plan_next_action(
     snapshot: dict[str, Any], history: list[dict[str, Any]], options: dict[str, Any]
 ) -> dict[str, Any]:
     reload_dotenv_files()
+    refresh_app_log_level()
     client = get_aisuite_agent_client()
     requested_model = resolve_requested_model(client, options)
-    run_mode = options.get("runMode", "single")
-    return run_candidate_selection(snapshot, history, run_mode, requested_model, client)
+    return run_candidate_selection(snapshot, history, requested_model, client, options)
 
 
 def resolve_requested_model(client, options: dict[str, Any]) -> ResolvedAgentModel:
@@ -175,15 +176,15 @@ def resolve_requested_model(client, options: dict[str, Any]) -> ResolvedAgentMod
 def run_candidate_selection(
     snapshot: dict[str, Any],
     history: list[dict[str, Any]],
-    run_mode: str,
     requested_model: ResolvedAgentModel,
     client,
+    options: dict[str, Any],
 ) -> dict[str, Any]:
     candidates, analysis = generate_candidates(snapshot, history, limit=7)
     if not candidates:
         raise AgentExecutionError("candidate generator produced no valid actions")
 
-    result = run_model_turn(client, requested_model, snapshot, history, candidates, analysis)
+    result = run_model_turn(client, requested_model, snapshot, history, candidates, analysis, options)
     selected, validation = validate_or_fallback_candidate(result, candidates, analysis)
     stall_supervisor = build_stall_supervisor(validation, analysis)
     if validation.get("stallBlocked"):
@@ -200,6 +201,7 @@ def run_candidate_selection(
             history,
             candidates,
             analysis,
+            options,
             retry_note=retry_note,
         )
         retry_selected, retry_validation = validate_or_fallback_candidate(
@@ -238,20 +240,15 @@ def run_candidate_selection(
             }
 
     action = dict(selected["firstAction"])
-    planner = build_planner(result, requested_model, selected, validation)
+    planner = build_planner(result, requested_model, validation)
     planner["candidateCount"] = len(candidates)
     planner["stallSupervisor"] = stall_supervisor
 
     trace = serialize_step_trace(
         snapshot=snapshot,
         history=history,
-        run_mode=run_mode,
-        requested_model=requested_model.model,
-        selected_model=requested_model.model,
         action=action,
         planner=planner,
-        response=result.get("response"),
-        guardrail=stall_supervisor,
         candidates=candidates,
         selected_candidate=selected,
         validation=validation,
@@ -275,8 +272,16 @@ def run_model_turn(
     history: list[dict[str, Any]],
     candidates: list[dict[str, Any]],
     analysis: dict[str, Any],
+    options: dict[str, Any],
     retry_note: str | None = None,
 ) -> dict[str, Any]:
+    prompt = build_agent_prompt(
+        snapshot,
+        history,
+        candidates=candidates,
+        analysis=analysis,
+        retry_note=retry_note,
+    )
     messages = [
         {
             "role": "system",
@@ -287,13 +292,7 @@ def run_model_turn(
         },
         {
             "role": "user",
-            "content": build_agent_prompt(
-                snapshot,
-                history,
-                candidates=candidates,
-                analysis=analysis,
-                retry_note=retry_note,
-            ),
+            "content": prompt,
         },
     ]
 
@@ -314,6 +313,18 @@ def run_model_turn(
         raise AgentExecutionError(str(exc)) from exc
 
     choice, parse_error = parse_candidate_response(response)
+    try:
+        append_model_io_debug(
+            trace_id=options.get("runId"),
+            model=model.model,
+            retry=retry_note is not None,
+            prompt=prompt,
+            response=response,
+            parse_error=parse_error,
+            selected_candidate_id=(choice or {}).get("candidateId"),
+        )
+    except Exception as exc:  # noqa: BLE001
+        log_event(LOGGER, logging.WARNING, "agent_debug_io_write_failed", error=exc)
     return {
         "choice": choice,
         "parseError": parse_error,
@@ -438,12 +449,9 @@ def parse_candidate_response(response: Any) -> tuple[dict[str, Any] | None, str 
 def build_planner(
     result: dict[str, Any],
     model: ResolvedAgentModel,
-    selected: dict[str, Any],
     validation: dict[str, Any],
 ) -> dict[str, Any]:
     response = result.get("response")
-    choices = getattr(response, "choices", None)
-    message = getattr(choices[0], "message", None) if choices else None
     return {
         "modelProfile": model.profile,
         "provider": model.provider,
@@ -452,9 +460,6 @@ def build_planner(
         "mode": "candidate-selection",
         "generatedAt": getattr(response, "created", None),
         "responseId": getattr(response, "id", None),
-        "reasoningContent": getattr(message, "reasoning_content", None),
-        "selectedCandidateId": selected["id"],
-        "selectedCandidateKind": selected["kind"],
         "fallbackUsed": validation["fallbackUsed"],
         "fallbackReason": validation["fallbackReason"],
         "candidateCount": None,

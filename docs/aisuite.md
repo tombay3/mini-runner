@@ -169,6 +169,8 @@ This keeps the default runtime deterministic and traceable while still addressin
 
 The V2 prompt is intentionally smaller than the older prompt. It prefers object-centric state and candidate targets over asking the model to parse the full 28x16 board every step.
 
+Set `AGENT_DEBUG_LOG=1` or run `python app.py --debug` to write raw prompt/model I/O to `__data1/agent-debug.log`. The debug log keeps only the latest 10 model turns and is separate from the lean trace store.
+
 The model should reason over the supplied candidates, not generate raw moves. Candidate legality, movement feasibility, dig feasibility, god-mode behavior, and route-access opportunities are computed before the model call.
 
 ## API Surface
@@ -188,7 +190,6 @@ Request fields:
 Current limits:
 
 - only Classic `playData=1`, `level=1`
-- only `runMode="single"` if `runMode` is supplied
 - no current benchmark mode
 - no current benchmark-model request handling
 
@@ -212,9 +213,9 @@ Returns latest run metadata and the saved recording for that level if present.
 Current stores:
 
 - [__data1/recordings.json](../__data1/recordings.json): replayable user and agent demos.
-- [__data1/agent-traces.json](../__data1/agent-traces.json): latest retained agent trace.
+- [__data1/agent-traces.json](../__data1/agent-traces.json): recent retained agent traces.
 
-Trace retention is intentionally shallow. A new run replaces the previous retained trace. Recordings keep only the latest record for each `playData` / `level` slot.
+Trace retention is intentionally bounded to the 10 newest runs. Recordings keep only the latest record for each `playData` / `level` slot.
 
 Trace steps are candidate-centric and include:
 
@@ -227,7 +228,7 @@ Trace steps are candidate-centric and include:
 - validation/retry/fallback outcome
 - model profile/provider metadata
 
-Recordings reference traces with `traceRef` and can include solver metadata such as source, result, model, provider, failure reason, and trace ID.
+Recordings reference traces with `traceId` and can include solver metadata such as source, result, model, provider, failure reason, and trace ID.
 
 ## What Is Not Current Runtime Behavior
 These older design ideas are not part of the current V2 runtime:

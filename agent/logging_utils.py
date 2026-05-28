@@ -12,12 +12,22 @@ APP_LOGGER_NAME = "loderunner.agent"
 _CONFIGURED = False
 
 
+def debug_log_enabled() -> bool:
+    return os.environ.get("AGENT_DEBUG_LOG", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def effective_app_log_level_name() -> str:
+    if debug_log_enabled():
+        return "DEBUG"
+    return os.environ.get("APP_LOG_LEVEL", "INFO").upper()
+
+
 def configure_logging() -> logging.Logger:
     global _CONFIGURED
     if _CONFIGURED:
         return logging.getLogger(APP_LOGGER_NAME)
 
-    app_level_name = os.environ.get("APP_LOG_LEVEL", "INFO").upper()
+    app_level_name = effective_app_log_level_name()
     app_level = getattr(logging, app_level_name, logging.INFO)
     log_format = os.environ.get("APP_LOG_FORMAT", "plain").lower()
     format_string = (
@@ -68,8 +78,18 @@ def configure_logging() -> logging.Logger:
     return logger
 
 
+def refresh_app_log_level() -> None:
+    app_level_name = effective_app_log_level_name()
+    app_level = getattr(logging, app_level_name, logging.INFO)
+    logger = logging.getLogger(APP_LOGGER_NAME)
+    logger.setLevel(app_level)
+    for handler in logger.handlers:
+        handler.setLevel(app_level)
+
+
 def normalize_flask_logger(app) -> None:
     base_logger = configure_logging()
+    refresh_app_log_level()
     app_logger = app.logger
 
     if default_handler in app_logger.handlers:

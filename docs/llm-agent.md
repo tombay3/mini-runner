@@ -157,7 +157,7 @@ Saved agent recordings include:
 - `source: "agent"`
 - `result: "success"` or `"failure"`
 - `solver`
-- `traceRef`
+- `traceId`
 - `demo`
 
 The recording `solver` stores logical model metadata such as `modelProfile`, `provider`, `model`, `responseId`, `traceId`, and optional `failureReason`. Obsolete transport fields such as `aisuiteProvider` / `aisuiteModel` are not stored in recordings.

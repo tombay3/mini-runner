@@ -33,6 +33,7 @@ export function installRecording() {
     refreshTimer: 0,
     fullscreenRestartTimer: 0,
     playbackStopTimer: 0,
+    playbackSaveGuard: null,
     els: {},
   };
   agentController.initState(state);
@@ -68,6 +69,9 @@ async function saveCompletedRecording(state, playData, demoDataInfo) {
   const level = Number(demoDataInfo?.level);
 
   if (!isBuiltInPlayData(playDataId) || !Number.isInteger(level) || level <= 0) {
+    return;
+  }
+  if (isStoredPlaybackSave(state, playDataId, level, demoDataInfo)) {
     return;
   }
   if (Number(demoDataInfo?.state) !== 1) {
@@ -279,9 +283,13 @@ async function deleteCurrentRecording(state) {
 
   setUiState(state, state.currentRecord ? "available" : "missing", "delete");
   try {
-    await apiFetch(`${API_BASE}/${context.playData}/${context.level}`, { method: "DELETE" });
-    state.currentRecord = null;
-    setUiState(state, "missing");
+    const traceId = state.currentRecord?.traceId;
+    const query = traceId ? `?traceId=${encodeURIComponent(traceId)}` : "";
+    const result = await apiFetch(`${API_BASE}/${context.playData}/${context.level}${query}`, {
+      method: "DELETE",
+    });
+    state.currentRecord = result.latestRecord ?? null;
+    setUiState(state, state.currentRecord ? "available" : "missing");
   } catch (_error) {
     setUiState(state, "error");
   }
@@ -304,6 +312,7 @@ function startStoredDemo(state, demo, context) {
   window.playerDemoData[context.level - 1] = demo;
   window.demoSoundOff = 1;
   window.playMode = window.PLAY_DEMO_ONCE;
+  state.playbackSaveGuard = createPlaybackSaveGuard(demo, context);
 
   if (typeof window.anyKeyStopDemo === "function") {
     window.anyKeyStopDemo();
@@ -313,6 +322,49 @@ function startStoredDemo(state, demo, context) {
     window.setTimeout(() => window.showTipsText("HIT ANY KEY TO STOP DEMO", 3500), 50);
   }
   scheduleFailedDemoStop(state, demo, context);
+}
+
+function createPlaybackSaveGuard(demo, context) {
+  return {
+    key: getContextKey(context),
+    actionLength: copyArray(demo?.action).length,
+    goldDropLength: copyArray(demo?.goldDrop).length,
+    bornPosLength: copyArray(demo?.bornPos).length,
+    time: Number(demo?.time ?? 0),
+    expiresAt: Date.now() + 10 * 60 * 1000,
+  };
+}
+
+function isStoredPlaybackSave(state, playData, level, demoDataInfo) {
+  const guard = state.playbackSaveGuard;
+  if (!guard) {
+    return false;
+  }
+  if (Date.now() > guard.expiresAt) {
+    state.playbackSaveGuard = null;
+    return false;
+  }
+
+  const key = getContextKey({ playData, level });
+  if (key !== guard.key) {
+    return false;
+  }
+
+  const actionLength = copyArray(demoDataInfo?.action).length;
+  const goldDropLength = copyArray(demoDataInfo?.goldDrop).length;
+  const bornPosLength = copyArray(demoDataInfo?.bornPos).length;
+  const time = Number(demoDataInfo?.time ?? 0);
+  const matchesPlayedDemo =
+    actionLength === guard.actionLength &&
+    goldDropLength === guard.goldDropLength &&
+    bornPosLength === guard.bornPosLength &&
+    time === guard.time;
+
+  if (matchesPlayedDemo || Number(window.playMode) === Number(window.PLAY_DEMO_ONCE)) {
+    state.playbackSaveGuard = null;
+    return true;
+  }
+  return false;
 }
 
 function scheduleFailedDemoStop(state, demo, context) {

@@ -251,7 +251,7 @@ async function saveAgentResult(state, deps, demoData, result, reason) {
       source: "agent",
       result,
       solver,
-      traceRef: state.agentTraceId ?? null,
+      traceId: state.agentTraceId ?? null,
     }),
   });
   state.currentRecord = record;
