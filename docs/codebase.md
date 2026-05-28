@@ -1,110 +1,71 @@
-# LodeRunner_TotalRecall Codebase Context
+# Codebase Overview
 
-No files were changed during the contextualization pass. This document is the runtime-first handoff for the current `LodeRunner_TotalRecall` codebase.
+## Summary
+This repository runs Lode Runner Total Recall through a root Vite wrapper while preserving the original CreateJS runtime under `public/game/*`.
 
-## Environment
+Current layers:
 
-- The legacy entrypoint remains [public/game/lodeRunner.html:1](../public/game/lodeRunner.html), a plain HTML page that loads ordered global scripts and calls `init()` on body load.
-- The current repo also has a root Vite entrypoint at [index.html](../index.html). It loads [src/app.js](../src/app.js), recreates the legacy DOM/path context, loads the legacy scripts as globals, and calls `window.init()`.
-- The Vite wrapper preserves `public/game/*` as the gameplay source of truth. Wrapper-owned features live in `src/*`, `app.py`, and `agent/*`.
+- `public/game/*`: legacy gameplay, rendering, menus, input, editor, demo recording, and demo playback.
+- `src/*`: Vite wrapper boot, recording/playback rail, browser AI loop, and host styles.
+- `app.py`: Flask API for recordings, traces, model calls, and local JSON stores.
+- `agent/*`: candidate-agent backend analysis, prompting, model calls, traces, and stall handling.
 
-## Load Order
+## Root Boot Flow
+1. Vite serves `index.html`.
+2. `index.html` provides the root `<canvas id="canvas">`.
+3. `src/app.js` inserts `<base href="/game/">`, loads ordered legacy scripts from `/game`, loads `lodeRunner.agentHooks.js` after `lodeRunner.main.js`, then calls `window.init()`.
+4. The legacy runtime creates additional canvases and icon layers on `document.body`.
 
-- Boot/data first:
-  [public/game/lodeRunner.wData.js:1](../public/game/lodeRunner.wData.js),
-  CreateJS libs,
-  [public/game/flag32Id.js:1](../public/game/flag32Id.js),
-  [public/game/lodeRunner.gameVerName.js:1](../public/game/lodeRunner.gameVerName.js)
-- Content second:
-  version files `lodeRunner.v.*.js` define built-in level arrays.
-- Core globals/utilities next:
-  [public/game/lodeRunner.storage.js:1](../public/game/lodeRunner.storage.js),
-  [public/game/lodeRunner.def.js:1](../public/game/lodeRunner.def.js),
-  [public/game/lodeRunner.key.js:1](../public/game/lodeRunner.key.js),
-  [public/game/lodeRunner.misc.js:1](../public/game/lodeRunner.misc.js)
-- UI/game systems:
-  hi-score, info, menu, icon classes, runner, guard, demo, demoData1, edit, preload, theme/color selector, gamepad
-- Orchestration last:
-  [public/game/lodeRunner.main.js:64](../public/game/lodeRunner.main.js),
-  wrapper-injected [public/game/lodeRunner.agentHooks.js](../public/game/lodeRunner.agentHooks.js),
-  [public/game/lodeRunner.win.js:1](../public/game/lodeRunner.win.js),
-  [public/game/lodeRunner.share.js:1](../public/game/lodeRunner.share.js)
-- Practical rule: this codebase is load-order dependent. Later scripts assume earlier globals already exist.
+The wrapper uses same-document globals. It does not iframe the game and does not convert legacy scripts into modules.
 
-## Architecture Brief
+## Legacy Runtime
+Important legacy files:
 
-- Initialization lives in [public/game/lodeRunner.main.js:64](../public/game/lodeRunner.main.js). `init()` sizes the canvas, creates the stage, loads local state, initializes menus/demo/edit metadata, then starts the cover-page preload flow.
-- Asset bootstrapping lives in [public/game/lodeRunner.preload.js:38](../public/game/lodeRunner.preload.js). It loads cover assets first, then all theme sprites, icons, sounds, and sprite sheets, and finally enables play UI.
-- The runtime loop is in `mainTick()` in [public/game/lodeRunner.main.js:1338](../public/game/lodeRunner.main.js). It is a state machine over `GAME_*` constants, not an entity/component architecture.
-- Map construction is centralized in `buildLevelMap()` in [public/game/lodeRunner.main.js:389](../public/game/lodeRunner.main.js). Each tile becomes `map[x][y] = { base, act, bitmap }`, with `base` for terrain and `act` for dynamic occupancy.
-- Runner behavior is in [public/game/lodeRunner.runner.js:8](../public/game/lodeRunner.runner.js). It owns movement rules, dig/fill-hole lifecycle, gold pickup, collision checks, and hidden-ladder reveal triggers.
-- Guard AI is in [public/game/lodeRunner.guard.js:28](../public/game/lodeRunner.guard.js). It uses grid/path heuristics plus version-sensitive behavior gated by `AI_VERSION` and `curAiVersion`.
-- Menus and mode switching are split between [public/game/lodeRunner.menu.js:1633](../public/game/lodeRunner.menu.js) and [public/game/lodeRunner.iconClass.js:1](../public/game/lodeRunner.iconClass.js). Menu dialogs choose mode/version/level; icon classes pause runtime, open dialogs, and resume.
-- The editor is a full mode, not a small overlay. [public/game/lodeRunner.edit.js:55](../public/game/lodeRunner.edit.js) owns custom-map editing, test mode, save/load, copy/paste, and re-entry into gameplay.
+- `lodeRunner.main.js`: initialization, canvas sizing, state machine, map build, and `mainTick()`.
+- `lodeRunner.runner.js`: runner movement, digging, gold pickup, collisions, and exit ladder behavior.
+- `lodeRunner.guard.js`: guard movement, chase logic, trapping, gold carrying, and respawn.
+- `lodeRunner.demo.js`: demo recording and playback.
+- `lodeRunner.menu.js` and `lodeRunner.iconClass.js`: menus, side icons, mode transitions, and UI dialogs.
+- `lodeRunner.storage.js`: local game settings, scores, custom levels, and editor state.
 
-## Feature Ownership
+The legacy runtime is load-order dependent and uses shared globals.
 
-- Game constants, tile encoding, play/game states, storage keys: [public/game/lodeRunner.def.js:1](../public/game/lodeRunner.def.js)
-- Main startup, stage lifecycle, map build, game loop, transitions, level progression: [public/game/lodeRunner.main.js:64](../public/game/lodeRunner.main.js)
-- Asset and sprite/sound bootstrapping: [public/game/lodeRunner.preload.js:38](../public/game/lodeRunner.preload.js)
-- Player movement/dig/hole/gold: [public/game/lodeRunner.runner.js:8](../public/game/lodeRunner.runner.js)
-- Guard movement/AI/reborn/trap handling: [public/game/lodeRunner.guard.js:28](../public/game/lodeRunner.guard.js)
-- Menus, version selection, play-mode entry, backup/restore dialogs: [public/game/lodeRunner.menu.js:1633](../public/game/lodeRunner.menu.js)
-- Toolbar icons and pause/resume wrappers: [public/game/lodeRunner.iconClass.js:1](../public/game/lodeRunner.iconClass.js)
-- Local persistence, custom levels, test-level state, theme/repeat/gamepad/player settings: [public/game/lodeRunner.storage.js:1](../public/game/lodeRunner.storage.js)
-- Demo recording/playback and bundled fast-demo ingestion: [public/game/lodeRunner.demo.js:1](../public/game/lodeRunner.demo.js), [public/game/lodeRunner.wData.js:1](../public/game/lodeRunner.wData.js)
-- Share URL format and import path: [public/game/lodeRunner.share.js:1](../public/game/lodeRunner.share.js)
-- Themes, recoloring, theme selector, gamepad, input, info/help/high score: `colorTheme`, `colorSelector`, `gamepad`, `key`, `info`, `hiscore`
+## Game Data
+Tile maps use fixed 28x16 ASCII grids:
 
-## State And Data Map
+- space / `.` empty
+- `#` diggable brick
+- `@` solid non-diggable block
+- `H` ladder
+- `-` rope
+- `X` trap or dug hole
+- `S` exit ladder
+- `$` gold
+- `0` guard
+- `&` runner
 
-- Play modes in [public/game/lodeRunner.def.js:86](../public/game/lodeRunner.def.js):
-  `PLAY_CLASSIC`, `PLAY_MODERN`, `PLAY_DEMO`, `PLAY_EDIT`, `PLAY_TEST`, `PLAY_AUTO`, `PLAY_DEMO_ONCE`
-- Game states in [public/game/lodeRunner.def.js:89](../public/game/lodeRunner.def.js):
-  `GAME_START`, `GAME_RUNNING`, `GAME_FINISH`, `GAME_FINISH_SCORE_COUNT`, `GAME_WAITING`, `GAME_PAUSE`, `GAME_NEW_LEVEL`, `GAME_RUNNER_DEAD`, `GAME_OVER_ANIMATION`, `GAME_OVER`, `GAME_NEXT_LEVEL`, `GAME_PREV_LEVEL`, `GAME_LOADING`, `GAME_WIN`
-- Tile encoding is fixed 28x16 ASCII maps:
-  space empty, `#` brick, `@` solid, `H` ladder, `-` rope, `X` trap, `S` hidden ladder, `$` gold, `0` guard, `&` runner
-- Built-in content format:
-  each `lodeRunner.v.*.js` exports an array of concatenated 16-row strings
-- Demo format:
-  `{ level, ai, time, state, godMode, action[], goldDrop[], bornPos[] }`
-- Local storage keys:
-  last play mode, classic progress, modern progress, demo progress, first-run marker, modern scores, custom-level progress/scores, edit metadata, per-level custom maps, transient test map, hi-score table, last score, player name, UID, theme mode, per-theme color, repeat-action mode, gamepad mode
-- Custom-level lifecycle:
-  editor writes transient state to `STORAGE_TEST_LEVEL`, successful save commits into `STORAGE_USER_LEVEL###` plus `STORAGE_EDIT_INFO`, and test/play modes rehydrate from that transient state
+Legacy demo records use:
 
-## External Boundaries
+```json
+{ "level": 1, "ai": 4, "time": 90, "state": 1, "godMode": 0, "action": [], "goldDrop": [], "bornPos": [] }
+```
 
-- Runtime gameplay is fully local once assets are present.
-- The root Vite wrapper adds a Flask-backed recording and agent API. User and agent recordings are stored in [__data1/recordings.json](../__data1/recordings.json), and the latest agent trace is stored in [__data1/agent-traces.json](../__data1/agent-traces.json).
-- “World demo” data is bundled in UTF-16 [public/game/lodeRunner.wData.js:1](../public/game/lodeRunner.wData.js), and `getDemoData()` in [public/game/lodeRunner.misc.js:275](../public/game/lodeRunner.misc.js) reads those globals directly.
-- Share links are local URL encodings of compressed maps plus metadata in [public/game/lodeRunner.share.js:1](../public/game/lodeRunner.share.js).
-- Backup/restore for custom levels is browser-side file import/export through menu dialogs, not a server workflow.
-- Hi-scores are local-only in current repo state.
+`demo.action` is a flat array of `[tick, keyCode, tick, keyCode, ...]` pairs.
 
-## Risks For Future Changes
+## Wrapper Responsibilities
+The wrapper adds tooling without replacing legacy gameplay:
 
-- Highest risk is mutable shared global state. Most files read and write the same globals without module boundaries.
-- Load order is semantic, not cosmetic. Moving scripts or converting piecemeal to modules will break hidden dependencies quickly.
-- Mode switching is distributed across `main`, `menu`, `iconClass`, `edit`, and `demo`; gameplay changes often need coordinated edits in more than one file.
-- Editor/test/play flows share persistent transient state. Changing custom-level behavior means touching both `edit.js` and `storage.js`.
-- Theme changes are runtime bitmap rewrites, not CSS skinning. Visual changes usually involve `preload`, `colorTheme`, `iconClass`, and asset assumptions.
-- There is a likely broken edge in share mode: [public/game/lodeRunner.share.js:103](../public/game/lodeRunner.share.js) assigns `PLAY_DATA_SHARE`, but that constant is not defined anywhere in the loaded runtime. Treat share-path work as fragile until that is resolved.
-- The Vite wrapper and legacy runtime are intentionally separate. Changes to wrapper UI, API, recording, fullscreen, or AI should avoid changing `public/game/*` unless the legacy hook surface explicitly needs to grow.
+- recording persistence and selected-run playback;
+- top debug overlay and playback pause/step controls;
+- god-mode and fullscreen convenience buttons;
+- browser-side AI solve loop;
+- agent traces and raw model I/O debug logging through the Flask backend.
 
-## Code Generation Handoff
+Fullscreen changes restart the legacy game from the welcome flow so `init()` recalculates canvas and icon geometry.
 
-- Stable extension seams:
-  new gameplay rules usually belong in `runner.js`, `guard.js`, or `main.js`;
-  new menus/dialogs in `menu.js`;
-  new toolbar actions in `iconClass.js`;
-  new persisted settings in `storage.js` plus `def.js`;
-  new built-in content in `lodeRunner.v.*.js`
-- Fragile seams:
-  anything that changes startup order, global names, mode transitions, or `map[x][y]` semantics
-- Practical rule for follow-up work:
-  decide first whether the change is engine, mode/UI, persistence, or content. That classification predicts the files that must change together better than the file names do.
-
-## Verification
-
-Verification was completed by cross-checking the runtime scripts, bundled data formats, and the current packaging behavior.
+## Current Docs
+- [Assessment](./assessment.md)
+- [Puzzle game rules](./puzzle-game.md)
+- [LLM candidate agent](./llm-agent.md)
+- [Backend spec](./backend-spec.md)
+- [Recording and playback](./record-playback.md)

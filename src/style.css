@@ -39,6 +39,30 @@ body {
   background: rgba(120, 24, 24, 0.94);
 }
 
+.recording-debug-bar {
+  position: fixed;
+  left: 62px;
+  right: 62px;
+  top: 6px;
+  z-index: 2147483645;
+  overflow: hidden;
+  padding: 4px 8px;
+  border-radius: 8px;
+  background: rgba(12, 17, 21, 0.66);
+  color: rgba(245, 247, 250, 0.86);
+  font-size: 16px;
+  line-height: 1.25;
+  letter-spacing: 0.02em;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.recording-debug-bar[hidden] {
+  display: none;
+}
+
 .recording-rail {
   position: fixed;
   left: 12px;
@@ -110,13 +134,15 @@ body {
   border-color: rgba(124, 214, 160, 0.42);
 }
 
-.recording-rail[data-state="error"] .recording-rail-button[data-action="refresh"] {
+.recording-rail[data-state="error"] .recording-rail-button[data-action="prev"],
+.recording-rail[data-state="error"] .recording-rail-button[data-action="next"] {
   color: #ffb4a8;
   border-color: rgba(255, 122, 110, 0.52);
 }
 
 .recording-rail[data-busy="play"] .recording-rail-button[data-action="play"],
-.recording-rail[data-busy="refresh"] .recording-rail-button[data-action="refresh"],
+.recording-rail[data-busy="refresh"] .recording-rail-button[data-action="prev"],
+.recording-rail[data-busy="refresh"] .recording-rail-button[data-action="next"],
 .recording-rail[data-busy="delete"] .recording-rail-button[data-action="delete"] {
   color: #7ac0ff;
   border-color: rgba(122, 192, 255, 0.58);
@@ -131,6 +157,20 @@ body {
 
 .recording-rail[data-playback="true"] .recording-rail-button[data-action="play"]::before {
   transform: translateX(1px);
+}
+
+.recording-rail[data-playback-paused="true"] .recording-rail-button[data-action="play"] {
+  color: #2a1d00;
+  border-color: rgba(255, 190, 88, 0.88);
+  background: #ffbe58;
+  box-shadow: 0 0 0 1px rgba(255, 190, 88, 0.24), 0 0 16px rgba(255, 190, 88, 0.3);
+}
+
+.recording-rail[data-playback-stepping="true"] .recording-rail-button[data-action="play"] {
+  color: #2a1d00;
+  border-color: rgba(255, 214, 72, 0.95);
+  background: #ffd648;
+  box-shadow: 0 0 0 1px rgba(255, 214, 72, 0.3), 0 0 20px rgba(255, 214, 72, 0.42);
 }
 
 .recording-rail[data-god-mode="true"] .recording-rail-button[data-action="god"] {
@@ -157,9 +197,16 @@ body {
   transform: translateY(-1px);
 }
 
-.recording-rail[data-busy="save"] .recording-rail-button[data-action="refresh"] {
+.recording-rail[data-busy="save"] .recording-rail-button[data-action="prev"],
+.recording-rail[data-busy="save"] .recording-rail-button[data-action="next"] {
   color: #7ac0ff;
   border-color: rgba(122, 192, 255, 0.58);
+}
+
+.recording-rail-button[data-action="prev"]::before,
+.recording-rail-button[data-action="next"]::before {
+  font-size: 24px;
+  transform: translateY(-2px);
 }
 
 .recording-rail-button[data-action="agent"]::before {

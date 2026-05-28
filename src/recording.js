@@ -5,9 +5,11 @@ const API_BASE = "/api/recordings";
 const OVERLAY_ID = "recording-overlay";
 const FULLSCREEN_RESTART_DELAY_MS = 180;
 const FAILED_DEMO_STOP_POLL_MS = 100;
+const PLAYBACK_STEP_TIMEOUT_MS = 8000;
 
 const agentController = createAgentController({
   apiFetch,
+  clearPlaybackDebugState,
   getContextKey,
   getCurrentContext,
   normalizeDemo,
@@ -26,6 +28,12 @@ export function installRecording() {
     installed: true,
     currentKey: "",
     currentRecord: null,
+    records: [],
+    selectedRecordIndex: 0,
+    selectedTraceSummary: null,
+    selectedTraceId: "",
+    selectedTraceTicks: [],
+    selectedTraceLoadId: "",
     currentState: "idle",
     busyAction: "",
     playbackKey: "",
@@ -34,6 +42,11 @@ export function installRecording() {
     fullscreenRestartTimer: 0,
     playbackStopTimer: 0,
     playbackSaveGuard: null,
+    playbackPaused: false,
+    playbackStepping: false,
+    playbackStepRaf: 0,
+    playbackStepStartedAt: 0,
+    debugBarRaf: 0,
     els: {},
   };
   agentController.initState(state);
@@ -124,6 +137,7 @@ function createOverlay(state) {
   if (existing) {
     existing.remove();
   }
+  document.querySelectorAll(".recording-debug-bar").forEach((element) => element.remove());
 
   const overlay = document.createElement("section");
   overlay.id = OVERLAY_ID;
@@ -149,10 +163,18 @@ function createOverlay(state) {
     <button
       type="button"
       class="recording-rail-button"
-      data-action="refresh"
-      data-icon="↻"
-      aria-label="Refresh recording status"
-      title="Refresh recording status"
+      data-action="prev"
+      data-icon="‹"
+      aria-label="Previous stored run"
+      title="Previous stored run"
+    ></button>
+    <button
+      type="button"
+      class="recording-rail-button"
+      data-action="next"
+      data-icon="›"
+      aria-label="Next stored run"
+      title="Next stored run"
     ></button>
     <button
       type="button"
@@ -180,20 +202,29 @@ function createOverlay(state) {
     ></button>
   `;
   document.body.appendChild(overlay);
+  const debugBar = document.createElement("div");
+  debugBar.className = "recording-debug-bar";
+  debugBar.hidden = true;
+  debugBar.setAttribute("aria-live", "polite");
+  document.body.appendChild(debugBar);
 
   state.els.overlay = overlay;
+  state.els.debugBar = debugBar;
   state.els.play = overlay.querySelector("[data-action='play']");
-  state.els.refresh = overlay.querySelector("[data-action='refresh']");
+  state.els.prev = overlay.querySelector("[data-action='prev']");
+  state.els.next = overlay.querySelector("[data-action='next']");
   state.els.delete = overlay.querySelector("[data-action='delete']");
   state.els.agent = overlay.querySelector("[data-action='agent']");
   state.els.god = overlay.querySelector("[data-action='god']");
   state.els.fullscreen = overlay.querySelector("[data-action='fullscreen']");
 
-  state.els.play.addEventListener("click", () => void playCurrentRecording(state));
-  state.els.refresh.addEventListener("click", () => void refreshStatus(state, true));
+  state.els.play.addEventListener("click", () => void playOrToggleCurrentRecording(state));
+  state.els.prev.addEventListener("click", () => selectAdjacentRecord(state, -1));
+  state.els.next.addEventListener("click", () => selectAdjacentRecord(state, 1));
   state.els.delete.addEventListener("click", () => void deleteCurrentRecording(state));
   state.els.god.addEventListener("click", () => toggleGodModeFromRail(state));
   state.els.fullscreen.addEventListener("click", () => void toggleFullscreenFromRail(state));
+  window.addEventListener("keydown", (event) => handlePlaybackDebugKeyDown(state, event), true);
   document.addEventListener("fullscreenchange", () => handleFullscreenChange(state));
   document.addEventListener("webkitfullscreenchange", () => handleFullscreenChange(state));
   agentController.bindButton(state, state.els.agent);
@@ -212,20 +243,30 @@ async function refreshWhenLevelChanges(state) {
   if (!key && state.currentState !== "idle") {
     state.currentKey = "";
     state.currentRecord = null;
+    state.records = [];
+    state.selectedRecordIndex = 0;
+    state.selectedTraceSummary = null;
+    clearSelectedTraceTicks(state);
+    clearPlaybackDebugState(state);
     setUiState(state, "idle");
   }
 }
 
 function scheduleRefresh(state) {
   window.clearTimeout(state.saveTimer);
-  state.saveTimer = window.setTimeout(() => void refreshStatus(state), 400);
+  state.saveTimer = window.setTimeout(() => void refreshStatus(state, true), 400);
 }
 
-async function refreshStatus(state, force = false) {
+async function refreshStatus(state, force = false, preferredRecordId = null) {
   const context = getCurrentContext();
   if (!context) {
     state.currentKey = "";
     state.currentRecord = null;
+    state.records = [];
+    state.selectedRecordIndex = 0;
+    state.selectedTraceSummary = null;
+    clearSelectedTraceTicks(state);
+    clearPlaybackDebugState(state);
     setUiState(state, "idle");
     return;
   }
@@ -236,34 +277,150 @@ async function refreshStatus(state, force = false) {
   }
   state.currentKey = key;
 
+  const previousRecordId = preferredRecordId ?? state.currentRecord?.id;
   setUiState(state, state.currentRecord ? "available" : "idle", "refresh");
   try {
-    const record = await apiFetch(`${API_BASE}/${context.playData}/${context.level}`);
-    state.currentRecord = record;
-    setUiState(state, "available");
+    const result = await apiFetch(`${API_BASE}/${context.playData}/${context.level}/records`);
+    setRecordList(state, Array.isArray(result.records) ? result.records : [], previousRecordId);
+    setUiState(state, state.currentRecord ? "available" : "missing");
   } catch (error) {
     if (error.status === 404) {
       state.currentRecord = null;
+      state.records = [];
+      state.selectedRecordIndex = 0;
+      state.selectedTraceSummary = null;
+      clearSelectedTraceTicks(state);
+      clearPlaybackDebugState(state);
       setUiState(state, "missing");
       return;
     }
     state.currentRecord = null;
+    state.records = [];
+    state.selectedRecordIndex = 0;
+    state.selectedTraceSummary = null;
+    clearSelectedTraceTicks(state);
+    clearPlaybackDebugState(state);
     setUiState(state, "error");
   }
 }
 
-async function playCurrentRecording(state) {
+function setRecordList(state, records, preferredRecordId = null) {
+  state.records = records;
+  if (!records.length) {
+    state.selectedRecordIndex = 0;
+    state.currentRecord = null;
+    state.selectedTraceSummary = null;
+    clearSelectedTraceTicks(state);
+    return;
+  }
+
+  const preferredIndex = preferredRecordId
+    ? records.findIndex((record) => record?.id === preferredRecordId)
+    : -1;
+  state.selectedRecordIndex = preferredIndex >= 0 ? preferredIndex : 0;
+  applySelectedRecord(state);
+}
+
+function applySelectedRecord(state) {
+  const record = state.records[state.selectedRecordIndex] ?? null;
+  state.currentRecord = record;
+  state.selectedTraceSummary = record?.trace ?? null;
+  clearSelectedTraceTicks(state);
+  clearPlaybackDebugState(state);
+  syncOverlayState(state);
+  void loadSelectedTraceTicks(state, record);
+}
+
+async function loadSelectedTraceTicks(state, record) {
+  const traceId = record?.traceId;
+  if (typeof traceId !== "string" || !traceId) {
+    return;
+  }
+
+  state.selectedTraceLoadId = traceId;
+  try {
+    const trace = await apiFetch(`/api/agent/traces/${encodeURIComponent(traceId)}`);
+    if (state.selectedTraceLoadId !== traceId || state.currentRecord?.traceId !== traceId) {
+      return;
+    }
+    state.selectedTraceId = traceId;
+    state.selectedTraceTicks = extractTraceStepTicks(trace);
+    syncOverlayState(state);
+  } catch (_error) {
+    if (state.selectedTraceLoadId === traceId) {
+      state.selectedTraceId = "";
+      state.selectedTraceTicks = [];
+      syncOverlayState(state);
+    }
+  }
+}
+
+function extractTraceStepTicks(trace) {
+  if (!Array.isArray(trace?.steps)) {
+    return [];
+  }
+  return trace.steps
+    .map((step) => getTraceStepTick(step))
+    .filter((tick) => Number.isFinite(tick))
+    .sort((left, right) => left - right);
+}
+
+function getTraceStepTick(step) {
+  const stateTick = getFiniteNumber(step?.state?.tick);
+  if (stateTick !== null) {
+    return stateTick;
+  }
+  const history = Array.isArray(step?.historyTail) ? step.historyTail : [];
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    const tick = getFiniteNumber(history[index]?.tick);
+    if (tick !== null) {
+      return tick;
+    }
+  }
+  return null;
+}
+
+function clearSelectedTraceTicks(state) {
+  state.selectedTraceId = "";
+  state.selectedTraceTicks = [];
+  state.selectedTraceLoadId = "";
+}
+
+function selectAdjacentRecord(state, delta) {
+  if (state.records.length <= 1 || state.busyAction) {
+    return;
+  }
+  const count = state.records.length;
+  state.selectedRecordIndex = (state.selectedRecordIndex + delta + count) % count;
+  state.playbackKey = "";
+  clearStoredDemoStopTimer(state);
+  applySelectedRecord(state);
+  setUiState(state, state.currentRecord ? "available" : "missing");
+}
+
+async function playOrToggleCurrentRecording(state) {
   const context = getCurrentContext();
   if (!context) {
+    clearPlaybackDebugState(state);
     setUiState(state, "idle");
+    return;
+  }
+
+  if (isWrapperPlaybackActive(state)) {
+    toggleStoredPlaybackPause(state);
     return;
   }
 
   setUiState(state, state.currentRecord ? "available" : "missing", "play");
   try {
-    const record =
-      state.currentRecord ??
-      (await apiFetch(`${API_BASE}/${context.playData}/${context.level}`));
+    if (!state.currentRecord) {
+      await refreshStatus(state, true);
+    }
+    const record = state.currentRecord;
+    if (!record) {
+      setUiState(state, "missing");
+      return;
+    }
     const demo = normalizeDemo(record.demo, context.playData, context.level);
     startStoredDemo(state, demo, context);
     state.playbackKey = getContextKey(context);
@@ -277,22 +434,36 @@ async function playCurrentRecording(state) {
 async function deleteCurrentRecording(state) {
   const context = getCurrentContext();
   if (!context) {
+    clearPlaybackDebugState(state);
     setUiState(state, "idle");
     return;
   }
 
   setUiState(state, state.currentRecord ? "available" : "missing", "delete");
   try {
+    const nextRecord = getRecordAfterDelete(state);
+    const recordId = state.currentRecord?.id;
     const traceId = state.currentRecord?.traceId;
-    const query = traceId ? `?traceId=${encodeURIComponent(traceId)}` : "";
+    const query = recordId
+      ? `?recordId=${encodeURIComponent(recordId)}`
+      : traceId
+        ? `?traceId=${encodeURIComponent(traceId)}`
+        : "";
     const result = await apiFetch(`${API_BASE}/${context.playData}/${context.level}${query}`, {
       method: "DELETE",
     });
-    state.currentRecord = result.latestRecord ?? null;
-    setUiState(state, state.currentRecord ? "available" : "missing");
+    await refreshStatus(state, true, nextRecord?.id ?? result.latestRecord?.id ?? null);
   } catch (_error) {
     setUiState(state, "error");
   }
+}
+
+function getRecordAfterDelete(state) {
+  if (state.records.length <= 1) {
+    return null;
+  }
+  const nextIndex = Math.min(state.selectedRecordIndex, state.records.length - 2);
+  return state.records.filter((_record, index) => index !== state.selectedRecordIndex)[nextIndex] ?? null;
 }
 
 function startStoredDemo(state, demo, context) {
@@ -300,6 +471,7 @@ function startStoredDemo(state, demo, context) {
     throw new Error("legacy startGame is unavailable");
   }
 
+  clearPlaybackDebugState(state);
   clearStoredDemoStopTimer(state);
 
   if (!Array.isArray(window.playerDemoData)) {
@@ -382,6 +554,9 @@ function scheduleFailedDemoStop(state, demo, context) {
       clearStoredDemoStopTimer(state);
       return;
     }
+    if (state.playbackPaused) {
+      return;
+    }
     if (Number(window.demoTickCount) >= demoTime) {
       stopFailedDemoPlayback(state);
     }
@@ -390,6 +565,7 @@ function scheduleFailedDemoStop(state, demo, context) {
 
 function stopFailedDemoPlayback(state) {
   clearStoredDemoStopTimer(state);
+  clearPlaybackDebugState(state);
   if ("ACT_STOP" in window) {
     window.keyAction = window.ACT_STOP;
   }
@@ -407,6 +583,183 @@ function clearStoredDemoStopTimer(state) {
   if (state.playbackStopTimer) {
     window.clearInterval(state.playbackStopTimer);
     state.playbackStopTimer = 0;
+  }
+}
+
+function handlePlaybackDebugKeyDown(state, event) {
+  if (!isWrapperPlaybackActive(state)) {
+    return;
+  }
+
+  const isSpace = event.code === "Space" || event.key === " ";
+  const isPeriod = event.code === "Period" || event.key === ".";
+  if (!isSpace && !isPeriod) {
+    return;
+  }
+
+  event.preventDefault();
+  event.stopPropagation();
+  event.stopImmediatePropagation?.();
+
+  if (isSpace) {
+    toggleStoredPlaybackPause(state);
+    return;
+  }
+  if (state.playbackPaused) {
+    stepStoredPlaybackSegment(state);
+  }
+}
+
+function isWrapperPlaybackActive(state) {
+  if (!state.playbackKey) {
+    return false;
+  }
+  const context = getCurrentContext();
+  return Boolean(
+    context &&
+      getContextKey(context) === state.playbackKey &&
+      Number(window.playMode) === Number(window.PLAY_DEMO_ONCE),
+  );
+}
+
+function toggleStoredPlaybackPause(state) {
+  if (state.playbackStepping) {
+    return;
+  }
+  if (state.playbackPaused) {
+    resumeStoredPlayback(state);
+  } else {
+    pauseStoredPlayback(state);
+  }
+}
+
+function pauseStoredPlayback(state, { showTip = true } = {}) {
+  if (!isWrapperPlaybackActive(state)) {
+    clearPlaybackDebugState(state);
+    return false;
+  }
+  if (typeof window.gamePause === "function" && Number(window.gameState) !== Number(window.GAME_PAUSE)) {
+    window.gamePause();
+  }
+  if (typeof window.stopPlayTicker === "function") {
+    window.stopPlayTicker();
+  }
+  if (typeof window.stopAllSpriteObj === "function") {
+    window.stopAllSpriteObj();
+  }
+  state.playbackPaused = true;
+  if (showTip && typeof window.showTipsText === "function") {
+    window.showTipsText("DEMO PAUSED", 0);
+  }
+  syncOverlayState(state);
+  return true;
+}
+
+function resumeStoredPlayback(state, { showTip = true } = {}) {
+  if (!isWrapperPlaybackActive(state)) {
+    clearPlaybackDebugState(state);
+    return false;
+  }
+  if (typeof window.gameResume === "function" && Number(window.gameState) === Number(window.GAME_PAUSE)) {
+    window.gameResume();
+  }
+  if (typeof window.startAllSpriteObj === "function") {
+    window.startAllSpriteObj();
+  }
+  if (typeof window.startPlayTicker === "function") {
+    window.startPlayTicker();
+  }
+  state.playbackPaused = false;
+  if (showTip && typeof window.showTipsText === "function") {
+    window.showTipsText("", 1000);
+  }
+  syncOverlayState(state);
+  return true;
+}
+
+function stepStoredPlaybackSegment(state) {
+  if (!state.playbackPaused || state.playbackStepping || !isWrapperPlaybackActive(state)) {
+    return;
+  }
+
+  const startRecordIdx = getFiniteNumber(window.demoRecordIdx);
+  const startTick = getFiniteNumber(window.demoTickCount);
+  state.playbackStepping = true;
+  state.playbackStepStartedAt = performance.now();
+  resumeStoredPlayback(state, { showTip: false });
+  syncOverlayState(state);
+
+  const pollStep = (now) => {
+    if (!state.playbackStepping) {
+      return;
+    }
+    if (!isWrapperPlaybackActive(state)) {
+      clearPlaybackDebugState(state);
+      syncOverlayState(state);
+      return;
+    }
+
+    const currentRecordIdx = getFiniteNumber(window.demoRecordIdx);
+    const currentTick = getFiniteNumber(window.demoTickCount);
+    const advancedByRecord =
+      startRecordIdx !== null && currentRecordIdx !== null && currentRecordIdx > startRecordIdx;
+    const advancedByTick =
+      startRecordIdx === null && startTick !== null && currentTick !== null && currentTick > startTick;
+    const timedOut = now - state.playbackStepStartedAt >= PLAYBACK_STEP_TIMEOUT_MS;
+
+    if (advancedByRecord || advancedByTick || timedOut) {
+      state.playbackStepRaf = 0;
+      state.playbackStepping = false;
+      pauseStoredPlayback(state, { showTip: !timedOut });
+      if (timedOut && typeof window.showTipsText === "function") {
+        window.showTipsText("DEMO STEP TIMEOUT", 2500);
+      }
+      syncOverlayState(state);
+      return;
+    }
+
+    state.playbackStepRaf = window.requestAnimationFrame(pollStep);
+  };
+
+  state.playbackStepRaf = window.requestAnimationFrame(pollStep);
+}
+
+function getFiniteNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function clearPlaybackDebugState(state) {
+  if (state.playbackStepRaf) {
+    window.cancelAnimationFrame(state.playbackStepRaf);
+  }
+  stopDebugBarRefresh(state);
+  state.playbackPaused = false;
+  state.playbackStepping = false;
+  state.playbackStepRaf = 0;
+  state.playbackStepStartedAt = 0;
+}
+
+function startDebugBarRefresh(state) {
+  if (state.debugBarRaf) {
+    return;
+  }
+  const tick = () => {
+    state.debugBarRaf = 0;
+    if (!isWrapperPlaybackActive(state)) {
+      syncDebugBar(state);
+      return;
+    }
+    syncDebugBar(state);
+    state.debugBarRaf = window.requestAnimationFrame(tick);
+  };
+  state.debugBarRaf = window.requestAnimationFrame(tick);
+}
+
+function stopDebugBarRefresh(state) {
+  if (state.debugBarRaf) {
+    window.cancelAnimationFrame(state.debugBarRaf);
+    state.debugBarRaf = 0;
   }
 }
 
@@ -488,6 +841,7 @@ function scheduleLegacyFullscreenRestart(state) {
 function restartLegacyForFullscreen(state) {
   state.fullscreenRestartTimer = 0;
   state.playbackKey = "";
+  clearPlaybackDebugState(state);
   clearStoredDemoStopTimer(state);
 
   try {
@@ -575,6 +929,7 @@ function exitFullscreen() {
 function syncPlaybackState(state) {
   const playbackKey = state.playbackKey;
   if (!playbackKey) {
+    clearPlaybackDebugState(state);
     return false;
   }
 
@@ -585,6 +940,7 @@ function syncPlaybackState(state) {
 
   if (!active) {
     state.playbackKey = "";
+    clearPlaybackDebugState(state);
     clearStoredDemoStopTimer(state);
   }
   return active;
@@ -598,6 +954,7 @@ function syncOverlayState(state) {
 
   const hasRecord = Boolean(state.currentRecord);
   const playbackActive = syncPlaybackState(state);
+  const playbackPaused = playbackActive && state.playbackPaused;
   const godModeActive = Number(window.godMode) === 1;
   const godModeSupported = typeof window.toggleGodMode === "function";
   const fullscreenActive = isFullscreenActive();
@@ -605,6 +962,8 @@ function syncOverlayState(state) {
   overlay.dataset.state = state.currentState;
   overlay.dataset.hasRecord = hasRecord ? "true" : "false";
   overlay.dataset.playback = playbackActive ? "true" : "false";
+  overlay.dataset.playbackPaused = playbackPaused ? "true" : "false";
+  overlay.dataset.playbackStepping = state.playbackStepping ? "true" : "false";
   overlay.dataset.godMode = godModeActive ? "true" : "false";
   overlay.dataset.fullscreen = fullscreenActive ? "true" : "false";
 
@@ -615,20 +974,42 @@ function syncOverlayState(state) {
   }
 
   state.els.play.disabled = !hasRecord || Boolean(state.busyAction);
-  state.els.delete.disabled = !hasRecord || Boolean(state.busyAction);
-  state.els.refresh.disabled = Boolean(state.busyAction);
+  state.els.delete.disabled = !hasRecord || Boolean(state.busyAction) || playbackActive;
+  const canNavigateRecords = state.records.length > 1 && !state.busyAction && !playbackActive;
+  state.els.prev.disabled = !canNavigateRecords;
+  state.els.next.disabled = !canNavigateRecords;
   const agentButtonState = agentController.getButtonState(state);
   state.els.agent.disabled = agentButtonState.disabled;
   state.els.god.disabled = !godModeSupported || Boolean(state.busyAction);
   state.els.fullscreen.disabled = !fullscreenSupported || Boolean(state.busyAction);
 
-  state.els.play.title = playbackActive
-    ? "Stored recording is playing"
+  state.els.play.dataset.icon = playbackPaused ? "▶" : playbackActive ? "⏸" : "▶";
+  const playTitle = state.playbackStepping
+    ? "Stepping to next recorded action"
+    : playbackPaused
+      ? "Resume demo playback"
+      : playbackActive
+        ? "Pause demo playback"
+        : hasRecord
+          ? "Play stored recording"
+          : "No stored recording for this level";
+  state.els.play.title = playTitle;
+  state.els.play.setAttribute("aria-label", playTitle);
+  state.els.delete.title = playbackActive
+    ? "Stop playback before deleting"
     : hasRecord
-      ? "Play stored recording"
-      : "No stored recording for this level";
-  state.els.delete.title = hasRecord ? "Delete stored recording" : "No stored recording to delete";
-  state.els.refresh.title = getRefreshTitle(state.currentState);
+      ? "Delete stored recording"
+      : "No stored recording to delete";
+  state.els.prev.title = playbackActive
+    ? "Stop playback before selecting another run"
+    : canNavigateRecords
+      ? "Previous stored run"
+      : "No previous stored run";
+  state.els.next.title = playbackActive
+    ? "Stop playback before selecting another run"
+    : canNavigateRecords
+      ? "Next stored run"
+      : "No next stored run";
   state.els.agent.title = agentButtonState.title;
   state.els.agent.setAttribute("aria-label", agentButtonState.title);
   state.els.god.title = godModeSupported
@@ -641,19 +1022,111 @@ function syncOverlayState(state) {
       ? "Exit full screen"
       : "Enter full screen"
     : "Full screen unavailable";
+  syncDebugBar(state);
+  if (playbackActive) {
+    startDebugBarRefresh(state);
+  } else {
+    stopDebugBarRefresh(state);
+  }
 }
 
-function getRefreshTitle(uiState) {
-  switch (uiState) {
-    case "available":
-      return "Stored recording available";
-    case "missing":
-      return "No stored recording for this level";
-    case "error":
-      return "Recording API unavailable";
-    default:
-      return "Refresh recording status";
+function syncDebugBar(state) {
+  const debugBar = state.els.debugBar;
+  if (!debugBar) {
+    return;
   }
+  if (!state.currentRecord || state.agentRunning || state.busyAction === "agent") {
+    debugBar.hidden = true;
+    debugBar.textContent = "";
+    return;
+  }
+
+  debugBar.hidden = false;
+  debugBar.textContent = formatDebugLine(state);
+}
+
+function formatDebugLine(state) {
+  const record = state.currentRecord;
+  const trace = state.selectedTraceSummary;
+  const model = record?.solver?.model ?? trace?.model?.model ?? "unknown";
+  return [
+    `run ${state.selectedRecordIndex + 1}/${Math.max(state.records.length, 1)}`,
+    `${record.source ?? "unknown"} ${record.result ?? "unknown"}`,
+    `trace ${shortId(record.traceId)}`,
+    `model ${model}`,
+    `demo ${formatDemoTime(record.demo?.time)}`,
+    formatPlaybackProgress(state),
+  ].join(" | ");
+}
+
+function shortId(value) {
+  return typeof value === "string" && value ? value.slice(0, 8) : "none";
+}
+
+function formatDemoTime(value) {
+  const time = Number(value);
+  if (!Number.isFinite(time) || time <= 0) {
+    return "-";
+  }
+  return `${Math.round(time)}s`;
+}
+
+function formatPlaybackProgress(state) {
+  const record = state.currentRecord;
+  const trace = state.selectedTraceSummary;
+  const traceStepCount = getPositiveInteger(trace?.stepCount);
+  if (record?.traceId && traceStepCount !== null) {
+    if (isWrapperPlaybackActive(state)) {
+      const traceProgress = getTracePlaybackProgress(state, traceStepCount);
+      return `steps ${traceProgress}/${traceStepCount}`;
+    }
+    return `steps ${traceStepCount}`;
+  }
+
+  const demoStepCount = getDemoStepCount(record?.demo);
+  if (isWrapperPlaybackActive(state)) {
+    return `keys ${getDemoRecordProgress(demoStepCount)}/${demoStepCount}`;
+  }
+  return `keys ${demoStepCount}`;
+}
+
+function getTracePlaybackProgress(state, total) {
+  if (state.selectedTraceId !== state.currentRecord?.traceId || !state.selectedTraceTicks.length) {
+    return "-";
+  }
+  const currentTick = getFiniteNumber(window.demoTickCount);
+  if (currentTick === null) {
+    return 0;
+  }
+  let count = 0;
+  for (const tick of state.selectedTraceTicks) {
+    if (tick > currentTick) {
+      break;
+    }
+    count += 1;
+  }
+  return Math.min(Math.max(count, 0), total);
+}
+
+function getDemoRecordProgress(total) {
+  const currentIndex = getFiniteNumber(window.demoRecordIdx);
+  if (currentIndex === null) {
+    return 0;
+  }
+  return Math.min(Math.max(Math.floor(currentIndex), 0), total);
+}
+
+function getDemoStepCount(demo) {
+  const action = Array.isArray(demo?.action) ? demo.action : [];
+  return Math.floor(action.length / 2);
+}
+
+function getPositiveInteger(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0) {
+    return null;
+  }
+  return Math.floor(number);
 }
 
 async function apiFetch(url, options) {

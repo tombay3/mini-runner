@@ -1,13 +1,6 @@
-﻿Here is a quick overview of the GitHub repository `SimonHung/LodeRunner_TotalRecall`.
+﻿# Project Assessment
 
-Current local additions on top of the original legacy game:
-- root Vite entrypoint in [index.html](../index.html) and [src/app.js](../src/app.js)
-- wrapper icon rail and recording controls in [src/recording.js](../src/recording.js)
-- browser-side AI loop in [src/agent.js](../src/agent.js)
-- Flask recording/agent API in [app.py](../app.py)
-- V2 candidate-agent backend in [agent/](../agent)
-
-The original `public/game/*` CreateJS runtime remains the gameplay source of truth.
+The original GitHub repository `SimonHung/LodeRunner_TotalRecall` is preserved in `public/game/*` with only minimal modifications.  Its CreateJS runtime remains the gameplay source of truth.
 
 - Standalone browser-only Web-based platform game clone, written in pure-Vanilla Javascript
 - Open-source HTML5 "Total Recall" remake of the classic 1983 retro game **Lode Runner**
@@ -93,7 +86,8 @@ Here is a one-page summary documenting the project's technical details.
 
 ### Notable Information
 
-* **Legacy runtime:** The original game can still run as static browser code under `public/game`.
-* **Current wrapper:** The local repo now uses Vite at the root for serving/building the wrapper page.
-* **Backend features:** Recording persistence and the LLM agent use Flask APIs and JSON stores under `__data1`.
-* **Self-Contained Assets:** The repository includes the game assets, sounds, level data, and bundled demo data needed by the legacy runtime.
+* **Legacy runtime:** The original game is still playable as static browser code under `public/game`.
+* **Wrapper runtime:** leverage the legacy game as executor, recorder, renderer, and playback engine.
+* **Python Backend:** Record & playback and the LLM agent use Flask APIs and JSON stores under `__data1`.
+* **Game Assets:** includes sounds, level data, and bundled demo data as-is from legacy runtime.
+* All development happens in the wrapper/backend. Legacy files only need to expose existing runtime state.

@@ -161,6 +161,17 @@ def find_latest_recording(store: dict[str, Any], play_data: str, level: str) -> 
     return None
 
 
+def find_recordings(store: dict[str, Any], play_data: str, level: str) -> list[dict[str, Any]]:
+    records = store.get("records", {})
+    if not isinstance(records, dict):
+        return []
+    return [
+        record
+        for _record_id, record in sorted_record_items(records)
+        if str(record.get("playData")) == play_data and str(record.get("level")) == level
+    ]
+
+
 def delete_trace_run(trace_id: str | None) -> bool:
     if not trace_id:
         return False
@@ -287,6 +298,27 @@ def summarize_trace_run(trace_id: str, run: dict[str, Any]) -> dict[str, Any]:
         "traceId": trace_id,
         "playData": run.get("playData"),
         "level": run.get("level"),
+        "createdAt": run.get("createdAt"),
+        "updatedAt": run.get("updatedAt"),
+        "stepCount": run.get("stepCount", 0),
+        "latestAction": run.get("latestAction"),
+        "model": run.get("model"),
+    }
+
+
+def summarize_record_trace(record: dict[str, Any], trace_store: dict[str, Any]) -> dict[str, Any] | None:
+    trace_id = record.get("traceId")
+    if not isinstance(trace_id, str) or not trace_id:
+        return None
+    runs = trace_store.get("runs", {})
+    if not isinstance(runs, dict):
+        return None
+    run = runs.get(trace_id)
+    if not isinstance(run, dict):
+        return None
+    return {
+        "traceId": trace_id,
+        "createdAt": run.get("createdAt"),
         "updatedAt": run.get("updatedAt"),
         "stepCount": run.get("stepCount", 0),
         "latestAction": run.get("latestAction"),
@@ -369,6 +401,28 @@ def get_recording(play_data: str, level: str):
     if record is None:
         return jsonify({"error": "recording not found"}), 404
     return jsonify(record)
+
+
+@app.get("/api/recordings/<play_data>/<level>/records")
+def get_recording_records(play_data: str, level: str):
+    try:
+        play_data_key = normalize_id(play_data, "playData")
+        level_key = normalize_id(level, "level")
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    with _store_lock:
+        recording_store = load_store()
+        records = find_recordings(recording_store, play_data_key, level_key)
+    with _trace_store_lock:
+        trace_store = load_trace_store()
+
+    joined_records = []
+    for record in records:
+        joined = dict(record)
+        joined["trace"] = summarize_record_trace(record, trace_store)
+        joined_records.append(joined)
+    return jsonify({"records": joined_records, "count": len(joined_records)})
 
 
 @app.put("/api/recordings/<play_data>/<level>")
@@ -571,6 +625,7 @@ def delete_recording(play_data: str, level: str):
         return jsonify({"error": str(exc)}), 400
 
     selected_trace_id = request.args.get("traceId") or None
+    selected_record_id = request.args.get("recordId") or selected_trace_id
     deleted_trace_id = None
     latest_record = None
     with _store_lock:
@@ -578,9 +633,16 @@ def delete_recording(play_data: str, level: str):
         records = store.get("records", {})
         existed = False
         if isinstance(records, dict):
-            if selected_trace_id:
-                record_key = selected_trace_id
-                record = records.pop(record_key, None)
+            if selected_record_id:
+                record_key = selected_record_id
+                candidate = records.get(record_key)
+                record = (
+                    records.pop(record_key)
+                    if isinstance(candidate, dict)
+                    and str(candidate.get("playData")) == play_data_key
+                    and str(candidate.get("level")) == level_key
+                    else None
+                )
             else:
                 record = find_latest_recording(store, play_data_key, level_key)
                 record_key = record.get("id") if isinstance(record, dict) else None

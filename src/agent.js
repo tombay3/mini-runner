@@ -48,6 +48,7 @@ async function runAgent(state, deps) {
     return;
   }
 
+  deps.clearPlaybackDebugState?.(state);
   state.agentRunning = true;
   state.agentAbort = new AbortController();
   state.agentPlanner = null;

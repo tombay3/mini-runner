@@ -1,39 +1,24 @@
 # LLM Candidate Agent
 
 ## Summary
-The current Lode Runner agent is an interactive browser-driven loop with a V2 candidate planner on the backend.
+The AI agent is a browser-driven loop with a backend candidate planner. The browser and legacy runtime execute the game; the backend selects one short action at a time.
 
-The legacy game remains the executor and recorder. The backend does not simulate Lode Runner. It only selects one short action at a time for Classic `playData=1`, `level=1`.
+Current scope: Classic `playData=1`, `level=1`.
 
 ## Browser Loop
-[src/agent.js](../src/agent.js) owns the outer solve loop:
+`src/agent.js`:
 
-- starts Classic level 1 through `window.lodeRunnerAgentHooks.startLevel(1, 1)`.
-- captures `snapshot()` from the legacy runtime.
-- sends snapshot/history/run ID to `/api/agent/next-action`.
-- applies the returned `{ keyCode, ticks }` through `step()`.
-- stops on success, failure, cancellation, or 2 minutes of legacy playback/game time.
-- cancels the current run if the active red `AI` rail button is clicked again.
-- saves both success and failure demos through `/api/recordings/1/1`.
+- starts Classic level 1 through `window.lodeRunnerAgentHooks.startLevel(1, 1)`;
+- captures `snapshot()` from the legacy runtime;
+- sends snapshot, history, and run id to `POST /api/agent/next-action`;
+- applies returned `{ keyCode, ticks }` through `step()`;
+- stops on success, failure, cancellation, 2 minutes of legacy gameplay time, or 200 backend decisions;
+- saves success and failure demos through the recording API.
 
-Current frontend limits:
-
-- `AGENT_MAX_PLAYBACK_TIME = 2 * 60`.
-- Playback time is checked against both legacy visible `gameTime >= 120` and recorded-demo ticks `recordTick >= 1920`.
-- `AGENT_MAX_STEPS = 200` as an emergency safety guard if legacy time stops advancing.
-- `AGENT_HISTORY_LIMIT = 24`.
-- optional model override via `window.__lodeRunnerAgentOptions.model`.
-- optional profile override via `window.__lodeRunnerAgentOptions.modelProfile` or `?profile=...`.
-- `?profile=...` is the only documented agent URL parameter; `?agentModelProfile=...` remains a backward-compatible alias.
-
-Current backend tuning:
-
-- `AGENT_MAX_TICKS = 20` clamps one returned candidate action to at most 20 legacy manual ticks.
-- `AGENT_TEMPERATURE` controls LLM sampling for candidate selection; lower values are more deterministic, higher values can explore less-obvious candidates.
-- dotenv files are reconciled before backend planning requests, so `.env.local` model-profile changes or removals are picked up on the next AI run without restarting Flask.
+The active red `AI` rail button aborts the current run.
 
 ## Legacy Hook Surface
-[public/game/lodeRunner.agentHooks.js](../public/game/lodeRunner.agentHooks.js) exposes:
+`public/game/lodeRunner.agentHooks.js` exposes:
 
 - `startLevel(playData, level)`
 - `step(keyCode, ticks)`
@@ -43,123 +28,76 @@ Current backend tuning:
 - `dumpFailure(reason)`
 - `isSupportedContext(playData, level)`
 
-`startLevel()` runs Classic level 1 through the existing Training/Modern flow, stops the normal ticker, preserves god mode if it was enabled before AI entry, and lets the wrapper advance the game manually.
+The hook starts the existing Training/Modern flow, stops the normal ticker, preserves god mode when enabled, and lets the wrapper advance the game manually.
 
 ## Backend Planner
-[agent/service.py](../agent/service.py) orchestrates:
+`agent/service.py` validates the request, resolves the model, generates candidates, calls the model, validates the selected candidate, applies stall retry/fallback behavior, and assembles the trace step.
 
-1. request validation
-2. model resolution through `aisuite`
-3. candidate generation
-4. candidate-selection prompt
-5. selected-candidate validation
-6. stall retry/fallback handling
-7. trace assembly
-
-The LLM returns a candidate ID, not raw keycodes:
+The model chooses a candidate id:
 
 ```json
-{ "candidateId": "climb_ladder_27_14_up", "reason": "Standing on the row-14 ladder, climb to change route." }
+{ "candidateId": "climb_ladder_27_14_up", "reason": "Standing on the ladder, climb to change rows." }
 ```
 
-The backend translates that candidate into the legacy action returned to the browser:
+The backend translates it into a legacy action:
 
 ```json
-{
-  "action": { "keyCode": 38, "ticks": 6, "reason": "..." },
-  "candidateId": "climb_ladder_27_14_up",
-  "traceId": "..."
-}
+{ "keyCode": 38, "ticks": 6, "reason": "..." }
 ```
 
 ## Candidate Generation
-[agent/candidates.py](../agent/candidates.py) generates a small ranked list from normalized snapshot facts:
+`agent/candidates.py` ranks legal candidates from snapshot facts:
 
-- runner position and movement state
-- guard positions and risk
-- visible gold and guard-carried gold
-- `goldComplete`
-- `godMode`
-- movement feasibility
-- dig feasibility
-- current ladder/rope/terrain affordances
-- recent history
-- stall report
+- runner position and movement state;
+- guard positions and risk;
+- visible and guard-carried gold;
+- `goldComplete`;
+- `godMode`;
+- movement and dig feasibility;
+- ladder, rope, terrain, and route affordances;
+- recent history and stall report.
 
-Candidate kinds include:
-
-- `collect_same_row_gold`
-- `align_ladder`
-- `climb_ladder`
-- `route_access_dig`
-- `route_access_follow`
-- `descend_route`
-- `continue_fall`
-- `defensive_dig`
-- `retreat_from_guard`
-- `godmode_progress`
-- `exit_ladder_route`
-- `wait_or_stop`
+Candidate kinds include same-row gold collection, ladder alignment/climbing, route-access digging/following, descent, defensive digging, guard retreat, god-mode progress, exit routing, and wait/stop fallback.
 
 Only physically valid first actions should be emitted.
 
+## Prompt Format
+`public/AGENT_RULES.md` contains short gameplay priorities. `agent/prompt.py` formats:
+
+- compact state summary;
+- primary progress target;
+- candidate list;
+- optional stall report;
+- strict JSON output contract.
+
+The prompt does not ask the model to parse the full board or invent raw key events during normal runtime.
+
 ## Stall Handling
-Persistent loops are handled by deterministic stall tooling in [agent/stall_tools.py](../agent/stall_tools.py).
+`agent/stall_tools.py` detects repeated non-progress patterns:
 
-Detected patterns include:
+- horizontal oscillation;
+- vertical ladder oscillation;
+- same candidate or same tile with no progress;
+- route-access dig loop;
+- exit-ladder loop;
+- wait loop.
 
-- horizontal oscillation
-- vertical ladder oscillation
-- same candidate with no progress
-- same tile with no progress
-- route-access dig loop
-- exit-ladder loop
-- wait loop
+The stall report can block repeated candidates, boost recovery candidates, add a retry note, and fall back to the highest-ranked non-blocked candidate.
 
-The stall report can block repeated candidates, boost recovery candidates, add a retry note to the prompt, and trigger fallback to the highest-ranked non-blocked candidate.
+## God Mode
+God mode is a legacy feature toggled by `SHIFT-G`, `CTRL-Z`, or the wrapper star button. The source of truth is the legacy `godMode` global.
 
-## Prompting
-[public/AGENT_RULES.md](../public/AGENT_RULES.md) contains short durable gameplay policy.
+If god mode is enabled before clicking `AI`, `startLevel()` restores it after the legacy start path resets hotkey state. Candidate generation treats guard contact as non-lethal, ranks progress over survival-only spacing, and still rejects physically impossible moves.
 
-[agent/prompt.py](../agent/prompt.py) formats the current candidate-selection prompt. The prompt is intentionally compact:
-
-- current state summary
-- progress target
-- candidate list
-- optional stall report
-- strict JSON output contract
-
-The model is not asked to parse the full board or invent raw input bursts in normal V2 runtime.
-
-## Model Configuration
-The backend uses `aisuite` for provider/model abstraction.
-
-Model resolution order:
-
-1. request-level `model`
-2. request-level `modelProfile`
-3. `AGENT_MODEL_PROFILE`
-4. `AGENT_DEFAULT_MODEL`
-
-Supported profiles:
-
-- `openai`
-- `minimax`
-- `gemini`
-
-Request-level `model` and `AGENT_DEFAULT_MODEL` must use `provider:model` format, for example `openai:gpt-4.1-mini`. Profile-specific variables such as `OPENAI_MODEL`, `MINIMAX_MODEL`, and `GEMINI_MODEL` do not use provider prefixes. Missing model/profile config returns a backend configuration error.
+Saved demos include legacy god-mode state through normal demo recording data.
 
 ## Recording
-The legacy runtime records the demo. The wrapper only persists the final `curDemoData`.
+The legacy runtime records demos. The wrapper persists final agent results with:
 
-Saved agent recordings include:
-
-- `source: "agent"`
-- `result: "success"` or `"failure"`
-- `solver`
-- `traceId`
-- `demo`
-
-The recording `solver` stores logical model metadata such as `modelProfile`, `provider`, `model`, `responseId`, `traceId`, and optional `failureReason`. Obsolete transport fields such as `aisuiteProvider` / `aisuiteModel` are not stored in recordings.
+- `source: "agent"`;
+- `result: "success"` or `"failure"`;
+- `traceId`;
+- `solver` model metadata;
+- `demo`.
 
 Failed runs are saved intentionally for debugging.
