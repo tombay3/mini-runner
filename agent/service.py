@@ -12,11 +12,11 @@ from .candidates import generate_candidates, is_action_physically_valid
 from .config import (
     AGENT_LEVEL,
     AGENT_PLAY_DATA,
-    AGENT_TEMPERATURE,
     ResolvedAgentModel,
     get_default_model_profile_name,
     get_default_agent_model,
     get_explicit_provider_configs,
+    load_public_agent_config,
     normalize_model_name,
     reload_dotenv_files,
     resolve_model_profile,
@@ -147,12 +147,17 @@ def plan_next_action(
 ) -> dict[str, Any]:
     reload_dotenv_files()
     refresh_app_log_level()
+    public_config = load_public_agent_config()
     client = get_aisuite_agent_client()
-    requested_model = resolve_requested_model(client, options)
-    return run_candidate_selection(snapshot, history, requested_model, client, options)
+    requested_model = resolve_requested_model(client, options, public_config)
+    return run_candidate_selection(snapshot, history, requested_model, client, options, public_config)
 
 
-def resolve_requested_model(client, options: dict[str, Any]) -> ResolvedAgentModel:
+def resolve_requested_model(
+    client,
+    options: dict[str, Any],
+    public_config: dict[str, Any],
+) -> ResolvedAgentModel:
     requested = options.get("model")
     if requested:
         return client.resolve_model_name(requested, source="request")
@@ -160,6 +165,10 @@ def resolve_requested_model(client, options: dict[str, Any]) -> ResolvedAgentMod
     requested_profile = options.get("modelProfile")
     if requested_profile:
         return client.resolve_model_profile(requested_profile, source="request")
+
+    config_profile = (public_config.get("agent") or {}).get("modelProfile")
+    if config_profile:
+        return client.resolve_model_profile(config_profile, source="config")
 
     default_profile = get_default_model_profile_name()
     if default_profile:
@@ -179,12 +188,28 @@ def run_candidate_selection(
     requested_model: ResolvedAgentModel,
     client,
     options: dict[str, Any],
+    public_config: dict[str, Any],
 ) -> dict[str, Any]:
-    candidates, analysis = generate_candidates(snapshot, history, limit=7)
+    backend_config = public_config["backend"]
+    candidates, analysis = generate_candidates(
+        snapshot,
+        history,
+        limit=backend_config["candidateLimit"],
+        max_action_ticks=backend_config["maxActionTicks"],
+    )
     if not candidates:
         raise AgentExecutionError("candidate generator produced no valid actions")
 
-    result = run_model_turn(client, requested_model, snapshot, history, candidates, analysis, options)
+    result = run_model_turn(
+        client,
+        requested_model,
+        snapshot,
+        history,
+        candidates,
+        analysis,
+        options,
+        public_config,
+    )
     selected, validation = validate_or_fallback_candidate(result, candidates, analysis)
     stall_supervisor = build_stall_supervisor(validation, analysis)
     if validation.get("stallBlocked"):
@@ -202,6 +227,7 @@ def run_candidate_selection(
             candidates,
             analysis,
             options,
+            public_config,
             retry_note=retry_note,
         )
         retry_selected, retry_validation = validate_or_fallback_candidate(
@@ -240,18 +266,17 @@ def run_candidate_selection(
             }
 
     action = dict(selected["firstAction"])
-    planner = build_planner(result, requested_model, validation)
+    planner = build_planner(result, requested_model, validation, public_config)
     planner["candidateCount"] = len(candidates)
-    planner["stallSupervisor"] = stall_supervisor
 
     trace = serialize_step_trace(
         snapshot=snapshot,
         history=history,
         action=action,
-        planner=planner,
         candidates=candidates,
         selected_candidate=selected,
         validation=validation,
+        stall_supervisor=stall_supervisor,
         analysis=analysis,
     )
     return {
@@ -273,6 +298,7 @@ def run_model_turn(
     candidates: list[dict[str, Any]],
     analysis: dict[str, Any],
     options: dict[str, Any],
+    public_config: dict[str, Any],
     retry_note: str | None = None,
 ) -> dict[str, Any]:
     prompt = build_agent_prompt(
@@ -281,6 +307,7 @@ def run_model_turn(
         candidates=candidates,
         analysis=analysis,
         retry_note=retry_note,
+        show_candidate_scores=public_config["prompt"]["showCandidateScores"],
     )
     messages = [
         {
@@ -300,7 +327,7 @@ def run_model_turn(
         response = client.create_completion(
             model,
             messages,
-            temperature=AGENT_TEMPERATURE,
+            temperature=public_config["backend"]["temperature"],
         )
     except ValueError as exc:
         raise AgentConfigError(str(exc)) from exc
@@ -450,6 +477,7 @@ def build_planner(
     result: dict[str, Any],
     model: ResolvedAgentModel,
     validation: dict[str, Any],
+    public_config: dict[str, Any],
 ) -> dict[str, Any]:
     response = result.get("response")
     return {
@@ -463,6 +491,12 @@ def build_planner(
         "fallbackUsed": validation["fallbackUsed"],
         "fallbackReason": validation["fallbackReason"],
         "candidateCount": None,
+        "config": {
+            "showCandidateScores": public_config["prompt"]["showCandidateScores"],
+            "candidateLimit": public_config["backend"]["candidateLimit"],
+            "maxActionTicks": public_config["backend"]["maxActionTicks"],
+            "temperature": public_config["backend"]["temperature"],
+        },
     }
 
 

@@ -575,7 +575,7 @@ function stopFailedDemoPlayback(state) {
   state.playbackKey = "";
   setUiState(state, state.currentRecord ? "available" : "missing");
   if (typeof window.showTipsText === "function") {
-    window.showTipsText("FAILED DEMO ENDED", 2500);
+    window.showTipsText("PLAYBACK ENDED", 2500);
   }
 }
 
@@ -649,7 +649,7 @@ function pauseStoredPlayback(state, { showTip = true } = {}) {
   }
   state.playbackPaused = true;
   if (showTip && typeof window.showTipsText === "function") {
-    window.showTipsText("DEMO PAUSED", 0);
+    window.showTipsText("PLAYBACK PAUSED", 0);
   }
   syncOverlayState(state);
   return true;

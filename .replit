@@ -55,10 +55,6 @@ exposeLocalhost = true
 localPort = 8283
 externalPort = 80
 
-[[ports]]
-localPort = 8285
-externalPort = 3000
-
 [deployment]
 deploymentTarget = "autoscale"
 run = ["bash", "-c", ".venv/bin/python app.py & npx vite preview --port 8283 --host 0.0.0.0"]

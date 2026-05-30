@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
+import math
 import os
 from pathlib import Path
 from typing import Any
@@ -13,6 +15,7 @@ except ImportError:  # pragma: no cover - dependency is declared, fallback keeps
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 AGENT_RULES_PATH = ROOT_DIR / "public" / "AGENT_RULES.md"
+AGENT_CONFIG_PATH = ROOT_DIR / "public" / "agent-config.json"
 DOTENV_PATHS = (
     Path.home() / ".env",
     ROOT_DIR / ".env",
@@ -28,6 +31,25 @@ AGENT_MAX_TICKS = 20
 AGENT_TEMPERATURE = 0.5
 AGENT_MODEL_PROFILES = {"openai", "minimax", "gemini"}
 GEMINI_DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
+
+PUBLIC_AGENT_CONFIG_DEFAULTS: dict[str, Any] = {
+    "agent": {
+        "playData": AGENT_PLAY_DATA,
+        "level": AGENT_LEVEL,
+        "maxPlaybackTimeSeconds": 120,
+        "maxSteps": 200,
+        "historyLimit": 24,
+        "modelProfile": None,
+    },
+    "backend": {
+        "candidateLimit": 7,
+        "maxActionTicks": AGENT_MAX_TICKS,
+        "temperature": AGENT_TEMPERATURE,
+    },
+    "prompt": {
+        "showCandidateScores": True,
+    },
+}
 
 
 @dataclass(frozen=True)
@@ -70,6 +92,61 @@ def reload_dotenv_files() -> list[str]:
     return loaded_paths
 
 
+def load_public_agent_config() -> dict[str, Any]:
+    raw: Any = {}
+    try:
+        parsed = json.loads(AGENT_CONFIG_PATH.read_text(encoding="utf-8"))
+        if isinstance(parsed, dict):
+            raw = parsed
+    except (OSError, json.JSONDecodeError):
+        raw = {}
+
+    agent = _dict(raw.get("agent"))
+    backend = _dict(raw.get("backend"))
+    prompt = _dict(raw.get("prompt"))
+    defaults = PUBLIC_AGENT_CONFIG_DEFAULTS
+    return {
+        "agent": {
+            "playData": _positive_int(agent.get("playData"), defaults["agent"]["playData"]),
+            "level": _positive_int(agent.get("level"), defaults["agent"]["level"]),
+            "maxPlaybackTimeSeconds": _positive_int(
+                agent.get("maxPlaybackTimeSeconds"),
+                defaults["agent"]["maxPlaybackTimeSeconds"],
+            ),
+            "maxSteps": _positive_int(agent.get("maxSteps"), defaults["agent"]["maxSteps"]),
+            "historyLimit": _positive_int(
+                agent.get("historyLimit"),
+                defaults["agent"]["historyLimit"],
+            ),
+            "modelProfile": _optional_string(agent.get("modelProfile")),
+        },
+        "backend": {
+            "candidateLimit": _positive_int(
+                backend.get("candidateLimit"),
+                defaults["backend"]["candidateLimit"],
+                maximum=20,
+            ),
+            "maxActionTicks": _positive_int(
+                backend.get("maxActionTicks"),
+                defaults["backend"]["maxActionTicks"],
+                maximum=AGENT_MAX_TICKS,
+            ),
+            "temperature": _bounded_float(
+                backend.get("temperature"),
+                defaults["backend"]["temperature"],
+                minimum=0.0,
+                maximum=2.0,
+            ),
+        },
+        "prompt": {
+            "showCandidateScores": _bool_value(
+                prompt.get("showCandidateScores"),
+                defaults["prompt"]["showCandidateScores"],
+            ),
+        },
+    }
+
+
 def normalize_model_name(
     model: str | None, default_provider: str | None = None, *, require_provider: bool = False
 ) -> str | None:
@@ -83,6 +160,53 @@ def normalize_model_name(
             raise ValueError("model must use provider:model format")
         normalized = f"{default_provider}:{normalized}"
     return normalized
+
+
+def _dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _positive_int(value: Any, default: int, *, maximum: int | None = None) -> int:
+    try:
+        result = int(value)
+    except (TypeError, ValueError):
+        result = default
+    if result < 1:
+        result = default
+    if maximum is not None:
+        result = min(result, maximum)
+    return result
+
+
+def _bounded_float(value: Any, default: float, *, minimum: float, maximum: float) -> float:
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        result = default
+    if not math.isfinite(result):
+        result = default
+    return max(minimum, min(maximum, result))
+
+
+def _optional_string(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _bool_value(value: Any, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return default
 
 
 def get_default_agent_model() -> str | None:

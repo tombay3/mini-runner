@@ -31,16 +31,12 @@ When Play starts a selected record:
 3. sets `window.playMode = window.PLAY_DEMO_ONCE`;
 4. calls the legacy `startGame(1)` path.
 
-Wrapper-started playback is guarded so replay completion does not create a new user recording.
-
 ## Debug Overlay
 The top gutter overlay shows selected-run metadata and playback progress:
 
 ```text
 run 2/10 | agent failure | trace 46d79a4d | model minimax:MiniMax-M2.1 | demo 90s | steps 3/18
 ```
-
-The overlay is hidden while the AI agent is actively recording a run. It is visible when a stored record is selected and updates live during wrapper-started playback.
 
 For agent recordings, progress is aligned by comparing `window.demoTickCount` with trace step ticks loaded from `/api/agent/traces/<traceId>`. For user recordings without traces, progress uses the legacy demo action cursor: `keys <demoRecordIdx>/<demo.action.length / 2>`.
 
@@ -52,10 +48,5 @@ Keyboard shortcuts apply only during wrapper-started stored playback:
 
 One recorded action segment means the next consumed `[tick, keyCode]` pair in `demo.action`.
 
-## Failed Demo Stop
-Failed agent demos are persisted for debugging. During failed-demo playback, the wrapper stops playback when the legacy demo cursor reaches the stored failed demo time.
-
 ## Fullscreen Restart
-The legacy game computes canvas and icon geometry during `init()`. Entering or exiting fullscreen restarts from the welcome flow so the legacy sizing code reruns against the new viewport.
-
-Before calling `window.init()`, the wrapper removes stale legacy-created canvas overlays while preserving the root `#canvas` and wrapper rail.
+The legacy game computes canvas and icon geometry during `init()`. Entering or exiting fullscreen restarts from the welcome flow so the legacy sizing code reruns against the new viewport.  Before calling `window.init()`, the wrapper removes stale legacy-created canvas overlays while preserving the root `#canvas` and wrapper rail.

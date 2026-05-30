@@ -1,11 +1,20 @@
 const AGENT_API = "/api/agent/next-action";
 const AGENT_PLAY_DATA = 1;
 const AGENT_LEVEL = 1;
-const AGENT_MAX_PLAYBACK_TIME = 2 * 60;
 const AGENT_PLAYBACK_TICKS_PER_SECOND = 16;
-const AGENT_MAX_PLAYBACK_TICKS = AGENT_MAX_PLAYBACK_TIME * AGENT_PLAYBACK_TICKS_PER_SECOND;
-const AGENT_MAX_STEPS = 200;
-const AGENT_HISTORY_LIMIT = 24;
+const DEFAULT_AGENT_CONFIG = {
+  agent: {
+    playData: AGENT_PLAY_DATA,
+    level: AGENT_LEVEL,
+    maxPlaybackTimeSeconds: 120,
+    maxSteps: 200,
+    historyLimit: 24,
+    modelProfile: null,
+  },
+  backend: {
+    maxActionTicks: 20,
+  },
+};
 
 export function createAgentController(deps) {
   return {
@@ -43,7 +52,10 @@ async function toggleAgent(state, deps) {
 
 async function runAgent(state, deps) {
   const hooks = window.lodeRunnerAgentHooks;
-  if (!hooks?.isSupportedContext?.(AGENT_PLAY_DATA, AGENT_LEVEL)) {
+  const config = await loadAgentConfig();
+  const playData = config.agent.playData;
+  const level = config.agent.level;
+  if (!hooks?.isSupportedContext?.(playData, level)) {
     deps.setUiState(state, "error");
     return;
   }
@@ -60,21 +72,21 @@ async function runAgent(state, deps) {
   let failureReason = "agent stopped";
 
   try {
-    hooks.startLevel(AGENT_PLAY_DATA, AGENT_LEVEL);
+    hooks.startLevel(playData, level);
 
-    for (let stepCount = 0; stepCount < AGENT_MAX_STEPS; stepCount += 1) {
+    for (let stepCount = 0; stepCount < config.agent.maxSteps; stepCount += 1) {
       if (state.agentAbort.signal.aborted) {
         failureReason = "agent cancelled";
         break;
       }
 
       const before = hooks.snapshot();
-      const terminal = getTerminalResult(hooks);
+      const terminal = getTerminalResult(hooks, level);
       if (terminal) {
-        await finishAgentRun(state, deps, hooks, terminal.demo, terminal.result, terminal.reason);
+        await finishAgentRun(state, deps, hooks, terminal.demo, terminal.result, terminal.reason, config);
         return;
       }
-      if (hasExceededPlaybackTime(before)) {
+      if (hasExceededPlaybackTime(before, config)) {
         failureReason = "agent max playback time reached";
         break;
       }
@@ -83,16 +95,16 @@ async function runAgent(state, deps) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          playData: AGENT_PLAY_DATA,
-          level: AGENT_LEVEL,
+          playData,
+          level,
           snapshot: before,
           history,
           runId: state.agentRunId,
-          ...getAgentRequestOptions(),
+          ...getAgentRequestOptions(config),
         }),
         signal: state.agentAbort.signal,
       });
-      const action = normalizeAgentAction(response.action);
+      const action = normalizeAgentAction(response.action, config);
       state.agentPlanner = response.planner ?? null;
       state.agentTraceId = response.traceId ?? state.agentRunId;
 
@@ -110,16 +122,16 @@ async function runAgent(state, deps) {
         before: summarizeHistorySnapshot(before),
         after: summarizeHistorySnapshot(after),
       });
-      while (history.length > AGENT_HISTORY_LIMIT) {
+      while (history.length > config.agent.historyLimit) {
         history.shift();
       }
 
-      if (hasExceededPlaybackTime(after)) {
+      if (hasExceededPlaybackTime(after, config)) {
         failureReason = "agent max playback time reached";
         break;
       }
 
-      const afterTerminal = getTerminalResult(hooks);
+      const afterTerminal = getTerminalResult(hooks, level);
       if (afterTerminal) {
         await finishAgentRun(
           state,
@@ -128,6 +140,7 @@ async function runAgent(state, deps) {
           afterTerminal.demo,
           afterTerminal.result,
           afterTerminal.reason,
+          config,
         );
         return;
       }
@@ -139,7 +152,7 @@ async function runAgent(state, deps) {
 
   try {
     const failedDemo = hooks.dumpFailure(failureReason);
-    await saveAgentResult(state, deps, failedDemo, "failure", failureReason);
+    await saveAgentResult(state, deps, failedDemo, "failure", failureReason, config);
   } catch (_error) {
     deps.setUiState(state, "error");
   } finally {
@@ -151,9 +164,9 @@ async function runAgent(state, deps) {
   }
 }
 
-async function finishAgentRun(state, deps, hooks, demo, result, reason) {
+async function finishAgentRun(state, deps, hooks, demo, result, reason, config) {
   try {
-    await saveAgentResult(state, deps, demo, result, reason);
+    await saveAgentResult(state, deps, demo, result, reason, config);
   } finally {
     hooks.stop({ resumeTicker: false });
     state.agentRunning = false;
@@ -163,7 +176,7 @@ async function finishAgentRun(state, deps, hooks, demo, result, reason) {
   }
 }
 
-function normalizeAgentAction(action) {
+function normalizeAgentAction(action, config) {
   if (!action || typeof action !== "object") {
     throw new Error("agent returned no action");
   }
@@ -174,19 +187,21 @@ function normalizeAgentAction(action) {
   }
   return {
     keyCode,
-    ticks: Math.max(1, Math.min(20, ticks)),
+    ticks: Math.max(1, Math.min(config.backend.maxActionTicks, ticks)),
     reason: String(action.reason ?? ""),
   };
 }
 
-function hasExceededPlaybackTime(snapshot) {
+function hasExceededPlaybackTime(snapshot, config) {
+  const maxPlaybackTime = config.agent.maxPlaybackTimeSeconds;
+  const maxPlaybackTicks = maxPlaybackTime * AGENT_PLAYBACK_TICKS_PER_SECOND;
   const gameTime = getNumericSnapshotValue(snapshot?.timing?.gameTime ?? snapshot?.time);
-  if (gameTime !== null && gameTime >= AGENT_MAX_PLAYBACK_TIME) {
+  if (gameTime !== null && gameTime >= maxPlaybackTime) {
     return true;
   }
 
   const recordTick = getNumericSnapshotValue(snapshot?.timing?.recordTick ?? snapshot?.tick);
-  return recordTick !== null && recordTick >= AGENT_MAX_PLAYBACK_TICKS;
+  return recordTick !== null && recordTick >= maxPlaybackTicks;
 }
 
 function getNumericSnapshotValue(value) {
@@ -215,9 +230,9 @@ function summarizeHistorySnapshot(snapshot) {
   };
 }
 
-function getTerminalResult(hooks) {
+function getTerminalResult(hooks, level) {
   const demo = hooks.getRecordedDemo?.();
-  if (demo?.level === AGENT_LEVEL && Number(demo.time) > 0) {
+  if (demo?.level === level && Number(demo.time) > 0) {
     if (Number(demo.state) === 1) {
       return { demo, result: "success", reason: "finished" };
     }
@@ -232,8 +247,10 @@ function getTerminalResult(hooks) {
   return null;
 }
 
-async function saveAgentResult(state, deps, demoData, result, reason) {
-  const demo = deps.normalizeDemo(demoData, AGENT_PLAY_DATA, AGENT_LEVEL);
+async function saveAgentResult(state, deps, demoData, result, reason, config) {
+  const playData = config.agent.playData;
+  const level = config.agent.level;
+  const demo = deps.normalizeDemo(demoData, playData, level);
   demo.state = result === "success" ? 1 : 0;
   const solver = {
     modelProfile: state.agentPlanner?.modelProfile ?? null,
@@ -244,7 +261,7 @@ async function saveAgentResult(state, deps, demoData, result, reason) {
     traceId: state.agentTraceId ?? null,
     failureReason: result === "failure" ? reason : null,
   };
-  const record = await deps.apiFetch(`${deps.recordingApiBase}/${AGENT_PLAY_DATA}/${AGENT_LEVEL}`, {
+  const record = await deps.apiFetch(`${deps.recordingApiBase}/${playData}/${level}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -256,7 +273,7 @@ async function saveAgentResult(state, deps, demoData, result, reason) {
     }),
   });
   state.currentRecord = record;
-  state.currentKey = deps.getContextKey({ playData: AGENT_PLAY_DATA, level: AGENT_LEVEL });
+  state.currentKey = deps.getContextKey({ playData, level });
   deps.setUiState(state, result === "success" ? "available" : "error");
   deps.scheduleRefresh(state);
 }
@@ -278,20 +295,75 @@ function getErrorMessage(error) {
   return error instanceof Error ? error.message : String(error);
 }
 
-function getAgentRequestOptions() {
+async function loadAgentConfig() {
+  try {
+    const response = await fetch("/agent-config.json", { cache: "no-store" });
+    if (!response.ok) {
+      return normalizeAgentConfig({});
+    }
+    return normalizeAgentConfig(await response.json());
+  } catch (_error) {
+    return normalizeAgentConfig({});
+  }
+}
+
+function normalizeAgentConfig(raw) {
+  const input = raw && typeof raw === "object" ? raw : {};
+  const agent = input.agent && typeof input.agent === "object" ? input.agent : {};
+  const backend = input.backend && typeof input.backend === "object" ? input.backend : {};
+  return {
+    agent: {
+      playData: positiveInteger(agent.playData, DEFAULT_AGENT_CONFIG.agent.playData),
+      level: positiveInteger(agent.level, DEFAULT_AGENT_CONFIG.agent.level),
+      maxPlaybackTimeSeconds: positiveInteger(
+        agent.maxPlaybackTimeSeconds,
+        DEFAULT_AGENT_CONFIG.agent.maxPlaybackTimeSeconds,
+      ),
+      maxSteps: positiveInteger(agent.maxSteps, DEFAULT_AGENT_CONFIG.agent.maxSteps),
+      historyLimit: positiveInteger(agent.historyLimit, DEFAULT_AGENT_CONFIG.agent.historyLimit),
+      modelProfile: optionalString(agent.modelProfile),
+    },
+    backend: {
+      maxActionTicks: positiveInteger(
+        backend.maxActionTicks,
+        DEFAULT_AGENT_CONFIG.backend.maxActionTicks,
+        DEFAULT_AGENT_CONFIG.backend.maxActionTicks,
+      ),
+    },
+  };
+}
+
+function positiveInteger(value, fallback, maximum = null) {
+  const number = Number(value);
+  let normalized = Number.isInteger(number) && number > 0 ? number : fallback;
+  if (maximum !== null) {
+    normalized = Math.min(normalized, maximum);
+  }
+  return normalized;
+}
+
+function optionalString(value) {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const text = value.trim();
+  return text || null;
+}
+
+function getAgentRequestOptions(config) {
   const options = window.__lodeRunnerAgentOptions;
   const requestOptions = {};
   if (options && typeof options === "object" && typeof options.model === "string" && options.model.trim()) {
     requestOptions.model = options.model.trim();
   }
-  const modelProfile = getAgentModelProfileOption(options);
+  const modelProfile = getAgentModelProfileOption(options, config);
   if (modelProfile) {
     requestOptions.modelProfile = modelProfile;
   }
   return requestOptions;
 }
 
-function getAgentModelProfileOption(options) {
+function getAgentModelProfileOption(options, config) {
   const params = new URLSearchParams(window.location.search);
   const queryProfile = params.get("profile") || params.get("agentModelProfile");
   if (queryProfile?.trim()) {
@@ -300,7 +372,7 @@ function getAgentModelProfileOption(options) {
   if (options && typeof options === "object" && typeof options.modelProfile === "string") {
     return options.modelProfile.trim() || null;
   }
-  return null;
+  return config.agent.modelProfile;
 }
 
 function createRunId() {

@@ -23,6 +23,7 @@ def build_agent_prompt(
     candidates: list[dict[str, Any]],
     analysis: dict[str, Any],
     retry_note: str | None = None,
+    show_candidate_scores: bool = True,
 ) -> str:
     sections = [
         "You are choosing one backend-generated candidate for the next short Lode Runner input burst.",
@@ -31,7 +32,7 @@ def build_agent_prompt(
         "Return JSON only with this exact shape: {\"candidateId\":\"candidate_id_here\",\"reason\":\"brief explanation\"}.",
         "Agent rules:\n" + read_agent_rules(),
         format_state_summary(snapshot, analysis),
-        format_candidates(candidates),
+        format_candidates(candidates, show_scores=show_candidate_scores),
     ]
     stall_report = format_stall_report(analysis)
     if stall_report:
@@ -129,12 +130,13 @@ def format_stall_report(analysis: dict[str, Any]) -> str:
     )
 
 
-def format_candidates(candidates: list[dict[str, Any]]) -> str:
+def format_candidates(candidates: list[dict[str, Any]], *, show_scores: bool = True) -> str:
     lines = ["Candidate choices:"]
     for candidate in candidates:
         action = _dict(candidate.get("firstAction"))
         target = candidate.get("target")
         target_text = f" target={json.dumps(target, sort_keys=True)}" if target else ""
+        score_text = f" score={candidate.get('score')}" if show_scores else ""
         stall_text = ""
         if candidate.get("stallBlocked"):
             stall_text = f" stallBlocked={candidate.get('stallBlockReason')}"
@@ -143,7 +145,7 @@ def format_candidates(candidates: list[dict[str, Any]]) -> str:
         lines.extend(
             [
                 (
-                    f"- id={candidate.get('id')} kind={candidate.get('kind')} score={candidate.get('score')} "
+                    f"- id={candidate.get('id')} kind={candidate.get('kind')}{score_text} "
                     f"risk={candidate.get('risk')} keyCode={action.get('keyCode')} ticks={action.get('ticks')}"
                     f"{target_text}{stall_text}"
                 ),

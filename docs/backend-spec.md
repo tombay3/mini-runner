@@ -78,6 +78,7 @@ Trace store shape:
       "playData": 1,
       "level": 1,
       "model": {},
+      "config": {},
       "stepCount": 0,
       "latestAction": {},
       "steps": []
@@ -86,15 +87,16 @@ Trace store shape:
 }
 ```
 
-The trace store keeps up to 10 newest runs. Each step stores compact state, candidate summaries, selected candidate, validation, action, planner metadata, stall supervisor data, and recent browser history.
+The trace store keeps up to 10 newest runs. Run-level `model` records the resolved model/profile/provider, and run-level `config` records the public agent config used for the run. Each step stores compact state, candidate summaries, selected candidate, validation, action, stall supervisor data, and recent browser history.
 
 ## Model Profiles
 The backend uses `aisuite` for provider/model abstraction. Resolution order:
 
 1. request-level `model`;
 2. request-level `modelProfile`;
-3. `AGENT_MODEL_PROFILE`;
-4. `AGENT_DEFAULT_MODEL`.
+3. `public/agent-config.json` `agent.modelProfile`;
+4. `AGENT_MODEL_PROFILE`;
+5. `AGENT_DEFAULT_MODEL`.
 
 Request-level `model` and `AGENT_DEFAULT_MODEL` require `provider:model` format.
 
@@ -111,12 +113,76 @@ Dotenv files are reconciled before each backend planning request:
 3. `~/.env.local`
 4. `<repo>/.env.local`
 
-The browser may select a profile with `window.__lodeRunnerAgentOptions.modelProfile` or `?profile=openai|minimax|gemini`. Secrets remain server-side.
+The browser may select a profile with `window.__lodeRunnerAgentOptions.modelProfile`, `?profile=openai|minimax|gemini`, or the public config `agent.modelProfile`. Secrets remain server-side.
 
-Runtime tuning:
+Examples:
 
-- `AGENT_MAX_TICKS`: maximum legacy ticks for one translated candidate action.
-- `AGENT_TEMPERATURE`: model sampling temperature for candidate selection.
+```sh
+AGENT_MODEL_PROFILE=openai
+OPENAI_MODEL=gpt-4.1-mini
+OPENAI_API_KEY=...
+
+AGENT_MODEL_PROFILE=minimax
+MINIMAX_MODEL=MiniMax-M2.1
+MINIMAX_API_KEY=...
+MINIMAX_API_BASE=https://api.minimax.io/v1
+
+AGENT_MODEL_PROFILE=gemini
+GEMINI_MODEL=gemini-2.5-flash
+GEMINI_API_KEY=...
+
+# No profile: explicit provider prefix is required.
+AGENT_DEFAULT_MODEL=openai:gpt-4.1-mini
+OPENAI_API_KEY=...
+```
+
+## Public Agent Config
+`public/agent-config.json` is a non-secret local experiment file read by both the browser wrapper and Flask backend. It is served publicly, so it must never contain API keys, secret-bearing base URLs, or credentials.
+
+Current shape:
+
+```json
+{
+  "agent": {
+    "playData": 1,
+    "level": 1,
+    "maxPlaybackTimeSeconds": 120,
+    "maxSteps": 200,
+    "historyLimit": 24,
+    "modelProfile": null
+  },
+  "backend": {
+    "candidateLimit": 7,
+    "maxActionTicks": 20,
+    "temperature": 0.5
+  },
+  "prompt": {
+    "showCandidateScores": true
+  }
+}
+```
+
+Backend fields:
+
+- `backend.candidateLimit`: number of sorted candidates sent to the model.
+- `backend.maxActionTicks`: maximum ticks in one candidate action. Values above 20 are capped because the legacy hook caps one agent step at 20 ticks.
+- `backend.temperature`: model sampling temperature for candidate selection.
+- `prompt.showCandidateScores`: whether prompt candidate lines include numeric `score=...`. Scores remain in traces either way.
+
+Browser fields:
+
+- `agent.playData` and `agent.level`: requested runtime context. The current backend still accepts only Classic `1:1`.
+- `agent.maxPlaybackTimeSeconds`: AI run limit in legacy game-time seconds.
+- `agent.maxSteps`: emergency backend-decision step cap.
+- `agent.historyLimit`: recent browser history entries sent to the backend.
+- `agent.modelProfile`: optional non-secret profile name. URL `?profile=...` and `window.__lodeRunnerAgentOptions.modelProfile` override it.
+
+The backend reloads this JSON before each planning request. The browser fetches it before starting an AI run.
+
+Environment-only settings:
+
+- Provider credentials and secret-bearing model configuration stay in `.env` / `.env.local`.
+- `AGENT_DEBUG_LOG`, `APP_LOG_LEVEL`, `AGENT_MODEL_PROFILE`, and `AGENT_DEFAULT_MODEL` remain environment variables.
 
 ## Logging And Debug I/O
 `agent/logging_utils.py` configures low-noise Python logs before Flask is created.

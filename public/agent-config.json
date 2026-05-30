@@ -1,0 +1,18 @@
+{
+  "agent": {
+    "playData": 1,
+    "level": 1,
+    "maxPlaybackTimeSeconds": 120,
+    "maxSteps": 200,
+    "historyLimit": 24,
+    "modelProfile": null
+  },
+  "backend": {
+    "candidateLimit": 7,
+    "maxActionTicks": 20,
+    "temperature": 0.5
+  },
+  "prompt": {
+    "showCandidateScores": true
+  }
+}

@@ -276,6 +276,13 @@ def trace_model_summary(planner: dict[str, Any] | None) -> dict[str, Any] | None
     return summary or None
 
 
+def trace_config_summary(planner: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(planner, dict):
+        return None
+    config = planner.get("config")
+    return config if isinstance(config, dict) and config else None
+
+
 def trace_sort_key(run: dict[str, Any]) -> str:
     value = run.get("updatedAt") or run.get("createdAt") or ""
     return str(value)
@@ -357,7 +364,8 @@ def append_trace_step(run_id: str, step_trace: dict[str, Any]) -> dict[str, Any]
                 "updatedAt": now,
                 "playData": step_trace["playData"],
                 "level": step_trace["level"],
-                "model": trace_model_summary(step_trace.get("planner")),
+                "model": step_trace.get("model"),
+                "config": step_trace.get("config"),
                 "steps": [],
             }
             store["runs"][run_id] = run
@@ -368,7 +376,10 @@ def append_trace_step(run_id: str, step_trace: dict[str, Any]) -> dict[str, Any]
         run["updatedAt"] = now
         run["stepCount"] = len(run["steps"])
         run["latestAction"] = stored_step.get("action")
-        run["model"] = trace_model_summary(stored_step.get("planner"))
+        if run.get("model") is None and step_trace.get("model") is not None:
+            run["model"] = step_trace.get("model")
+        if run.get("config") is None and step_trace.get("config") is not None:
+            run["config"] = step_trace.get("config")
 
         prune_trace_runs(store)
         store["updatedAt"] = now
@@ -544,6 +555,8 @@ def next_agent_action():
     step_trace = dict(plan["trace"])
     step_trace["playData"] = snapshot.get("playData", 1)
     step_trace["level"] = snapshot.get("level", 1)
+    step_trace["model"] = trace_model_summary(plan.get("planner"))
+    step_trace["config"] = trace_config_summary(plan.get("planner"))
     try:
         run = append_trace_step(run_id, step_trace)
     except Exception as exc:

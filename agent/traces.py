@@ -24,24 +24,49 @@ def coerce_jsonable(value: Any) -> Any:
 
 def summarize_state(snapshot: dict[str, Any], analysis: dict[str, Any] | None) -> dict[str, Any]:
     analysis = analysis or {}
+    runner = _dict(analysis.get("runner"))
+    gold = _dict(analysis.get("gold"))
+    risk = _dict(analysis.get("risk"))
+    movement = _dict(analysis.get("movement"))
+    ladder = _dict(analysis.get("ladder"))
+    route_access = _dict(analysis.get("routeAccess"))
     return {
         "gameState": analysis.get("gameState"),
         "tick": snapshot.get("tick"),
         "godMode": analysis.get("godMode"),
-        "goldCount": analysis.get("goldCount"),
-        "goldComplete": analysis.get("goldComplete"),
-        "runner": analysis.get("runner"),
-        "guards": analysis.get("guards"),
-        "gold": analysis.get("gold"),
-        "nearestGold": analysis.get("nearestGold"),
+        "runner": {
+            "x": runner.get("x"),
+            "y": runner.get("y"),
+            "action": runner.get("action"),
+            "xOffset": runner.get("xOffset"),
+            "yOffset": runner.get("yOffset"),
+        },
+        "gold": {
+            "complete": gold.get("complete", analysis.get("goldComplete")),
+            "remainingCount": gold.get("remainingCount", analysis.get("goldCount")),
+            "visiblePositions": gold.get("visiblePositions", []),
+        },
         "primaryProgressTarget": analysis.get("primaryProgressTarget"),
-        "rowLadders": analysis.get("rowLadders"),
-        "risk": analysis.get("risk"),
-        "movement": analysis.get("movement"),
-        "dig": analysis.get("dig"),
-        "ladder": analysis.get("ladder"),
-        "routeAccess": analysis.get("routeAccess"),
-        "stallReport": analysis.get("stallReport") or analysis.get("progressMonitor"),
+        "guardRisk": {
+            "risk": risk.get("risk"),
+            "nearestSameRowGuard": risk.get("nearestSameRowGuard"),
+        },
+        "movement": {
+            "canMoveLeft": movement.get("canMoveLeft"),
+            "canMoveRight": movement.get("canMoveRight"),
+            "canMoveUp": movement.get("canMoveUp"),
+            "canMoveDown": movement.get("canMoveDown"),
+        },
+        "ladder": {
+            "detail": ladder.get("detail"),
+        },
+        "routeAccess": {
+            "available": route_access.get("available"),
+            "recommendedAction": route_access.get("recommendedAction"),
+            "followAvailable": route_access.get("followAvailable"),
+            "followAction": route_access.get("followAction"),
+            "reason": route_access.get("reason"),
+        },
     }
 
 
@@ -64,15 +89,19 @@ def summarize_candidates(candidates: list[dict[str, Any]] | None) -> list[dict[s
     return [summarize_candidate(candidate) for candidate in candidates or []]
 
 
+def _dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
 def serialize_step_trace(
     *,
     snapshot: dict[str, Any],
     history: list[dict[str, Any]],
     action: dict[str, Any],
-    planner: dict[str, Any],
     candidates: list[dict[str, Any]] | None = None,
     selected_candidate: dict[str, Any] | None = None,
     validation: dict[str, Any] | None = None,
+    stall_supervisor: dict[str, Any] | None = None,
     analysis: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
@@ -84,6 +113,5 @@ def serialize_step_trace(
         "validation": coerce_jsonable(validation),
         "historyTail": coerce_jsonable(history[-8:]),
         "action": coerce_jsonable(action),
-        "planner": coerce_jsonable(planner),
-        "stallSupervisor": coerce_jsonable((planner or {}).get("stallSupervisor")),
+        "stallSupervisor": coerce_jsonable(stall_supervisor),
     }

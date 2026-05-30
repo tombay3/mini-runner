@@ -96,6 +96,7 @@ def generate_candidates(
     history: list[dict[str, Any]],
     *,
     limit: int = 7,
+    max_action_ticks: int = AGENT_MAX_TICKS,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     analysis = analyze_state(snapshot, history)
     movement = analysis["movement"]
@@ -127,7 +128,7 @@ def generate_candidates(
         stop_conditions: list[str] | None = None,
         candidate_id: str | None = None,
     ) -> None:
-        action = _normalize_action(key_code, ticks, reason)
+        action = _normalize_action(key_code, ticks, reason, max_ticks=max_action_ticks)
         if not is_action_physically_valid(action, movement, dig):
             return
         cid = candidate_id or make_candidate_id(kind, target, ACTION_NAMES[key_code])
@@ -660,10 +661,16 @@ def is_action_physically_valid(
     return False
 
 
-def _normalize_action(key_code: int, ticks: int, reason: str) -> dict[str, Any]:
+def _normalize_action(
+    key_code: int,
+    ticks: int,
+    reason: str,
+    *,
+    max_ticks: int = AGENT_MAX_TICKS,
+) -> dict[str, Any]:
     return {
         "keyCode": key_code,
-        "ticks": max(1, min(AGENT_MAX_TICKS, int(ticks))),
+        "ticks": max(1, min(max_ticks, int(ticks))),
         "reason": str(reason)[:500],
     }
 

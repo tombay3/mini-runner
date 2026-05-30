@@ -12,6 +12,16 @@ from .reasoning_tools import (
     UP_KEYCODE,
 )
 
+HORIZONTAL_RECOVERY_COMMIT_KINDS = {
+    "align_ladder",
+    "climb_ladder",
+    "collect_same_row_gold",
+    "continue_fall",
+    "descend_route",
+    "exit_ladder_route",
+    "route_access_follow",
+}
+
 
 def build_stall_report(
     analysis: dict[str, Any], history: list[dict[str, Any]], window: int = 10
@@ -243,6 +253,8 @@ def blocked_candidates_for(
     ids = [repeated_candidate_id] if repeated_candidate_id else []
     kinds: list[str] = []
     if stall_type == "horizontal_oscillation":
+        if repeated_kind in HORIZONTAL_RECOVERY_COMMIT_KINDS:
+            ids = []
         kinds.extend(["godmode_progress", "retreat_from_guard", "wait_or_stop"])
     elif stall_type == "same_candidate_no_progress" and repeated_kind:
         kinds.append(repeated_kind)
