@@ -47,13 +47,17 @@ args = ".venv/bin/python app.py"
 waitForPort = 8080
 
 [[ports]]
+localPort = 8080
+externalPort = 8080
+exposeLocalhost = true
+
+[[ports]]
 localPort = 8283
 externalPort = 80
 
 [[ports]]
-localPort = 8080
-externalPort = 8080
-exposeLocalhost = true
+localPort = 8285
+externalPort = 3000
 
 [deployment]
 deploymentTarget = "autoscale"
