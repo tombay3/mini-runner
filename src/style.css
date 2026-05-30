@@ -220,7 +220,7 @@ body {
   background: rgba(255, 122, 110, 0.14);
 }
 
-@media (max-width: 480px) {
+@media (max-height: 480px) {
   .recording-rail {
     gap: 8px;
   }
