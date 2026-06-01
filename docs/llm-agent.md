@@ -1,16 +1,14 @@
 # LLM Candidate Agent
 
 ## Summary
-The AI agent is a browser-driven loop with a backend candidate planner. The browser and legacy runtime execute the game; the backend selects one short action at a time.
-
-Current scope: Classic `playData=1`, `level=1`.
+The AI agent is a browser-driven loop with a backend candidate planner. The browser and legacy runtime execute the game; the backend selects one short action at a time. Current scope: Classic `playData=1`, `level=1`.
 
 ## Browser Loop
 `src/agent.js`:
 
 - starts Classic level 1 through `window.lodeRunnerAgentHooks.startLevel(1, 1)`;
 - captures `snapshot()` from the legacy runtime;
-- sends snapshot, history, and run id to `POST /api/agent/next-action`;
+- sends snapshot/state/summary, history, and run id to `POST /api/agent/next-action`;
 - applies returned `{ keyCode, ticks }` through `step()`;
 - stops on success, failure, cancellation, `public/agent-config.json` `agent.maxPlaybackTimeSeconds`, or `agent.maxSteps`;
 - saves success and failure demos through the recording API.
@@ -18,7 +16,7 @@ Current scope: Classic `playData=1`, `level=1`.
 The active red `AI` rail button aborts the current run.
 The browser also reads `agent.historyLimit`, `agent.playData`, `agent.level`, and optional `agent.modelProfile` from `public/agent-config.json` before each new AI run.
 
-## Legacy Hook Surface
+### Legacy Hook Surface
 `public/game/lodeRunner.agentHooks.js` exposes:
 
 - `startLevel(playData, level)`
@@ -34,13 +32,7 @@ The hook starts the existing Training/Modern flow, stops the normal ticker, pres
 ## Snapshot Structure
 `src/agent.js` calls `window.lodeRunnerAgentHooks.snapshot()` before each backend planning request and sends the returned object to `POST /api/agent/next-action`.
 
-Inside `public/game/lodeRunner.agentHooks.js`, `snapshot()` includes:
-
-```js
-terrainGrid: snapshotTerrainGrid()
-```
-
-`snapshotTerrainGrid()` reads the legacy structural layer `map[x][y].base` and converts each tile through `terrainChar(cell.base)`. It is the structural terrain view, not the live actor/objective view.
+Inside `public/game/lodeRunner.agentHooks.js`, `snapshotTerrainGrid()` reads the legacy structural layer `map[x][y].base` and converts each tile through `terrainChar(cell.base)`. It is the structural terrain view, not the live actor/objective view.
 
 Important snapshot fields:
 
@@ -53,9 +45,8 @@ Important snapshot fields:
 - `guards`: guard coordinates, offsets, action, gold-carrying state, and same-row relation to the runner.
 - `gold`: visible gold coordinates, guard-carried gold, remaining count, and completion state.
 - `terrainGrid`: structural grid with visible gold, guards, and runner removed.
-- `grid` and `baseGrid`: raw legacy/debug grids retained for inspection; candidate generation should prefer structured fields and `terrainGrid`.
 
-`terrainGrid` uses `(0,0)` at the top-left. Each row is exactly 28 characters, `x` increases right, and `y` increases down.
+`terrainGrid` uses `(0,0)` at the top-left. Each row is exactly 28 characters, `x` increases right, and `y` increases down. Visible gold, guards, and runner are represented separately in `gold`, `guards`, and `runner`.
 
 Tile legend:
 
@@ -67,9 +58,7 @@ Tile legend:
 - `S`: hidden exit ladder in the raw snapshot
 - `X`: trap/false brick
 
-Visible gold, guards, and runner are represented separately in `gold`, `guards`, and `runner`; they are not encoded in `terrainGrid`. The raw snapshot keeps hidden exit ladder `S`; prompt formatting may hide `S` before `goldComplete`.
-
-Classic `playData=1`, `level=1` sample `terrainGrid`:
+Classic `playData=1`, `level=1` sample:
 
 ```json
 [
@@ -101,14 +90,14 @@ The model chooses a candidate id:
 { "candidateId": "climb_ladder_27_14_up", "reason": "Standing on the ladder, climb to change rows." }
 ```
 
-The backend translates it into a legacy action:
+The backend translates it into a legacy action for the current step:
 
 ```json
 { "keyCode": 38, "ticks": 6, "reason": "..." }
 ```
 
 ## Candidate Generation
-`agent/candidates.py` turns the live snapshot and recent action history into a compact set of backend-generated choices. LLMs are terrible at spatial math and physics. The model chooses only from these choices; it does not invent key codes.
+`agent/candidates.py` turns the live snapshot and recent action history into a compact set of backend-generated choices. The model chooses only from these choices; it does not invent key codes.
 
 The first step is `analyze_state(snapshot, history)`, which normalizes:
 
@@ -157,6 +146,7 @@ Generation rules:
 - `add(...)` normalizes each `firstAction`, clamps ticks to `public/agent-config.json` `backend.maxActionTicks`, rejects physically invalid first actions, deduplicates ids, and applies stall score adjustments.
 - Candidate scoring is heuristic. Higher scores go first, then ids break ties. The prompt receives the top `backend.candidateLimit` candidates.
 - `prompt.showCandidateScores` controls whether numeric scores are visible to the model. Scores are always retained in traces and debug output.
+- uses the stall report to suppress or penalize loop candidates and boost recovery candidates.
 - Only legal first actions should be emitted. Legality comes from movement and dig affordances in `agent/reasoning_tools.py`.
 - Before gold completion, gold collection and route progress dominate. After gold completion, exit-ladder routing dominates.
 - In god mode, guard contact is non-lethal, so progress candidates outrank survival spacing unless terrain physically blocks movement.
@@ -167,7 +157,7 @@ Generation rules:
 
 The prompt tells the model:
 
-- the backend already checked candidate legality;
+- the backend already checked candidate legality, movement feasibility, dig feasibility, god-mode behavior, and route-access opportunities;
 - it must choose one candidate id from the provided list;
 - it must not invent key codes, actions, or alternate moves;
 - it must return JSON only.
@@ -190,11 +180,11 @@ Prompt sections:
 
 The state summary includes current context, runner coordinate/action/offset, remaining visible gold, primary progress target, guard risk, movement booleans, ladder detail, route-access detail, and compact stall status.
 
-The candidate list shown to the model includes each id, kind, risk, translated first action, optional target, goal, reason, and stall annotations. If `prompt.showCandidateScores=true`, it also includes numeric `score=...` as a priority hint. Candidate-level `reason` is generated by backend candidate logic; `firstAction.reason` is the same reason normalized for execution/tracing. `score` and `baseScore` stay in trace/debug output.
+The candidate list shown to the model includes each id, kind, risk, translated first action, optional target, goal, reason, and stall annotations. If `prompt.showCandidateScores=true`, it also includes numeric `score=...` as a priority hint. Candidate-level `reason` is generated by backend candidate logic; `firstAction.reason` is the same reason normalized for execution/tracing.
 
 If a stall is active, the prompt includes the stall type, recent positions, recent candidate ids, blocked candidates/kinds, preferred recovery kinds, ladder direction restrictions, and recovery hint. The model is explicitly told not to choose blocked candidates when severity is `stalled`.
 
-The prompt does not ask the model to parse the full board or invent raw key events during normal runtime. The board has already been reduced into structured state and candidates.
+The prompt does not ask the model to parse the full board `terrainGrid` or invent raw key events during normal runtime. The board has already been reduced into structured state and candidates.
 
 ## Stall Handling
 `agent/stall_tools.py` is the deterministic supervisor around candidate generation and selection. It does not replace the candidate planner; it detects repeated non-progress patterns, penalizes bad repeats, and provides recovery guidance.
@@ -231,6 +221,17 @@ The stall report includes:
 - blocked ladder directions for vertical ladder oscillation;
 - preferred recovery candidate kinds;
 - optional oscillation target and recovery hint.
+
+The resulting `stallReport` can:
+
+- block specific candidate IDs, kinds, or directions
+- boost recovery candidates
+- add a compact prompt note
+- trigger one retry if the model picks a blocked candidate
+- fall back to the highest-ranked non-blocked candidate
+- fail early if no recovery candidate exists
+
+This keeps the default runtime deterministic and traceable while still addressing looping behavior.
 
 Candidate integration:
 

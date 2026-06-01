@@ -506,7 +506,6 @@ def summarize_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any
             "id": candidate["id"],
             "kind": candidate["kind"],
             "score": candidate["score"],
-            "baseScore": candidate.get("baseScore"),
             "stallBlocked": candidate.get("stallBlocked", False),
             "stallRecovery": candidate.get("stallRecovery", False),
             "target": candidate.get("target"),

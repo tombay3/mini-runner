@@ -91,3 +91,4 @@ Here is a one-page summary documenting the project's technical details.
 * **Python Backend:** Record & playback and the LLM agent use Flask APIs and JSON stores under `__data1`.
 * **Game Assets:** includes sounds, level data, and bundled demo data as-is from legacy runtime.
 * All development happens in the wrapper/backend. Legacy files only need to expose existing runtime state.
+* The legacy runtime remains authoritative for game physics, guard AI, terminal success/failure.

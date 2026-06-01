@@ -3,11 +3,19 @@
 ## Summary
 `app.py` provides local Flask APIs for recording persistence, agent planning, trace retrieval, model configuration, logging, and raw model I/O debugging.
 
+Current backend layers:
+
+- `candidates`: extracts normalized facts and generates/scored candidate actions.
+- `reasoning_tools`: deterministic movement, guard, dig, and route helpers.
+- `stall_tools`: deterministic oscillation/loop/stall diagnosis and recovery hints.
+- `prompt`: formats current state summary, candidate list, optional stall report.
+- `service`: orchestrates model call, candidate validation, retry/fallback, and trace assembly.
+
 Mutable local stores:
 
-- `__data1/recordings.json`
-- `__data1/agent-traces.json`
-- `__data1/agent-debug.log` when debug logging is enabled
+- `__data1/recordings.json` replayable user and agent demos.  Agent recordings reference traces with `traceId`.
+- `__data1/agent-traces.json` agent traces of latest runs.
+- `__data1/agent-debug.log` when debug logging is enabled.
 
 ## Recording API
 - `GET /api/recordings`: return the full recording store.
@@ -58,13 +66,17 @@ Agent recordings use `traceId` as `id`. User recordings use `user:<timestamp>`.
 }
 ```
 
-The endpoint supports Classic `playData=1`, `level=1`.
+## Backend Agent Flow
+- The endpoint supports Classic `playData=1`, `level=1`.  Internally use:
+  `snapshot + history -> candidate analysis -> LLM candidate choice -> backend action translation -> guard validation -> response`.
+- Disable automatic tool-heavy reasoning from the normal runtime path; candidate generation happens deterministically in Python before the LLM call.
+- `agent-traces.json` is the diagnostic store for the V2 Lode Runner candidate agent. It records recent backend planning steps, compact state summaries, generated candidate summaries, the selected candidate, validation, stall supervision, and model metadata.
 
 ## Trace API And Store
 - `GET /api/agent/traces/<trace_id>`: return one retained trace run.
 - `GET /api/agent/runs/<playData>/<level>`: return latest trace metadata and saved recording for that context.
 
-Trace store shape:
+On Trace store, each run contains:
 
 ```json
 {
@@ -87,18 +99,27 @@ Trace store shape:
 }
 ```
 
-The trace store keeps up to 10 newest runs. Run-level `model` records the resolved model/profile/provider, and run-level `config` records the public agent config used for the run. Each step stores compact state, candidate summaries, selected candidate, validation, action, stall supervisor data, and recent browser history.
+Typical fields of `step.state` persisted game-state summary for a step.:
+
+- `gameState`, `tick`, `godMode`
+- `goldCount`, `goldComplete`, `gold`
+- `runner`, `guards`
+- `nearestGold`, `primaryProgressTarget`
+- `rowLadders`
+- `risk`
+- `movement`, `dig`, `ladder`, `routeAccess`
+- `stallReport`
+
+The trace store keeps up to 10 newest runs. Run-level `model` records the resolved model/profile/provider, and run-level `config` records the public agent config used for the run. Each step stores compact state, candidate summaries, selected candidate, validation, action, stall supervisor data, and recent browser history. It does not store the full raw snapshot.
+
 
 ## Model Profiles
 The backend uses `aisuite` for provider/model abstraction. Resolution order:
 
-1. request-level `model`;
-2. request-level `modelProfile`;
-3. `public/agent-config.json` `agent.modelProfile`;
-4. `AGENT_MODEL_PROFILE`;
-5. `AGENT_DEFAULT_MODEL`.
-
-Request-level `model` and `AGENT_DEFAULT_MODEL` require `provider:model` format.
+- URL-param `?profile=openai|minimax|gemini`;
+- `public/agent-config.json` `agent.modelProfile`;
+- `AGENT_MODEL_PROFILE`;
+- `AGENT_DEFAULT_MODEL` - require `provider:model` format.
 
 Supported profiles:
 
@@ -112,8 +133,6 @@ Dotenv files are reconciled before each backend planning request:
 2. `<repo>/.env`
 3. `~/.env.local`
 4. `<repo>/.env.local`
-
-The browser may select a profile with `window.__lodeRunnerAgentOptions.modelProfile`, `?profile=openai|minimax|gemini`, or the public config `agent.modelProfile`. Secrets remain server-side.
 
 Examples:
 
@@ -192,11 +211,4 @@ Environment-only settings:
 - Werkzeug access logs: `WARNING`
 - format: single-line `key=value`
 
-Environment controls:
-
-- `APP_LOG_LEVEL`
-- `AGENT_DEBUG_LOG=1`
-
-`python app.py --debug` enables raw model I/O debug logging and sets app logs to `DEBUG`.
-
-Raw prompts and model outputs are written to `__data1/agent-debug.log` with 10-entry rotation. They are not emitted to stdout and are not embedded in `agent-traces.json`.
+`python app.py --debug` sets app logs `APP_LOG_LEVEL` to `DEBUG` and enables raw model I/O debug logging `AGENT_DEBUG_LOG=1`.  Raw prompts and model outputs `finalMessage` are written to `__data1/agent-debug.log` with 10-entry rotation. Each debug block includes the trace id, model, retry flag, raw `build_agent_prompt()` output, final message content, optional provider `reasoning_content`, parse error, and selected candidate id.

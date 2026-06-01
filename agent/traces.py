@@ -75,7 +75,6 @@ def summarize_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
         "id": candidate.get("id"),
         "kind": candidate.get("kind"),
         "score": candidate.get("score"),
-        "baseScore": candidate.get("baseScore"),
         "stallBlocked": candidate.get("stallBlocked", False),
         "stallRecovery": candidate.get("stallRecovery", False),
         "target": candidate.get("target"),

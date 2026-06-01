@@ -371,6 +371,8 @@ def append_trace_step(run_id: str, step_trace: dict[str, Any]) -> dict[str, Any]
             store["runs"][run_id] = run
         step_index = len(run["steps"])
         stored_step = dict(step_trace)
+        stored_step.pop("model", None)
+        stored_step.pop("config", None)
         stored_step["stepIndex"] = step_index
         run["steps"].append(stored_step)
         run["updatedAt"] = now

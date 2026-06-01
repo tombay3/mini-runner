@@ -61,7 +61,32 @@ The wrapper adds tooling without replacing legacy gameplay:
 - browser-side AI solve loop;
 - agent traces and raw model I/O debug logging through the Flask backend.
 
-Fullscreen changes restart the legacy game from the welcome flow so `init()` recalculates canvas and icon geometry.
+### Runtime Flow
+
+1. [src/agent.js](../src/agent.js) starts Classic level 1 through [public/game/lodeRunner.agentHooks.js](../public/game/lodeRunner.agentHooks.js).
+2. The hook starts the legacy game in Training/Modern playback context, stops the normal ticker, and exposes manual `snapshot()` / `step()` control.
+3. The browser sends `playData`, `level`, `snapshot`, `history`, `runId`, optional `model`, and optional `modelProfile` to `/api/agent/next-action`.
+4. [app.py](../app.py) validates the request and calls `plan_next_action()`.
+5. [agent/service.py](../agent/service.py) resolves the model and orchestrates candidate planning.
+6. [agent/candidates.py](../agent/candidates.py), [agent/reasoning_tools.py](../agent/reasoning_tools.py), and [agent/stall_tools.py](../agent/stall_tools.py) analyze the snapshot/history and produce ranked candidates.
+7. [agent/prompt.py](../agent/prompt.py) asks the LLM to choose one candidate by ID.
+8. The backend validates the selected candidate, applies stall retry/fallback logic if needed, and returns one bounded legacy action.
+9. The browser steps the legacy runtime and repeats until success, failure, cancellation, or the iteration limit.
+10. [src/agent.js](../src/agent.js) saves the final successful or failed demo through the recording API.
+
+### Backend Module Map
+Current backend agent modules:
+
+- [agent/config.py](../agent/config.py): constants, allowed keycodes, model normalization, default model lookup.
+- [agent/service.py](../agent/service.py): request validation, `aisuite` client wrapper, model call, candidate selection orchestration, retry/fallback handling.
+- [agent/candidates.py](../agent/candidates.py): normalized analysis and candidate generation/ranking.
+- [agent/reasoning_tools.py](../agent/reasoning_tools.py): deterministic snapshot helpers for movement, guard pressure, digging, route access, and progress facts.
+- [agent/stall_tools.py](../agent/stall_tools.py): deterministic oscillation/loop/stall detection and recovery hints.
+- [agent/prompt.py](../agent/prompt.py): compact candidate-selection prompt.
+- [agent/traces.py](../agent/traces.py): trace serialization and compact step summaries:
+  `snapshotStateSummary`, `primaryProgressTarget`, `stallSupervisor`, `candidates`, `selectedCandidateId`, `translatedAction`, `historyTail`, `validation`.
+- [agent/errors.py](../agent/errors.py): request/config/execution error types.
+- [agent/logging_utils.py](../agent/logging_utils.py): low-noise Python logging setup.
 
 ## Current Docs
 - [Assessment](./assessment.md)

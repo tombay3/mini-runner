@@ -3,7 +3,24 @@
 ## Summary
 The V2 agent constrains the model to backend-generated candidate actions. This deliberately trades an open raw-key action space for a smaller, safer set of legal and purposeful choices.
 
-Candidate generation answers: "What legal useful moves exist right now?" Candidate scoring answers: "Which moves look promising by simple rules?" The LLM answers: "Given these choices and the current context, which candidate should we commit to?"
+LLMs are terrible at spatial math and physics. Candidate generation answers: "What legal useful moves exist right now?" Candidate scoring answers: "Which moves look promising by simple rules?" The LLM answers: "Given these choices and the current context, which candidate should we commit to?"
+
+This intentionally excludes demo-path guidance, few-shot examples, Python simulation, full pathfinding.
+
+## Candidate Data
+The V2 agent is candidate-centric. The model chooses a generated `candidateId`; it does not invent raw key codes.
+
+Each persisted candidate summary includes:
+
+- `id`
+- `kind`
+- `score`
+- `stallBlocked`
+- `stallRecovery`
+- `target`
+- `firstAction`
+- `goal`
+- `reason`
 
 ## Scoring
 The heuristic scoring acts as the tactical engine, while the LLM acts as the strategic engine.
@@ -53,6 +70,19 @@ This classification keeps the candidate approach constrained without making it b
 
 ## Selection Validation
 After the LLM returns a `candidateId`, `agent/service.py` validates the choice before sending an action to the browser. This validation is planner-level bookkeeping, not legacy physics execution.
+
+`validation` explains how the candidate was accepted or changed:
+
+- `knownCandidate`
+- `requestedCandidateId`
+- `selectedCandidateId`
+- `actionValid`
+- `fallbackUsed`
+- `fallbackReason`
+- `stallBlocked`
+- `stallBlockReason`
+- `stallReportType`
+- `stallSeverity`
 
 Validation records:
 
