@@ -147,7 +147,7 @@ MINIMAX_API_KEY=...
 MINIMAX_API_BASE=https://api.minimax.io/v1
 
 AGENT_MODEL_PROFILE=gemini
-GEMINI_MODEL=gemini-2.5-flash
+GEMINI_MODEL=gemini-flash-lite-latest
 GEMINI_API_KEY=...
 
 # No profile: explicit provider prefix is required.
