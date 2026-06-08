@@ -381,3 +381,11 @@ function createRunId() {
   }
   return `trace-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
 }
+
+export const _test = {
+  getAgentModelProfileOption,
+  hasExceededPlaybackTime,
+  normalizeAgentAction,
+  normalizeAgentConfig,
+  summarizeHistorySnapshot,
+};

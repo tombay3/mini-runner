@@ -6,7 +6,8 @@
   "scripts": {
     "api": "python app.py",
     "dev": "vite --force",
-    "build": "vite build"
+    "build": "vite build",
+    "test": "python scripts/sanity_backend.py && node scripts/sanity_frontend.mjs"
   },
   "devDependencies": {
     "vite": "^6.3.5"

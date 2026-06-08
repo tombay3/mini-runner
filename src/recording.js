@@ -6,6 +6,7 @@ const OVERLAY_ID = "recording-overlay";
 const FULLSCREEN_RESTART_DELAY_MS = 180;
 const FAILED_DEMO_STOP_POLL_MS = 100;
 const PLAYBACK_STEP_TIMEOUT_MS = 8000;
+const LEGACY_TICKS_PER_SECOND = 16;
 
 const agentController = createAgentController({
   apiFetch,
@@ -1068,7 +1069,7 @@ function formatDemoTime(value) {
   if (!Number.isFinite(time) || time <= 0) {
     return "-";
   }
-  return `${Math.round(time)}s`;
+  return `${Math.round(time / LEGACY_TICKS_PER_SECOND)}s`;
 }
 
 function formatPlaybackProgress(state) {
@@ -1139,3 +1140,12 @@ async function apiFetch(url, options) {
   }
   return body;
 }
+
+export const _test = {
+  copyArray,
+  extractTraceStepTicks,
+  formatDemoTime,
+  formatPlaybackProgress,
+  getTraceStepTick,
+  normalizeDemo,
+};
