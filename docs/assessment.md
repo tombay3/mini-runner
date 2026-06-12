@@ -86,7 +86,7 @@ Here is a one-page summary documenting the project's technical details.
 
 ### Notable Information
 
-* **Legacy runtime:** The original game is still playable as static browser code under `public/game`.
+* **Legacy runtime:** The original game is still playable as a static web app on `/game/lodeRunner.html`.
 * **Wrapper runtime:** leverage the legacy game as executor, recorder, renderer, and playback engine.
 * **Python Backend:** Record & playback and the LLM agent use Flask APIs and JSON stores under `__data1`.
 * **Game Assets:** includes sounds, level data, and bundled demo data as-is from legacy runtime.

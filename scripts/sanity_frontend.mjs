@@ -121,6 +121,28 @@ assert.equal(recording.getTraceStepTick({ historyTail: [{ tick: 4 }, { tick: 6 }
 
 assert.equal(recording.formatDemoTime(32), "2s");
 assert.equal(recording.formatDemoTime(0), "-");
+assert.equal(
+  recording.buildPlaybackVideoFileName(
+    "23dfc383-aaaa-bbbb-cccc-dddddddddddd",
+    new Date("2026-06-12T02:10:48.927Z"),
+  ),
+  "run-23dfc383-2026-06-12T02-10-48.webm",
+);
+assert.equal(
+  recording.buildPlaybackVideoFileName(
+    "trace:abc/123",
+    new Date("2026-01-02T03:04:05.006Z"),
+    "video/mp4",
+  ),
+  "run-trace-abc-123-2026-01-02T03-04-05.mp4",
+);
+assert.equal(
+  recording.choosePlaybackVideoMimeType({
+    isTypeSupported: (mimeType) => mimeType === "video/webm;codecs=vp8,opus",
+  }),
+  "video/webm;codecs=vp8,opus",
+);
+assert.equal(recording.choosePlaybackVideoMimeType({ isTypeSupported: () => false }), "");
 
 const traceState = {
   currentRecord: {
@@ -138,6 +160,20 @@ window.maxPlayId = 1;
 window.playMode = window.PLAY_DEMO_ONCE;
 window.demoTickCount = 16;
 assert.equal(recording.formatPlaybackProgress(traceState), "steps 2/3");
+assert.equal(recording.getTracePlaybackProgress(traceState, 3), 2);
+assert.equal(recording.getNextTraceStepTargetTick(traceState), 32);
+window.demoTickCount = 32;
+assert.equal(recording.getTracePlaybackProgress(traceState, 3), 3);
+assert.equal(recording.getNextTraceStepTargetTick(traceState), null);
+
+const missingTraceState = {
+  currentRecord: { traceId: "trace-1" },
+  selectedTraceSummary: { stepCount: 3 },
+  selectedTraceId: "",
+  selectedTraceTicks: [],
+  playbackKey: "1:1",
+};
+assert.equal(recording.getNextTraceStepTargetTick(missingTraceState), null);
 
 const keyState = {
   currentRecord: {

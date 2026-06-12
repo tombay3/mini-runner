@@ -60,6 +60,7 @@ async function runAgent(state, deps) {
     return;
   }
 
+  deps.stopPlaybackVideoRecording?.(state, { download: false });
   deps.clearPlaybackDebugState?.(state);
   state.agentRunning = true;
   state.agentAbort = new AbortController();

@@ -3,3 +3,6 @@ aisuite @ git+https://github.com/joor0x/aisuite.git@4b07ed91ef8a8fdcccb6a7a89823
 openai>=2.35,<3
 pydantic>=2.13,<3
 python-dotenv>=1.0,<2
+jupyter>=1.0,<2
+pandas>=2.0,<3
+matplotlib>=3.8,<4

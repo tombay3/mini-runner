@@ -7,6 +7,11 @@ const FULLSCREEN_RESTART_DELAY_MS = 180;
 const FAILED_DEMO_STOP_POLL_MS = 100;
 const PLAYBACK_STEP_TIMEOUT_MS = 8000;
 const LEGACY_TICKS_PER_SECOND = 16;
+const PLAYBACK_VIDEO_MIME_TYPES = [
+  "video/webm;codecs=vp9,opus",
+  "video/webm;codecs=vp8,opus",
+  "video/webm",
+];
 
 const agentController = createAgentController({
   apiFetch,
@@ -17,6 +22,7 @@ const agentController = createAgentController({
   recordingApiBase: API_BASE,
   scheduleRefresh,
   setUiState,
+  stopPlaybackVideoRecording,
   syncOverlayState,
 });
 
@@ -47,6 +53,14 @@ export function installRecording() {
     playbackStepping: false,
     playbackStepRaf: 0,
     playbackStepStartedAt: 0,
+    videoRecorder: null,
+    videoStream: null,
+    videoChunks: [],
+    videoRecording: false,
+    videoStopping: false,
+    videoDownloadOnStop: true,
+    videoRecordId: "",
+    videoMimeType: "",
     debugBarRaf: 0,
     els: {},
   };
@@ -149,7 +163,7 @@ function createOverlay(state) {
       type="button"
       class="recording-rail-button"
       data-action="agent"
-      data-icon="AI"
+      data-icon="✨"
       aria-label="Solve with AI agent"
       title="Solve Classic level 1 with AI agent"
     ></button>
@@ -219,7 +233,7 @@ function createOverlay(state) {
   state.els.god = overlay.querySelector("[data-action='god']");
   state.els.fullscreen = overlay.querySelector("[data-action='fullscreen']");
 
-  state.els.play.addEventListener("click", () => void playOrToggleCurrentRecording(state));
+  state.els.play.addEventListener("click", (event) => void playOrToggleCurrentRecording(state, event));
   state.els.prev.addEventListener("click", () => selectAdjacentRecord(state, -1));
   state.els.next.addEventListener("click", () => selectAdjacentRecord(state, 1));
   state.els.delete.addEventListener("click", () => void deleteCurrentRecording(state));
@@ -248,6 +262,7 @@ async function refreshWhenLevelChanges(state) {
     state.selectedRecordIndex = 0;
     state.selectedTraceSummary = null;
     clearSelectedTraceTicks(state);
+    stopPlaybackVideoRecording(state, { download: false });
     clearPlaybackDebugState(state);
     setUiState(state, "idle");
   }
@@ -267,6 +282,7 @@ async function refreshStatus(state, force = false, preferredRecordId = null) {
     state.selectedRecordIndex = 0;
     state.selectedTraceSummary = null;
     clearSelectedTraceTicks(state);
+    stopPlaybackVideoRecording(state, { download: false });
     clearPlaybackDebugState(state);
     setUiState(state, "idle");
     return;
@@ -291,6 +307,7 @@ async function refreshStatus(state, force = false, preferredRecordId = null) {
       state.selectedRecordIndex = 0;
       state.selectedTraceSummary = null;
       clearSelectedTraceTicks(state);
+      stopPlaybackVideoRecording(state, { download: false });
       clearPlaybackDebugState(state);
       setUiState(state, "missing");
       return;
@@ -300,6 +317,7 @@ async function refreshStatus(state, force = false, preferredRecordId = null) {
     state.selectedRecordIndex = 0;
     state.selectedTraceSummary = null;
     clearSelectedTraceTicks(state);
+    stopPlaybackVideoRecording(state, { download: false });
     clearPlaybackDebugState(state);
     setUiState(state, "error");
   }
@@ -394,12 +412,13 @@ function selectAdjacentRecord(state, delta) {
   const count = state.records.length;
   state.selectedRecordIndex = (state.selectedRecordIndex + delta + count) % count;
   state.playbackKey = "";
+  stopPlaybackVideoRecording(state, { download: false });
   clearStoredDemoStopTimer(state);
   applySelectedRecord(state);
   setUiState(state, state.currentRecord ? "available" : "missing");
 }
 
-async function playOrToggleCurrentRecording(state) {
+async function playOrToggleCurrentRecording(state, event = null) {
   const context = getCurrentContext();
   if (!context) {
     clearPlaybackDebugState(state);
@@ -413,6 +432,7 @@ async function playOrToggleCurrentRecording(state) {
   }
 
   setUiState(state, state.currentRecord ? "available" : "missing", "play");
+  let videoCapture = null;
   try {
     if (!state.currentRecord) {
       await refreshStatus(state, true);
@@ -423,11 +443,18 @@ async function playOrToggleCurrentRecording(state) {
       return;
     }
     const demo = normalizeDemo(record.demo, context.playData, context.level);
+    videoCapture = isPlaybackVideoRecordingRequested(event)
+      ? await requestPlaybackVideoCapture()
+      : null;
     startStoredDemo(state, demo, context);
     state.playbackKey = getContextKey(context);
     state.currentRecord = record;
+    if (videoCapture) {
+      startPlaybackVideoRecording(state, record, videoCapture);
+    }
     setUiState(state, "available");
   } catch (_error) {
+    stopMediaStream(videoCapture?.stream);
     setUiState(state, "error");
   }
 }
@@ -567,6 +594,7 @@ function scheduleFailedDemoStop(state, demo, context) {
 function stopFailedDemoPlayback(state) {
   clearStoredDemoStopTimer(state);
   clearPlaybackDebugState(state);
+  stopPlaybackVideoRecording(state);
   if ("ACT_STOP" in window) {
     window.keyAction = window.ACT_STOP;
   }
@@ -594,7 +622,8 @@ function handlePlaybackDebugKeyDown(state, event) {
 
   const isSpace = event.code === "Space" || event.key === " ";
   const isPeriod = event.code === "Period" || event.key === ".";
-  if (!isSpace && !isPeriod) {
+  const isComma = event.code === "Comma" || event.key === ",";
+  if (!isSpace && !isPeriod && !isComma) {
     return;
   }
 
@@ -606,8 +635,12 @@ function handlePlaybackDebugKeyDown(state, event) {
     toggleStoredPlaybackPause(state);
     return;
   }
-  if (state.playbackPaused) {
+  if (isPeriod && state.playbackPaused) {
     stepStoredPlaybackSegment(state);
+    return;
+  }
+  if (isComma && state.playbackPaused) {
+    stepStoredPlaybackTraceStep(state);
   }
 }
 
@@ -725,6 +758,59 @@ function stepStoredPlaybackSegment(state) {
   state.playbackStepRaf = window.requestAnimationFrame(pollStep);
 }
 
+function stepStoredPlaybackTraceStep(state) {
+  if (!state.playbackPaused || state.playbackStepping || !isWrapperPlaybackActive(state)) {
+    return;
+  }
+
+  const targetTick = getNextTraceStepTargetTick(state);
+  if (targetTick === null) {
+    if (typeof window.showTipsText === "function") {
+      const message =
+        state.selectedTraceId === state.currentRecord?.traceId && state.selectedTraceTicks.length
+          ? "TRACE STEP END"
+          : "NO TRACE STEP DATA";
+      window.showTipsText(message, 2500);
+    }
+    return;
+  }
+
+  state.playbackStepping = true;
+  state.playbackStepStartedAt = performance.now();
+  resumeStoredPlayback(state, { showTip: false });
+  syncOverlayState(state);
+
+  const pollStep = (now) => {
+    if (!state.playbackStepping) {
+      return;
+    }
+    if (!isWrapperPlaybackActive(state)) {
+      clearPlaybackDebugState(state);
+      syncOverlayState(state);
+      return;
+    }
+
+    const currentTick = getFiniteNumber(window.demoTickCount);
+    const reachedTarget = currentTick !== null && currentTick >= targetTick;
+    const timedOut = now - state.playbackStepStartedAt >= PLAYBACK_STEP_TIMEOUT_MS;
+
+    if (reachedTarget || timedOut) {
+      state.playbackStepRaf = 0;
+      state.playbackStepping = false;
+      pauseStoredPlayback(state, { showTip: !timedOut });
+      if (timedOut && typeof window.showTipsText === "function") {
+        window.showTipsText("TRACE STEP TIMEOUT", 2500);
+      }
+      syncOverlayState(state);
+      return;
+    }
+
+    state.playbackStepRaf = window.requestAnimationFrame(pollStep);
+  };
+
+  state.playbackStepRaf = window.requestAnimationFrame(pollStep);
+}
+
 function getFiniteNumber(value) {
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
@@ -739,6 +825,183 @@ function clearPlaybackDebugState(state) {
   state.playbackStepping = false;
   state.playbackStepRaf = 0;
   state.playbackStepStartedAt = 0;
+}
+
+function isPlaybackVideoRecordingRequested(event) {
+  return Boolean(event?.ctrlKey || event?.metaKey);
+}
+
+async function requestPlaybackVideoCapture() {
+  if (!hasPlaybackVideoRecordingSupport()) {
+    showPlaybackVideoTip("VIDEO RECORDING UNSUPPORTED");
+    return null;
+  }
+
+  try {
+    const stream = await navigator.mediaDevices.getDisplayMedia({
+      video: {
+        displaySurface: "browser",
+      },
+      audio: true,
+      preferCurrentTab: true,
+      selfBrowserSurface: "include",
+    });
+    return {
+      stream,
+      mimeType: choosePlaybackVideoMimeType(),
+    };
+  } catch (_error) {
+    showPlaybackVideoTip("VIDEO RECORDING CANCELLED");
+    return null;
+  }
+}
+
+function hasPlaybackVideoRecordingSupport() {
+  return Boolean(
+    navigator.mediaDevices?.getDisplayMedia && typeof window.MediaRecorder === "function",
+  );
+}
+
+function choosePlaybackVideoMimeType(mediaRecorder = window.MediaRecorder) {
+  if (!mediaRecorder || typeof mediaRecorder.isTypeSupported !== "function") {
+    return "";
+  }
+  return PLAYBACK_VIDEO_MIME_TYPES.find((mimeType) => mediaRecorder.isTypeSupported(mimeType)) ?? "";
+}
+
+function startPlaybackVideoRecording(state, record, capture) {
+  if (!capture?.stream) {
+    return false;
+  }
+
+  stopPlaybackVideoRecording(state, { download: false });
+  try {
+    const options = capture.mimeType ? { mimeType: capture.mimeType } : undefined;
+    const recorder = new window.MediaRecorder(capture.stream, options);
+    state.videoRecorder = recorder;
+    state.videoStream = capture.stream;
+    state.videoChunks = [];
+    state.videoRecording = true;
+    state.videoStopping = false;
+    state.videoDownloadOnStop = true;
+    state.videoRecordId = String(record?.id || record?.traceId || "playback");
+    state.videoMimeType = recorder.mimeType || capture.mimeType || "video/webm";
+
+    recorder.addEventListener("dataavailable", (event) => {
+      if (event.data?.size > 0) {
+        state.videoChunks.push(event.data);
+      }
+    });
+    recorder.addEventListener("stop", () => finalizePlaybackVideoRecording(state));
+    recorder.addEventListener("error", () => showPlaybackVideoTip("VIDEO RECORDING ERROR"));
+    for (const track of capture.stream.getTracks()) {
+      track.addEventListener?.("ended", () => stopPlaybackVideoRecording(state));
+    }
+
+    recorder.start();
+    showPlaybackVideoTip("VIDEO RECORDING");
+    syncOverlayState(state);
+    return true;
+  } catch (_error) {
+    stopMediaStream(capture.stream);
+    cleanupPlaybackVideoState(state);
+    showPlaybackVideoTip("VIDEO RECORDING ERROR");
+    return false;
+  }
+}
+
+function stopPlaybackVideoRecording(state, { download = true } = {}) {
+  const recorder = state.videoRecorder;
+  if (!recorder && !state.videoStream && !state.videoChunks.length && !state.videoRecording) {
+    return;
+  }
+  if (state.videoStopping) {
+    return;
+  }
+  state.videoDownloadOnStop = download;
+  if (recorder && recorder.state !== "inactive") {
+    try {
+      state.videoStopping = true;
+      recorder.stop();
+      return;
+    } catch (_error) {
+      // Fall through and clean up stale recorder state.
+      state.videoStopping = false;
+    }
+  }
+  finalizePlaybackVideoRecording(state);
+}
+
+function finalizePlaybackVideoRecording(state) {
+  const chunks = state.videoChunks.slice();
+  const shouldDownload = state.videoDownloadOnStop;
+  const mimeType = state.videoMimeType || "video/webm";
+  const fileName = buildPlaybackVideoFileName(state.videoRecordId || "playback", new Date(), mimeType);
+  cleanupPlaybackVideoState(state);
+  if (shouldDownload && chunks.length) {
+    downloadPlaybackVideo(new Blob(chunks, { type: mimeType }), fileName);
+    showPlaybackVideoTip("VIDEO SAVED");
+  }
+  syncOverlayState(state);
+}
+
+function cleanupPlaybackVideoState(state) {
+  const stream = state.videoStream;
+  state.videoRecorder = null;
+  state.videoStream = null;
+  state.videoChunks = [];
+  state.videoRecording = false;
+  state.videoStopping = false;
+  state.videoDownloadOnStop = true;
+  state.videoRecordId = "";
+  state.videoMimeType = "";
+  stopMediaStream(stream);
+}
+
+function stopMediaStream(stream) {
+  if (!stream?.getTracks) {
+    return;
+  }
+  for (const track of stream.getTracks()) {
+    track.stop();
+  }
+}
+
+function downloadPlaybackVideo(blob, fileName) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  link.style.display = "none";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function buildPlaybackVideoFileName(recordId, date = new Date(), mimeType = "video/webm") {
+  const safeId = getPlaybackVideoShortId(recordId);
+  const timestamp = date.toISOString().replace(/\.\d{3}Z$/, "").replace(/:/g, "-");
+  return `run-${safeId}-${timestamp}.${getPlaybackVideoExtension(mimeType)}`;
+}
+
+function getPlaybackVideoExtension(mimeType) {
+  return String(mimeType).toLowerCase().includes("mp4") ? "mp4" : "webm";
+}
+
+function getPlaybackVideoShortId(value) {
+  const firstSegment = String(value || "playback").split("-")[0];
+  return firstSegment
+    .trim()
+    .replace(/[^a-zA-Z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 32) || "playback";
+}
+
+function showPlaybackVideoTip(message) {
+  if (typeof window.showTipsText === "function") {
+    window.showTipsText(message, 2500);
+  }
 }
 
 function startDebugBarRefresh(state) {
@@ -842,6 +1105,7 @@ function scheduleLegacyFullscreenRestart(state) {
 function restartLegacyForFullscreen(state) {
   state.fullscreenRestartTimer = 0;
   state.playbackKey = "";
+  stopPlaybackVideoRecording(state, { download: false });
   clearPlaybackDebugState(state);
   clearStoredDemoStopTimer(state);
 
@@ -930,6 +1194,7 @@ function exitFullscreen() {
 function syncPlaybackState(state) {
   const playbackKey = state.playbackKey;
   if (!playbackKey) {
+    stopPlaybackVideoRecording(state, { download: false });
     clearPlaybackDebugState(state);
     return false;
   }
@@ -941,6 +1206,7 @@ function syncPlaybackState(state) {
 
   if (!active) {
     state.playbackKey = "";
+    stopPlaybackVideoRecording(state);
     clearPlaybackDebugState(state);
     clearStoredDemoStopTimer(state);
   }
@@ -965,6 +1231,7 @@ function syncOverlayState(state) {
   overlay.dataset.playback = playbackActive ? "true" : "false";
   overlay.dataset.playbackPaused = playbackPaused ? "true" : "false";
   overlay.dataset.playbackStepping = state.playbackStepping ? "true" : "false";
+  overlay.dataset.videoRecording = state.videoRecording ? "true" : "false";
   overlay.dataset.godMode = godModeActive ? "true" : "false";
   overlay.dataset.fullscreen = fullscreenActive ? "true" : "false";
 
@@ -992,7 +1259,7 @@ function syncOverlayState(state) {
       : playbackActive
         ? "Pause demo playback"
         : hasRecord
-          ? "Play stored recording"
+          ? "Play stored recording (Ctrl-click to record video)"
           : "No stored recording for this level";
   state.els.play.title = playTitle;
   state.els.play.setAttribute("aria-label", playTitle);
@@ -1109,6 +1376,21 @@ function getTracePlaybackProgress(state, total) {
   return Math.min(Math.max(count, 0), total);
 }
 
+function getNextTraceStepTargetTick(state) {
+  if (state.selectedTraceId !== state.currentRecord?.traceId || !state.selectedTraceTicks.length) {
+    return null;
+  }
+  const currentTick = getFiniteNumber(window.demoTickCount);
+  if (currentTick === null) {
+    return null;
+  }
+  const progress = getTracePlaybackProgress(state, state.selectedTraceTicks.length);
+  if (!Number.isInteger(progress) || progress >= state.selectedTraceTicks.length) {
+    return null;
+  }
+  return state.selectedTraceTicks[progress];
+}
+
 function getDemoRecordProgress(total) {
   const currentIndex = getFiniteNumber(window.demoRecordIdx);
   if (currentIndex === null) {
@@ -1142,10 +1424,14 @@ async function apiFetch(url, options) {
 }
 
 export const _test = {
+  buildPlaybackVideoFileName,
+  choosePlaybackVideoMimeType,
   copyArray,
   extractTraceStepTicks,
   formatDemoTime,
   formatPlaybackProgress,
+  getNextTraceStepTargetTick,
+  getTracePlaybackProgress,
   getTraceStepTick,
   normalizeDemo,
 };

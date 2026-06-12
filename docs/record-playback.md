@@ -8,6 +8,7 @@ The wrapper adds stored recording selection and playback around the legacy demo 
 
 - `AI`: start or cancel the Classic level 1 agent.
 - `Play`: play, pause, or resume the selected stored recording.
+- `Ctrl`/`Command` + `Play`: play the selected stored recording and record the browser tab.
 - `Prev` / `Next`: cycle through retained records for the current level.
 - `Delete`: delete the selected recording and linked trace when present.
 - `Star`: toggle legacy god mode.
@@ -31,6 +32,8 @@ When Play starts a selected record:
 3. sets `window.playMode = window.PLAY_DEMO_ONCE`;
 4. calls the legacy `startGame(1)` path.
 
+Ctrl-clicking Play, or Command-clicking on macOS, requests browser tab capture before playback starts. If capture is allowed, the wrapper records video until the stored playback ends or is cancelled, then prompts a local `.webm` file download.
+
 ## Debug Overlay
 The top gutter overlay shows selected-run metadata and playback progress:
 
@@ -44,9 +47,10 @@ For agent recordings, progress is aligned by comparing `window.demoTickCount` wi
 Keyboard shortcuts apply only during wrapper-started stored playback:
 
 - `Space`: pause or resume playback.
-- `.`: while paused, advance one recorded action segment and pause again.
+- `.`: while paused, advance one recorded key/action segment (as in `demo.action on recordings.json`) → pause again.
+- `,`: while paused, advance one trace step (as in `run.steps on agent-traces.json`) → pause again.
 
-One recorded action segment means the next consumed `[tick, keyCode]` pair in `demo.action`.
+Trace stepping is aligned by trace step tick, which can cross zero, one, or many recorded demo action segments because trace steps and demo key events are different timelines.
 
 ## Fullscreen Restart
 The legacy game computes canvas and icon geometry during `init()`. Entering or exiting fullscreen restarts from the welcome flow so the legacy sizing code reruns against the new viewport.  Before calling `window.init()`, the wrapper removes stale legacy-created canvas overlays while preserving the root `#canvas` and wrapper rail.

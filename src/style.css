@@ -173,6 +173,11 @@ body {
   box-shadow: 0 0 0 1px rgba(255, 214, 72, 0.3), 0 0 20px rgba(255, 214, 72, 0.42);
 }
 
+.recording-rail[data-video-recording="true"] .recording-rail-button[data-action="play"] {
+  border-color: rgba(255, 92, 92, 0.92);
+  box-shadow: 0 0 0 1px rgba(255, 92, 92, 0.32), 0 0 18px rgba(255, 92, 92, 0.38);
+}
+
 .recording-rail[data-god-mode="true"] .recording-rail-button[data-action="god"] {
   color: #2a2000;
   border-color: rgba(255, 214, 72, 0.9);

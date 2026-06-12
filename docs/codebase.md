@@ -44,10 +44,33 @@ Tile maps use fixed 28x16 ASCII grids:
 - `0` guard
 - `&` runner
 
+Classic `playData=1`, `level=1` sample:
+
+```json
+[
+  "                  S         ",
+  "                  S         ",
+  "#######H#######   S         ",
+  "       H----------S         ",
+  "       H    ##H   #######H##",
+  "       H    ##H          H  ",
+  "       H    ##H          H  ",
+  "##H#####    ########H#######",
+  "  H                 H       ",
+  "  H                 H       ",
+  "#########H##########H       ",
+  "         H          H       ",
+  "         H----------H       ",
+  "    H######         #######H",
+  "    H                      H",
+  "############################"
+]
+```
+
 Legacy demo records use:
 
 ```json
-{ "level": 1, "ai": 4, "time": 90, "state": 1, "godMode": 0, "action": [], "goldDrop": [], "bornPos": [] }
+"demo": { "action": [], "level": 1, "ai": 4, "time": 90, "state": 1, "godMode": 0, "goldDrop": [], "bornPos": [] }
 ```
 
 `demo.action` is a flat array of `[tick, keyCode, tick, keyCode, ...]` pairs.

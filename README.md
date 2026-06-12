@@ -1,12 +1,12 @@
 # Mini Runner
 
-An LLM-based game agent plays [Lode Runner Total Recall](https://github.com/SimonHung/LodeRunner_TotalRecall), a HTML5 remake of the classic 1983 game **Lode Runner** as a puzzle.
+An LLM-based game agent plays [Lode Runner Total Recall](https://github.com/SimonHung/LodeRunner_TotalRecall), a HTML5 remake of the classic 1983 game **Lode Runner**.
 
 ### Technical Highlights
 
 - **Game Engine:** Preserves the legacy CreateJS runtime with bundled levels and demo data under `public/game/*`.
 - **Wrapper Frontend:** Vite app with an overlay UI for AI play, leveraging the legacy game as executor, recorder, renderer, and playback engine.
-- **Python Backend:** Flask APIs for recordings, traces, model calls, model profiles, and local JSON stores.
+- **Python Backend:** Flask APIs for recordings, traces, agent calls, model profiles, and local JSON stores.
 - **Candidate Agent:** Backend generates legal candidate actions, the LLM chooses one candidate id, and the backend translates it into legacy key/tick input.
 
 ### Project Structure
@@ -20,7 +20,7 @@ __data1/                  # Local JSON gameplay recordings, agent traces, and de
 ```
 
 The legacy codebase remains the source of truth for game physics, guard behavior, digging,
-death, level completion and god mode.  All development happens in the wrapper/backend.  Legacy files
+death, level completion and god mode.  All development happens in the wrapper and the backend.  Legacy files
 only need to expose existing runtime state.
 
 ## Getting Started
@@ -95,6 +95,16 @@ Agent runs link to trace data in `__data1/agent-traces.json`.
 
 Raw model I/O is written to `__data1/agent-debug.log` with local rotation.
 
+### Sanity Tests
+
+Run the lightweight backend/frontend sanity checks with:
+
+```bash
+npm test
+```
+
+These tests use direct helper and Flask test-client checks. They do not run the legacy game engine or call the LLM.
+
 ### Documentation
 
 - [Codebase overview](docs/codebase.md): architecture, boot flow, and module map.
@@ -102,6 +112,7 @@ Raw model I/O is written to `__data1/agent-debug.log` with local rotation.
 - [Candidate design](docs/candidate-design.md): scoring, coverage, failure classification, and validation.
 - [Backend spec](docs/backend-spec.md): Flask APIs, JSON stores, model profiles, and logging.
 - [Recording and playback](docs/record-playback.md): wrapper rail, run selection, pause/step controls, and fullscreen behavior.
+- [Sanity tests](docs/sanity-tests.md): quick backend/frontend regression checks.
 - [Puzzle game](docs/puzzle-game.md): Lode Runner rules and puzzle-solving concepts.
 - [Assessment](docs/assessment.md): high-level assessment of the legacy runtime.
 
