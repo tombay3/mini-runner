@@ -3,7 +3,10 @@
 ## Summary
 The V2 agent constrains the model to backend-generated candidate actions. This deliberately trades an open raw-key action space for a smaller, safer set of legal and purposeful choices.
 
-LLMs are terrible at spatial math and physics. Candidate generation answers: "What legal useful moves exist right now?" Candidate scoring answers: "Which moves look promising by simple rules?" The LLM answers: "Given these choices and the current context, which candidate should we commit to?"
+The model is not asked to reproduce spatial math or legacy physics. Candidate generation
+answers, "What legal useful moves exist right now?" Candidate scoring answers, "Which moves
+look promising by simple rules?" The LLM answers, "Given these choices and the current
+context, which candidate should we commit to?"
 
 This intentionally excludes demo-path guidance, few-shot examples, Python simulation, full pathfinding.
 
@@ -32,7 +35,10 @@ Scores are useful because they:
 - provide deterministic fallback when the model returns invalid JSON or chooses a blocked candidate;
 - make traces easier to debug when the model chooses against backend ranking.
 
-Score visibility in the prompt is configurable through `public/agent-config.json` `prompt.showCandidateScores`. Scores always remain available in trace/debug output. Showing score is a pragmatic debugging/default choice: without a numeric priority signal, some models overfit candidate wording and ignore the backend's tactical ranking.
+Score visibility in the prompt is configurable through `public/agent-config.json`
+`prompt.showCandidateScores`. Final scores remain in candidate objects and traces either
+way. Showing score is a pragmatic default: without a numeric priority signal, some models
+overfit candidate wording and ignore the backend's tactical ranking.
 
 Known heuristic limits:
 
@@ -83,6 +89,7 @@ After the LLM returns a `candidateId`, `agent/service.py` validates the choice b
 - `stallBlockReason`
 - `stallReportType`
 - `stallSeverity`
+- `choiceReason`
 
 Validation records:
 

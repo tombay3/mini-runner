@@ -3,12 +3,12 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from .config import AGENT_RULES_PATH
+from .config import LLM_GAME_RULES_PATH
 
 
 def read_agent_rules() -> str:
     try:
-        return AGENT_RULES_PATH.read_text(encoding="utf-8")[:3000]
+        return LLM_GAME_RULES_PATH.read_text(encoding="utf-8")[:3000]
     except FileNotFoundError:
         return (
             "Classic level 1 focus: collect all gold, use ladders and route digs to change rows, "

@@ -15,6 +15,9 @@ Lode Runner (1983) is best understood not just as a platform game, but as a dete
 - Guards can also pick up gold, so “all visible gold collected” is not always enough.
 - Hidden ladders and one-way drops are a major part of level structure.
 
+These are normal-play rules. The wrapper's optional god mode makes guard contact non-lethal,
+but guards can still obstruct routes and carry gold.
+
 ## Why It Is a Puzzle Game
 
 Many levels are less about reflexes than about finding the only workable route through a fixed ruleset. The puzzle is usually:

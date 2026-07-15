@@ -10,7 +10,7 @@ The wrapper adds stored recording selection and playback around the legacy demo 
 - `Play`: play, pause, or resume the selected stored recording.
 - `Ctrl`/`Command` + `Play`: play the selected stored recording and record the browser tab.
 - `Prev` / `Next`: cycle through retained records for the current level.
-- `Delete`: delete the selected recording and linked trace when present.
+- `Delete`: delete the selected recording and its linked trace when present.
 - `Star`: toggle legacy god mode.
 - `Fullscreen`: enter or exit fullscreen and restart the legacy game.
 
@@ -22,7 +22,7 @@ The wrapper loads `GET /api/recordings/<playData>/<level>/records` and keeps a s
 - Records are sorted newest-first.
 - Prev/next cycles through retained records.
 - Play and delete operate on the selected record.
-- Delete uses `recordId` when available and falls back to `traceId` for agent records.
+- Delete sends the selected record id; agent record ids are their trace ids.
 
 ## Playback Flow
 When Play starts a selected record:
@@ -32,10 +32,15 @@ When Play starts a selected record:
 3. sets `window.playMode = window.PLAY_DEMO_ONCE`;
 4. calls the legacy `startGame(1)` path.
 
-Ctrl-clicking Play, or Command-clicking on macOS, requests browser tab capture before playback starts. If capture is allowed, the wrapper records video until the stored playback ends or is cancelled, then prompts a local `.webm` file download.
+Ctrl-clicking Play, or Command-clicking on macOS, requests browser display capture before
+playback starts. The browser controls the source picker; current-tab capture cannot be
+forced. If capture is allowed, the wrapper records until playback ends or is cancelled and
+downloads `run-<short-id>-<timestamp>.webm` (or `.mp4` when that is the selected recorder
+format). Denying capture still starts normal playback.
 
 ## Debug Overlay
-The top gutter overlay shows selected-run metadata and playback progress:
+The top gutter overlay appears when a stored run is selected, except while an AI run is
+being recorded. It shows selected-run metadata and playback progress:
 
 ```text
 run 2/10 | agent failure | trace 46d79a4d | model minimax:MiniMax-M2.1 | demo 90s | steps 3/18

@@ -14,7 +14,7 @@ except ImportError:  # pragma: no cover - dependency is declared, fallback keeps
 
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
-AGENT_RULES_PATH = ROOT_DIR / "public" / "AGENT_RULES.md"
+LLM_GAME_RULES_PATH = ROOT_DIR / "public" / "LLM_GAME_RULES.md"
 AGENT_CONFIG_PATH = ROOT_DIR / "public" / "agent-config.json"
 DOTENV_PATHS = (
     Path.home() / ".env",

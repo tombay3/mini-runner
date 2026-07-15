@@ -5,7 +5,7 @@
 
 Current backend layers:
 
-- `candidates`: extracts normalized facts and generates/scored candidate actions.
+- `candidates`: extracts normalized facts, then generates and scores candidate actions.
 - `reasoning_tools`: deterministic movement, guard, dig, and route helpers.
 - `stall_tools`: deterministic oscillation/loop/stall diagnosis and recovery hints.
 - `prompt`: formats current state summary, candidate list, optional stall report.
@@ -56,7 +56,12 @@ Agent recordings use `traceId` as `id`. User recordings use `user:<timestamp>`.
 ```json
 {
   "action": { "keyCode": 39, "ticks": 8, "reason": "..." },
-  "planner": {},
+  "planner": {
+    "modelProfile": "openai",
+    "provider": "openai",
+    "model": "openai:gpt-4.1-mini",
+    "mode": "candidate-selection"
+  },
   "traceId": "...",
   "stepCount": 2,
   "candidateId": "...",
@@ -67,16 +72,16 @@ Agent recordings use `traceId` as `id`. User recordings use `user:<timestamp>`.
 ```
 
 ## Backend Agent Flow
-- The endpoint supports Classic `playData=1`, `level=1`.  Internally use:
-  `snapshot + history -> candidate analysis -> LLM candidate choice -> backend action translation -> guard validation -> response`.
-- Disable automatic tool-heavy reasoning from the normal runtime path; candidate generation happens deterministically in Python before the LLM call.
+- The endpoint supports Classic `playData=1`, `level=1`. Its flow is:
+  `snapshot + history -> candidate analysis -> LLM candidate choice -> action validation -> response`.
+- Candidate generation and stall analysis happen deterministically in Python before the LLM call.
 - `agent-traces.json` is the diagnostic store for the V2 Lode Runner candidate agent. It records recent backend planning steps, compact state summaries, generated candidate summaries, the selected candidate, validation, stall supervision, and model metadata.
 
 ## Trace API And Store
 - `GET /api/agent/traces/<trace_id>`: return one retained trace run.
 - `GET /api/agent/runs/<playData>/<level>`: return latest trace metadata and saved recording for that context.
 
-On Trace store, each run contains:
+The trace store has this shape:
 
 ```json
 {
@@ -99,27 +104,32 @@ On Trace store, each run contains:
 }
 ```
 
-Typical fields of `step.state` persisted game-state summary for a step.:
+`step.state` is a prompt-parity summary rather than a full snapshot. It contains:
 
-- `gameState`, `tick`, `godMode`
-- `goldCount`, `goldComplete`, `gold`
-- `runner`, `guards`
-- `nearestGold`, `primaryProgressTarget`
-- `rowLadders`
-- `risk`
-- `movement`, `dig`, `ladder`, `routeAccess`
-- `stallReport`
+- `gameState`, `tick`, and `godMode`;
+- compact `runner` and `gold` objects;
+- `primaryProgressTarget` and compact `guardRisk`;
+- movement booleans;
+- ladder detail and a compact route-access summary.
 
-The trace store keeps up to 10 newest runs. Run-level `model` records the resolved model/profile/provider, and run-level `config` records the public agent config used for the run. Each step stores compact state, candidate summaries, selected candidate, validation, action, stall supervisor data, and recent browser history. It does not store the full raw snapshot.
+Each step also stores `candidates`, `selectedCandidateId`, `selectedCandidateKind`,
+`validation`, `action`, `stallSupervisor`, and `historyTail`. Full terrain, guard lists,
+movement details, dig analysis, and raw model messages are not stored in `step.state`.
+
+The trace store keeps up to 10 newest runs. Run-level `model` records the resolved
+model/profile/provider, and run-level `config` records the planning controls used for the
+run. Model and config are not duplicated on every step.
 
 
 ## Model Profiles
-The backend uses `aisuite` for provider/model abstraction. Resolution order:
+The backend uses `aisuite` for provider/model abstraction. Resolution order is:
 
-- URL-param `?profile=openai|minimax|gemini`;
-- `public/agent-config.json` `agent.modelProfile`;
-- `AGENT_MODEL_PROFILE`;
-- `AGENT_DEFAULT_MODEL` - require `provider:model` format.
+1. explicit request `model`;
+2. request `modelProfile` (the browser derives this from `?profile=...`, runtime options,
+   or public config);
+3. `public/agent-config.json` `agent.modelProfile`;
+4. `AGENT_MODEL_PROFILE`;
+5. `AGENT_DEFAULT_MODEL`, which requires `provider:model` format.
 
 Supported profiles:
 
@@ -196,7 +206,9 @@ Browser fields:
 - `agent.historyLimit`: recent browser history entries sent to the backend.
 - `agent.modelProfile`: optional non-secret profile name. URL `?profile=...` and `window.__lodeRunnerAgentOptions.modelProfile` override it.
 
-The backend reloads this JSON before each planning request. The browser fetches it before starting an AI run.
+The backend reloads this JSON before each planning request. The browser fetches it before
+starting each AI run. Invalid or missing values fall back to defaults in `agent/config.py`;
+`maxActionTicks` is always capped at the legacy limit of 20.
 
 Environment-only settings:
 
@@ -211,4 +223,16 @@ Environment-only settings:
 - Werkzeug access logs: `WARNING`
 - format: single-line `key=value`
 
-`python app.py --debug` sets app logs `APP_LOG_LEVEL` to `DEBUG` and enables raw model I/O debug logging `AGENT_DEBUG_LOG=1`.  Raw prompts and model outputs `finalMessage` are written to `__data1/agent-debug.log` with 10-entry rotation. Each debug block includes the trace id, model, retry flag, raw `build_agent_prompt()` output, final message content, optional provider `reasoning_content`, parse error, and selected candidate id.
+`python app.py --debug` sets `APP_LOG_LEVEL=DEBUG` and `AGENT_DEBUG_LOG=1` before logging
+is configured. Setting `AGENT_DEBUG_LOG=1` directly also enables debug-level app logging.
+Raw prompts and model outputs are written to `__data1/agent-debug.log` with 10-entry
+rotation. Each block includes trace id, model, retry flag, prompt, final message, optional
+provider reasoning content, parse error, and selected candidate id. Raw model I/O is never
+written to stdout or `agent-traces.json`.
+
+## Offline Analytics
+
+`scripts/trace-analytics.ipynb` reads the current flat recording and trace stores without
+modifying them. It builds recording, run, step, and candidate data frames; joins recordings
+to traces by `traceId`; and charts outcomes, model usage, run duration, candidate selection,
+stalls, and fallbacks. Notebook dependencies are included in `requirements.txt`.

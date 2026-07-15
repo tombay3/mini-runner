@@ -1,6 +1,6 @@
 # Mini Runner
 
-An LLM-based game agent plays [Lode Runner Total Recall](https://github.com/SimonHung/LodeRunner_TotalRecall), a HTML5 remake of the classic 1983 game **Lode Runner**.
+An LLM-based game agent plays [Lode Runner Total Recall](https://github.com/SimonHung/LodeRunner_TotalRecall), an HTML5 remake of the classic 1983 game **Lode Runner**.
 
 ### Technical Highlights
 
@@ -86,14 +86,18 @@ http://localhost:8283/?profile=minimax
 ```
 
 Model secrets live in `.env` or `.env.local`. Experiment control knobs live in
-`public/agent-config.json`:
+`public/agent-config.json`.
 
 ### Observability
 
 The wrapper stores retained runs in `__data1/recordings.json` in legacy demo format.
 Agent runs link to trace data in `__data1/agent-traces.json`.
 
-Raw model I/O is written to `__data1/agent-debug.log` with local rotation.
+Set `AGENT_DEBUG_LOG=1` to write the latest 10 raw model I/O turns to
+`__data1/agent-debug.log`.
+
+`scripts/trace-analytics.ipynb` provides read-only pandas/matplotlib analysis of retained
+recordings, runs, steps, candidates, outcomes, and stalls.
 
 ### Sanity Tests
 
@@ -114,9 +118,14 @@ These tests use direct helper and Flask test-client checks. They do not run the 
 - [Recording and playback](docs/record-playback.md): wrapper rail, run selection, pause/step controls, and fullscreen behavior.
 - [Sanity tests](docs/sanity-tests.md): quick backend/frontend regression checks.
 - [Puzzle game](docs/puzzle-game.md): Lode Runner rules and puzzle-solving concepts.
-- [Assessment](docs/assessment.md): high-level assessment of the legacy runtime.
+- [Legacy runtime](docs/legacy-runtime.md): the original CreateJS game architecture and features.
 
 ## Screenshots
 
 ![Screenshot 1](public/Screenshot1.png)
 ![Screenshot 2](public/Screenshot2.png)
+
+### Credits
+
+The game runtime is based on
+[SimonHung/LodeRunner_TotalRecall](https://github.com/SimonHung/LodeRunner_TotalRecall).

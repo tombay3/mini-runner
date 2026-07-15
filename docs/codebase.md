@@ -9,6 +9,7 @@ Current layers:
 - `src/*`: Vite wrapper boot, recording/playback rail, browser AI loop, and host styles.
 - `app.py`: Flask API for recordings, traces, model calls, and local JSON stores.
 - `agent/*`: candidate-agent backend analysis, prompting, model calls, traces, and stall handling.
+- `scripts/*`: direct sanity checks and a read-only trace analytics notebook.
 
 ## Root Boot Flow
 1. Vite serves `index.html`.
@@ -82,19 +83,23 @@ The wrapper adds tooling without replacing legacy gameplay:
 - top debug overlay and playback pause/step controls;
 - god-mode and fullscreen convenience buttons;
 - browser-side AI solve loop;
-- agent traces and raw model I/O debug logging through the Flask backend.
+- agent traces and opt-in raw model I/O debug logging through the Flask backend.
 
 ### Runtime Flow
 
+Legacy snapshot → deterministic analysis → legal candidate generation/scoring → LLM selects
+`candidateId` → validation/stall retry or fallback → legacy `keyCode`/`ticks` execution →
+recording and trace persistence.
+
 1. [src/agent.js](../src/agent.js) starts Classic level 1 through [public/game/lodeRunner.agentHooks.js](../public/game/lodeRunner.agentHooks.js).
 2. The hook starts the legacy game in Training/Modern playback context, stops the normal ticker, and exposes manual `snapshot()` / `step()` control.
-3. The browser sends `playData`, `level`, `snapshot`, `history`, `runId`, optional `model`, and optional `modelProfile` to `/api/agent/next-action`.
+3. The browser sends `playData`, `level`, `snapshot`, bounded `history`, `runId`, and optional model selection to `/api/agent/next-action`.
 4. [app.py](../app.py) validates the request and calls `plan_next_action()`.
 5. [agent/service.py](../agent/service.py) resolves the model and orchestrates candidate planning.
 6. [agent/candidates.py](../agent/candidates.py), [agent/reasoning_tools.py](../agent/reasoning_tools.py), and [agent/stall_tools.py](../agent/stall_tools.py) analyze the snapshot/history and produce ranked candidates.
 7. [agent/prompt.py](../agent/prompt.py) asks the LLM to choose one candidate by ID.
 8. The backend validates the selected candidate, applies stall retry/fallback logic if needed, and returns one bounded legacy action.
-9. The browser steps the legacy runtime and repeats until success, failure, cancellation, or the iteration limit.
+9. The browser steps the legacy runtime and repeats until success, failure, cancellation, the configured legacy playback-time limit, or the configured step limit.
 10. [src/agent.js](../src/agent.js) saves the final successful or failed demo through the recording API.
 
 ### Backend Module Map
@@ -106,14 +111,30 @@ Current backend agent modules:
 - [agent/reasoning_tools.py](../agent/reasoning_tools.py): deterministic snapshot helpers for movement, guard pressure, digging, route access, and progress facts.
 - [agent/stall_tools.py](../agent/stall_tools.py): deterministic oscillation/loop/stall detection and recovery hints.
 - [agent/prompt.py](../agent/prompt.py): compact candidate-selection prompt.
-- [agent/traces.py](../agent/traces.py): trace serialization and compact step summaries:
-  `snapshotStateSummary`, `primaryProgressTarget`, `stallSupervisor`, `candidates`, `selectedCandidateId`, `translatedAction`, `historyTail`, `validation`.
+- [agent/traces.py](../agent/traces.py): compact trace serialization for `state`, candidates,
+  selection, validation, action, stall supervision, and recent history.
 - [agent/errors.py](../agent/errors.py): request/config/execution error types.
 - [agent/logging_utils.py](../agent/logging_utils.py): low-noise Python logging setup.
 
+## Current Assessment
+
+The architecture has a useful separation of responsibilities: the legacy engine owns
+physics and execution, deterministic Python code owns legal action construction, the LLM
+chooses among constrained candidates, and the wrapper owns orchestration and replay. The
+backend does not maintain a second game simulator.
+
+The main technical risk is synchronization across legacy global state, browser snapshots,
+candidate heuristics, trace history, and recorded tick timelines. Structured hooks, compact
+traces, stall supervision, and tick-aligned playback controls make these boundaries
+observable and debuggable.
+
+Current agent scope remains intentionally narrow: Classic `playData=1`, `level=1`.
+
 ## Current Docs
-- [Assessment](./assessment.md)
+- [Legacy runtime](./legacy-runtime.md)
 - [Puzzle game rules](./puzzle-game.md)
 - [LLM candidate agent](./llm-agent.md)
+- [Candidate design](./candidate-design.md)
 - [Backend spec](./backend-spec.md)
 - [Recording and playback](./record-playback.md)
+- [Sanity tests](./sanity-tests.md)

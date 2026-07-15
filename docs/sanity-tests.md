@@ -1,7 +1,10 @@
 # Sanity Tests
 
 ## Summary
-`npm test` runs lightweight direct-function sanity tests for the wrapper frontend and Flask backend. These tests are intended as a fast regression check after wrapper/API refactors. They do not execute the legacy game engine, start browser UI automation, or call the LLM agent endpoint.
+`npm test` runs lightweight direct-function sanity tests for the wrapper frontend and Flask
+backend. These tests are intended as a fast regression check after wrapper/API refactors.
+They do not execute the legacy game engine, run browser UI automation, or call the LLM
+planning endpoint.
 
 ```bash
 npm test
@@ -13,7 +16,9 @@ The command runs:
 python scripts/sanity_backend.py && node scripts/sanity_frontend.mjs
 ```
 
-Use an activated Python environment with `requirements.txt` installed before running the backend sanity test.
+Use an activated Python environment with `requirements.txt` installed before running the
+backend sanity test. The `python` command in `package.json` intentionally uses the active
+virtual environment on macOS, Linux, and Windows.
 
 ## Backend Coverage
 `scripts/sanity_backend.py` uses Flask `app.test_client()` and redirects recording/trace stores into a temporary directory. It does not write to real `__data1`.
