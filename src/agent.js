@@ -32,19 +32,36 @@ export function createAgentController(deps) {
 
     getButtonState(state) {
       const supported = isAgentSupported(deps.getCurrentContext);
-      return {
-        disabled:
-          (!supported && !state.agentRunning) ||
-          (Boolean(state.busyAction) && state.busyAction !== "agent"),
-        title: state.agentRunning ? "Cancel AI agent" : "Solve Classic level 1 with AI agent",
-      };
+      return deriveAgentButtonState(state, supported);
     },
+  };
+}
+
+function deriveAgentButtonState(state, supported) {
+  const unrelatedBusy = Boolean(state.busyAction) && state.busyAction !== "agent";
+  if (state.agentRunning) {
+    return { disabled: unrelatedBusy, title: "Cancel AI agent" };
+  }
+  if (state.backendStatus === "checking") {
+    return { disabled: true, title: "Checking AI server" };
+  }
+  if (state.backendStatus !== "online") {
+    return { disabled: true, title: "AI server unavailable" };
+  }
+  return {
+    disabled: !supported || unrelatedBusy,
+    title: supported
+      ? "Solve Classic level 1 with AI agent"
+      : "AI agent supports Classic level 1 only",
   };
 }
 
 async function toggleAgent(state, deps) {
   if (state.agentRunning) {
     state.agentAbort?.abort();
+    return;
+  }
+  if (!(await deps.checkBackendHealth(state))) {
     return;
   }
   await runAgent(state, deps);
@@ -56,7 +73,7 @@ async function runAgent(state, deps) {
   const playData = config.agent.playData;
   const level = config.agent.level;
   if (!hooks?.isSupportedContext?.(playData, level)) {
-    deps.setUiState(state, "error");
+    deps.finishUiAction(state, { error: true });
     return;
   }
 
@@ -67,7 +84,7 @@ async function runAgent(state, deps) {
   state.agentPlanner = null;
   state.agentTraceId = null;
   state.agentRunId = createRunId();
-  deps.setUiState(state, state.currentRecord ? "available" : "missing", "agent");
+  deps.beginUiAction(state, "agent");
 
   const history = [];
   let failureReason = "agent stopped";
@@ -149,13 +166,17 @@ async function runAgent(state, deps) {
     failureReason = failureReason === "agent stopped" ? "agent safety step limit reached" : failureReason;
   } catch (error) {
     failureReason = getErrorMessage(error);
+    if (error?.name !== "AbortError") {
+      await deps.checkBackendHealth(state);
+    }
   }
 
   try {
     const failedDemo = hooks.dumpFailure(failureReason);
     await saveAgentResult(state, deps, failedDemo, "failure", failureReason, config);
   } catch (_error) {
-    deps.setUiState(state, "error");
+    deps.finishUiAction(state, { error: true });
+    await deps.checkBackendHealth(state);
   } finally {
     hooks.stop({ resumeTicker: false });
     state.agentRunning = false;
@@ -274,8 +295,8 @@ async function saveAgentResult(state, deps, demoData, result, reason, config) {
     }),
   });
   state.currentRecord = record;
-  state.currentKey = deps.getContextKey({ playData, level });
-  deps.setUiState(state, result === "success" ? "available" : "error");
+  state.currentGameLevel = deps.formatGameLevel({ playData, level });
+  deps.finishUiAction(state, { error: result !== "success" });
   deps.scheduleRefresh(state);
 }
 
@@ -384,6 +405,7 @@ function createRunId() {
 }
 
 export const _test = {
+  deriveAgentButtonState,
   getAgentModelProfileOption,
   hasExceededPlaybackTime,
   normalizeAgentAction,

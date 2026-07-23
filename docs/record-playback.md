@@ -16,6 +16,26 @@ The wrapper adds stored recording selection and playback around the legacy demo 
 
 The rail is wrapper-owned UI and does not modify legacy menus.
 
+### State And Availability
+
+The wrapper derives button state from the current game level, selected recording, active
+operation, playback phase, and backend availability. The composite game-level identity is
+named `currentGameLevel` and formatted as `<playData>:<level>`, for example `1:1`.
+
+- `AI` is disabled while backend availability is offline.
+- Clicking an active red `AI` button cancels the current agent run.
+
+Visual style is consistent across the rail:
+
+- neutral: available but inactive;
+- blue rail: a wrapper operation is busy;
+- red rail: the latest wrapper operation failed;
+- green: active playback or god mode;
+- amber: paused playback or action/trace stepping;
+- red button: active AI run or browser video recording;
+- green outline: active fullscreen;
+- muted red: enabled Delete action.
+
 ## Stored Run Selection
 The wrapper loads `GET /api/recordings/<playData>/<level>/records` and keeps a selected record index.
 
@@ -52,8 +72,8 @@ For agent recordings, progress is aligned by comparing `window.demoTickCount` wi
 Keyboard shortcuts apply only during wrapper-started stored playback:
 
 - `Space`: pause or resume playback.
-- `.`: while paused, advance one recorded key/action segment (as in `demo.action on recordings.json`) → pause again.
-- `,`: while paused, advance one trace step (as in `run.steps on agent-traces.json`) → pause again.
+- `.`: while paused, advance one recorded key/action segment (`demo.action` in `recordings.json`) → pause again.
+- `,`: while paused, advance one trace step (`run.steps` in `agent-traces.json`) → pause again.
 
 Trace stepping is aligned by trace step tick, which can cross zero, one, or many recorded demo action segments because trace steps and demo key events are different timelines.
 

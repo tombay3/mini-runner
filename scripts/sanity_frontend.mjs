@@ -88,6 +88,96 @@ assert.equal(agent.getAgentModelProfileOption(window.__lodeRunnerAgentOptions, c
 delete window.__lodeRunnerAgentOptions;
 assert.equal(agent.getAgentModelProfileOption(null, config), "gemini");
 
+assert.deepEqual(
+  agent.deriveAgentButtonState(
+    { agentRunning: false, busyAction: "", backendStatus: "checking" },
+    true,
+  ),
+  { disabled: true, title: "Checking AI server" },
+);
+assert.deepEqual(
+  agent.deriveAgentButtonState(
+    { agentRunning: false, busyAction: "", backendStatus: "offline" },
+    true,
+  ),
+  { disabled: true, title: "AI server unavailable" },
+);
+assert.deepEqual(
+  agent.deriveAgentButtonState(
+    { agentRunning: true, busyAction: "agent", backendStatus: "offline" },
+    true,
+  ),
+  { disabled: false, title: "Cancel AI agent" },
+);
+
+assert.equal(recording.formatGameLevel({ playData: 1, level: 1 }), "1:1");
+const overlayFacts = (overrides = {}) => ({
+  uiError: false,
+  busyAction: "",
+  backendStatus: "online",
+  hasRecord: true,
+  recordCount: 2,
+  playbackPhase: "inactive",
+  videoRecording: false,
+  agentRunning: false,
+  agentButtonState: { disabled: false, title: "Solve Classic level 1 with AI agent" },
+  godModeActive: false,
+  godModeSupported: true,
+  fullscreenActive: false,
+  fullscreenSupported: true,
+  ...overrides,
+});
+
+let overlayView = recording.deriveOverlayViewModel(overlayFacts());
+assert.equal(overlayView.buttons.play.disabled, false);
+assert.equal(overlayView.buttons.prev.disabled, false);
+assert.equal(overlayView.buttons.next.disabled, false);
+assert.equal(overlayView.buttons.delete.disabled, false);
+
+overlayView = recording.deriveOverlayViewModel(
+  overlayFacts({
+    backendStatus: "offline",
+    hasRecord: false,
+    recordCount: 0,
+    agentButtonState: { disabled: true, title: "AI server unavailable" },
+  }),
+);
+assert.equal(overlayView.buttons.agent.disabled, true);
+assert.equal(overlayView.buttons.play.disabled, true);
+assert.equal(overlayView.buttons.prev.disabled, true);
+assert.equal(overlayView.buttons.next.disabled, true);
+assert.equal(overlayView.buttons.delete.disabled, true);
+assert.equal(overlayView.buttons.god.disabled, false);
+assert.equal(overlayView.buttons.fullscreen.disabled, false);
+
+overlayView = recording.deriveOverlayViewModel(overlayFacts({ backendStatus: "offline" }));
+assert.equal(overlayView.buttons.play.disabled, false, "cached playback remains available offline");
+assert.equal(overlayView.buttons.prev.disabled, false, "cached navigation remains available offline");
+assert.equal(overlayView.buttons.delete.disabled, true, "delete requires backend");
+
+overlayView = recording.deriveOverlayViewModel(
+  overlayFacts({ playbackPhase: "playing" }),
+);
+assert.equal(overlayView.buttons.play.icon, "⏸");
+assert.equal(overlayView.buttons.play.title, "Pause demo playback");
+assert.equal(overlayView.buttons.delete.disabled, true);
+assert.equal(overlayView.buttons.prev.disabled, true);
+
+overlayView = recording.deriveOverlayViewModel(
+  overlayFacts({ playbackPhase: "paused" }),
+);
+assert.equal(overlayView.buttons.play.icon, "▶");
+assert.equal(overlayView.buttons.play.title, "Resume demo playback");
+
+overlayView = recording.deriveOverlayViewModel(
+  overlayFacts({ playbackPhase: "step-action" }),
+);
+assert.equal(overlayView.buttons.play.title, "Stepping to next recorded action");
+overlayView = recording.deriveOverlayViewModel(
+  overlayFacts({ playbackPhase: "step-trace" }),
+);
+assert.equal(overlayView.buttons.play.title, "Stepping to next trace step");
+
 const sourceAction = [0, 39];
 const demo = recording.normalizeDemo(
   {
@@ -152,7 +242,8 @@ const traceState = {
   selectedTraceSummary: { stepCount: 3 },
   selectedTraceId: "trace-1",
   selectedTraceTicks: [0, 16, 32],
-  playbackKey: "1:1",
+  playbackGameLevel: "1:1",
+  playbackPhase: "playing",
 };
 window.playData = 1;
 window.curLevel = 1;
@@ -171,7 +262,8 @@ const missingTraceState = {
   selectedTraceSummary: { stepCount: 3 },
   selectedTraceId: "",
   selectedTraceTicks: [],
-  playbackKey: "1:1",
+  playbackGameLevel: "1:1",
+  playbackPhase: "playing",
 };
 assert.equal(recording.getNextTraceStepTargetTick(missingTraceState), null);
 
@@ -180,11 +272,12 @@ const keyState = {
     demo: { action: [0, 39, 8, 32, 16, 37] },
   },
   selectedTraceSummary: null,
-  playbackKey: "1:1",
+  playbackGameLevel: "1:1",
+  playbackPhase: "playing",
 };
 window.demoRecordIdx = 2;
 assert.equal(recording.formatPlaybackProgress(keyState), "keys 2/3");
-keyState.playbackKey = "";
+keyState.playbackGameLevel = "";
 assert.equal(recording.formatPlaybackProgress(keyState), "keys 3");
 
 console.log("frontend sanity ok");

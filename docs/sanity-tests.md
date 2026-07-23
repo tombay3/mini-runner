@@ -44,6 +44,10 @@ Notable checks:
 - Model profile precedence is URL `?profile=...`, then `window.__lodeRunnerAgentOptions`, then public config.
 - Stored demos are normalized without mutating source arrays.
 - Playback progress aligns agent traces by trace step ticks and user demos by recorded key events.
+- Overlay state derives button availability from backend status, cached recordings, busy actions,
+  and the current playback phase.
+- AI button state distinguishes server checking, server offline, supported context, and an active
+  cancellable run.
 - Playback video filenames and MIME selection stay stable for browser tab recording.
 
 ## When To Run
