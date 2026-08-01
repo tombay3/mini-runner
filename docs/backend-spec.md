@@ -49,6 +49,10 @@ Recording store shape:
 ```
 
 Agent recordings use `traceId` as `id`. User recordings use `user:<timestamp>`.
+The browser normally creates UUID trace IDs. On HTTP contexts where
+`crypto.randomUUID()` is unavailable, it constructs the same UUID format with
+`crypto.getRandomValues()`. If neither Web Crypto method is available, the final fallback
+is `<8hex>-<timestamp>`. Short IDs are always the first eight-character segment.
 
 ## Agent Planning API
 `POST /api/agent/next-action` appends one trace step and returns one legacy action:
@@ -115,6 +119,30 @@ The trace store has this shape:
 Each step also stores `candidates`, `selectedCandidateId`, `selectedCandidateKind`,
 `validation`, `action`, `stallSupervisor`, and `historyTail`. Full terrain, guard lists,
 movement details, dig analysis, and raw model messages are not stored in `step.state`.
+The compact `guardRisk.nearestSameRowGuard` uses `side` for relative location,
+`motion` for the guard's current movement action, and `closing` for the derived approach
+state. Step `validation.actionGuardSafe` records the deterministic normal-mode guard
+safety check.
+
+`stallSupervisor.severity` is either `none` or `stalled`. Confirmed stalls include a
+stall `type`, blocked candidates, recovery preferences, and retry/fallback outcomes.
+Early signals are retained only for diagnosis under
+`stallSupervisor.observations`:
+
+```json
+{
+  "shortHorizontalOscillation": false,
+  "repeatedCandidate": false,
+  "sameCandidateStreak": 0,
+  "repeatedCandidateId": null,
+  "targetProgress": false,
+  "targetReached": false
+}
+```
+
+These observations do not affect candidate scores, prompts, validation, retries, or
+fallback. They provide trace context for patterns that have not met the confirmed
+stall threshold.
 
 The trace store keeps up to 10 newest runs. Run-level `model` records the resolved
 model/profile/provider, and run-level `config` records the planning controls used for the
@@ -225,6 +253,9 @@ Environment-only settings:
 
 `python app.py --debug` sets `APP_LOG_LEVEL=DEBUG` and `AGENT_DEBUG_LOG=1` before logging
 is configured. Setting `AGENT_DEBUG_LOG=1` directly also enables debug-level app logging.
+`npm run api` selects the project `.venv` Python on macOS/Linux or Windows and enables
+Flask's source reloader. Python changes restart the development server automatically
+while the interactive Flask debugger remains disabled.
 Raw prompts and model outputs are written to `__data1/agent-debug.log` with 10-entry
 rotation. Each block includes trace id, model, retry flag, prompt, final message, optional
 provider reasoning content, parse error, and selected candidate id. Raw model I/O is never

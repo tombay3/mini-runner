@@ -54,6 +54,17 @@ def format_state_summary(snapshot: dict[str, Any], analysis: dict[str, Any]) -> 
     movement = _dict(analysis.get("movement"))
     stall_report = _dict(analysis.get("stallReport") or analysis.get("progressMonitor"))
     primary_target = _dict(analysis.get("primaryProgressTarget"))
+    stall_parts = [
+        f"severity:{stall_report.get('severity')}",
+        f"type:{stall_report.get('type')}",
+    ]
+    if stall_report.get("severity") == "stalled":
+        stall_parts.extend(
+            [
+                f"blocked:{json.dumps(stall_report.get('blockedCandidateIds', []), sort_keys=True)}",
+                f"preferred:{json.dumps(stall_report.get('preferredCandidateKinds', []), sort_keys=True)}",
+            ]
+        )
     return "\n".join(
         [
             "Current state:",
@@ -76,6 +87,10 @@ def format_state_summary(snapshot: dict[str, Any], analysis: dict[str, Any]) -> 
                 f"{json.dumps(risk.get('nearestSameRowGuard'), sort_keys=True)}"
             ),
             (
+                "- guard fields: side is the guard's position relative to the runner, "
+                "not its movement; motion is the guard's current movement; closing is derived by the backend."
+            ),
+            (
                 f"- movement={{left:{movement.get('canMoveLeft')}, right:{movement.get('canMoveRight')}, "
                 f"up:{movement.get('canMoveUp')}, down:{movement.get('canMoveDown')}}}"
             ),
@@ -87,12 +102,7 @@ def format_state_summary(snapshot: dict[str, Any], analysis: dict[str, Any]) -> 
                 f"followAction:{route_access.get('followAction')}, "
                 f"reason:{route_access.get('reason')}}}"
             ),
-            (
-                f"- stall={{severity:{stall_report.get('severity')}, "
-                f"type:{stall_report.get('type')}, "
-                f"blocked:{json.dumps(stall_report.get('blockedCandidateIds', []), sort_keys=True)}, "
-                f"preferred:{json.dumps(stall_report.get('preferredCandidateKinds', []), sort_keys=True)}}}"
-            ),
+            f"- stall={{{', '.join(stall_parts)}}}",
         ]
     )
 
@@ -101,33 +111,44 @@ def format_stall_report(analysis: dict[str, Any]) -> str:
     stall_report = _dict(analysis.get("stallReport") or analysis.get("progressMonitor"))
     if stall_report.get("severity") in {None, "none"}:
         return ""
-    return "\n".join(
-        [
-            "Stall report:",
-            (
-                f"- severity={stall_report.get('severity')} type={stall_report.get('type')} "
-                f"reason={stall_report.get('reason')}"
-            ),
-            f"- recentPositions={json.dumps(stall_report.get('recentPositions', []), sort_keys=True)}",
-            f"- recentCandidateIds={json.dumps(stall_report.get('recentCandidateIds', []), sort_keys=True)}",
-            (
-                f"- blockedCandidateIds={json.dumps(stall_report.get('blockedCandidateIds', []), sort_keys=True)} "
-                f"blockedKinds={json.dumps(stall_report.get('blockedCandidateKinds', []), sort_keys=True)}"
-            ),
-            (
-                f"- preferredRecoveryKinds="
-                f"{json.dumps(stall_report.get('preferredCandidateKinds', []), sort_keys=True)}"
-            ),
-            (
-                f"- blockedLadderDirections="
-                f"{json.dumps(stall_report.get('blockedLadderDirections', []), sort_keys=True)} "
-                f"preferredVerticalDirection={stall_report.get('preferredVerticalDirection')} "
-                f"ladderExitDirection={stall_report.get('ladderExitDirection')}"
-            ),
-            f"- recoveryHint={stall_report.get('recoveryHint')}",
-            "If severity=stalled, do not choose blocked candidates; prefer a recovery candidate.",
-        ]
-    )
+    lines = [
+        "Stall report:",
+        (
+            f"- severity={stall_report.get('severity')} type={stall_report.get('type')} "
+            f"reason={stall_report.get('reason')}"
+        ),
+        f"- recentPositions={json.dumps(stall_report.get('recentPositions', []), sort_keys=True)}",
+        f"- recentCandidateIds={json.dumps(stall_report.get('recentCandidateIds', []), sort_keys=True)}",
+        (
+            f"- repeatedCandidateId={stall_report.get('repeatedCandidateId')} "
+            f"targetProgress={stall_report.get('repeatedCandidateProgress')} "
+            f"targetReached={stall_report.get('repeatedCandidateTargetReached')}"
+        ),
+    ]
+    if stall_report.get("severity") == "stalled":
+        lines.extend(
+            [
+                (
+                    f"- blockedCandidateIds="
+                    f"{json.dumps(stall_report.get('blockedCandidateIds', []), sort_keys=True)} "
+                    f"blockedKinds="
+                    f"{json.dumps(stall_report.get('blockedCandidateKinds', []), sort_keys=True)}"
+                ),
+                (
+                    f"- preferredRecoveryKinds="
+                    f"{json.dumps(stall_report.get('preferredCandidateKinds', []), sort_keys=True)}"
+                ),
+                (
+                    f"- blockedLadderDirections="
+                    f"{json.dumps(stall_report.get('blockedLadderDirections', []), sort_keys=True)} "
+                    f"preferredVerticalDirection={stall_report.get('preferredVerticalDirection')} "
+                    f"ladderExitDirection={stall_report.get('ladderExitDirection')}"
+                ),
+                f"- recoveryHint={stall_report.get('recoveryHint')}",
+                "If severity=stalled, do not choose blocked candidates; prefer a recovery candidate.",
+            ]
+        )
+    return "\n".join(lines)
 
 
 def format_candidates(candidates: list[dict[str, Any]], *, show_scores: bool = True) -> str:

@@ -434,7 +434,7 @@ def get_dig_affordance(snapshot: dict[str, Any]) -> dict[str, Any]:
         can_dig = side_clear and target_diggable
         guard_could_fall = (
             can_dig
-            and nearest_guard.get("direction") == direction
+            and nearest_guard.get("side") == direction
             and (_to_int(nearest_guard.get("distance")) or 99) <= 4
         )
         reason = "valid dig target" if can_dig else "blocked"
@@ -620,26 +620,26 @@ def assess_guard_risk(snapshot: dict[str, Any]) -> dict[str, Any]:
         distance = abs(guard_x - runner_x) + abs(guard_y - runner_y)
         distances.append(distance)
         if guard_y == runner_y:
+            side = _direction_label(runner_x, guard_x)
+            motion = str(guard.get("actionName") or "unknown")
+            same_row_distance = abs(guard_x - runner_x)
             info = {
                 "x": guard_x,
-                "distance": abs(guard_x - runner_x),
-                "direction": _direction_label(runner_x, guard_x),
+                "distance": same_row_distance,
+                "risk": _guard_risk_for_distance(same_row_distance),
+                "side": side,
+                "motion": motion,
+                "closing": (
+                    (side == "left" and motion == "right")
+                    or (side == "right" and motion == "left")
+                ),
             }
             same_row.append(info)
             if nearest_same_row is None or info["distance"] < nearest_same_row["distance"]:
                 nearest_same_row = info
 
     nearest = min(distances) if distances else None
-    if nearest is None:
-        risk = "low"
-    elif nearest <= 1:
-        risk = "critical"
-    elif nearest <= 3:
-        risk = "high"
-    elif nearest <= 5:
-        risk = "medium"
-    else:
-        risk = "low"
+    risk = _guard_risk_for_distance(nearest)
     return {
         "risk": risk,
         "nearestGuardDistance": nearest,
@@ -647,3 +647,15 @@ def assess_guard_risk(snapshot: dict[str, Any]) -> dict[str, Any]:
         "nearestSameRowGuard": nearest_same_row,
         "runnerOnEdge": _is_edge(runner_x, width),
     }
+
+
+def _guard_risk_for_distance(distance: int | None) -> str:
+    if distance is None:
+        return "low"
+    if distance <= 1:
+        return "critical"
+    if distance <= 3:
+        return "high"
+    if distance <= 5:
+        return "medium"
+    return "low"

@@ -8,7 +8,7 @@ import aisuite as ai
 from aisuite.provider import LLMError
 from aisuite.provider import ProviderFactory
 
-from .candidates import generate_candidates, is_action_physically_valid
+from .candidates import generate_candidates, is_action_guard_safe, is_action_physically_valid
 from .config import (
     AGENT_LEVEL,
     AGENT_PLAY_DATA,
@@ -381,14 +381,23 @@ def validate_or_fallback_candidate(
         analysis["movement"],
         analysis["dig"],
     )
-    if not action_valid:
+    action_guard_safe = is_action_guard_safe(selected["firstAction"], analysis)
+    if not action_valid or not action_guard_safe:
+        replacement_reason = (
+            "selected candidate action was no longer physically valid"
+            if not action_valid
+            else "selected candidate action moved toward guard pressure"
+        )
         valid_candidate = first_nonblocked_valid_candidate(candidates, analysis)
         if valid_candidate is None:
-            raise AgentExecutionError("selected candidate action is no longer physically valid")
+            raise AgentExecutionError(
+                "selected candidate action is not safe and physically valid"
+            )
         selected = valid_candidate
         action_valid = True
+        action_guard_safe = True
         fallback_used = True
-        fallback_reason = "selected candidate action was no longer physically valid"
+        fallback_reason = replacement_reason
     stall_blocked, stall_block_reason = is_candidate_blocked(
         selected, analysis.get("stallReport") or analysis.get("progressMonitor") or {}
     )
@@ -400,6 +409,7 @@ def validate_or_fallback_candidate(
         "fallbackUsed": fallback_used,
         "fallbackReason": fallback_reason,
         "actionValid": action_valid,
+        "actionGuardSafe": action_guard_safe,
         "stallBlocked": stall_blocked,
         "stallBlockReason": stall_block_reason,
         "stallReportType": (analysis.get("stallReport") or {}).get("type"),
@@ -414,7 +424,11 @@ def first_nonblocked_valid_candidate(
 ) -> dict[str, Any] | None:
     stall_report = analysis.get("stallReport") or analysis.get("progressMonitor") or {}
     for candidate in candidates:
-        if not is_action_physically_valid(candidate["firstAction"], analysis["movement"], analysis["dig"]):
+        if not is_action_physically_valid(
+            candidate["firstAction"], analysis["movement"], analysis["dig"]
+        ):
+            continue
+        if not is_action_guard_safe(candidate["firstAction"], analysis):
             continue
         blocked, _reason = is_candidate_blocked(candidate, stall_report)
         if not blocked:
@@ -424,6 +438,7 @@ def first_nonblocked_valid_candidate(
 
 def build_stall_supervisor(validation: dict[str, Any], analysis: dict[str, Any]) -> dict[str, Any]:
     stall_report = analysis.get("stallReport") or analysis.get("progressMonitor") or {}
+    observations = stall_report.get("observations") or {}
     return {
         "enabled": True,
         "severity": stall_report.get("severity"),
@@ -432,6 +447,16 @@ def build_stall_supervisor(validation: dict[str, Any], analysis: dict[str, Any])
         "blockedCandidateIds": stall_report.get("blockedCandidateIds", []),
         "blockedCandidateKinds": stall_report.get("blockedCandidateKinds", []),
         "preferredCandidateKinds": stall_report.get("preferredCandidateKinds", []),
+        "observations": {
+            "shortHorizontalOscillation": bool(
+                observations.get("shortHorizontalOscillation")
+            ),
+            "repeatedCandidate": bool(observations.get("repeatedCandidate")),
+            "sameCandidateStreak": observations.get("sameCandidateStreak", 0),
+            "repeatedCandidateId": observations.get("repeatedCandidateId"),
+            "targetProgress": bool(observations.get("targetProgress")),
+            "targetReached": bool(observations.get("targetReached")),
+        },
         "initialRequestedCandidateId": validation.get("requestedCandidateId"),
         "initialSelectedCandidateId": validation.get("selectedCandidateId"),
         "initialStallBlocked": validation.get("stallBlocked"),

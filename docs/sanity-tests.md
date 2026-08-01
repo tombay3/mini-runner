@@ -13,12 +13,16 @@ npm test
 The command runs:
 
 ```bash
-python scripts/sanity_backend.py && node scripts/sanity_frontend.mjs
+node scripts/sanity.mjs
 ```
 
-Use an activated Python environment with `requirements.txt` installed before running the
-backend sanity test. The `python` command in `package.json` intentionally uses the active
-virtual environment on macOS, Linux, and Windows.
+The launcher uses the project virtual environment directly, so shell activation is not required:
+
+- macOS/Linux: `.venv/bin/python`
+- Windows: `.venv/Scripts/python.exe`
+
+If `.venv` is missing, the launcher exits with setup guidance instead of falling back to a
+system Python that may not have Flask or other project dependencies installed.
 
 ## Backend Coverage
 `scripts/sanity_backend.py` uses Flask `app.test_client()` and redirects recording/trace stores into a temporary directory. It does not write to real `__data1`.

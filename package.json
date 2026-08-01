@@ -4,10 +4,10 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "api": "python app.py",
+    "api": "node scripts/api.mjs",
     "dev": "vite --force",
     "build": "vite build",
-    "test": "python scripts/sanity_backend.py && node scripts/sanity_frontend.mjs"
+    "test": "node scripts/sanity.mjs"
   },
   "devDependencies": {
     "vite": "^6.3.5"

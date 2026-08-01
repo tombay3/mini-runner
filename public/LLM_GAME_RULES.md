@@ -11,5 +11,8 @@
 - During a stall, prefer `stallRecovery` candidates and follow the recovery hint.
 - Prefer collecting gold, using the correct ladder direction, or opening and following a route-access path over waiting or repeating a retreat.
 - In normal mode, immediate guard danger may outrank progress.
+- `side` says where a guard is relative to the runner; only `motion` says where it is moving.
+- In normal mode, never move toward a same-row guard under medium, high, or critical pressure.
+- Under high or critical guard danger, prefer a valid row-changing climb or descent over horizontal retreat.
 - In god mode, guard contact is non-lethal, so progress normally outranks retreat and defensive digging.
 - Use `wait_or_stop` only when no valid progress or safety candidate exists.

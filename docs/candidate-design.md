@@ -46,6 +46,12 @@ Known heuristic limits:
 - Heuristics struggle when risk and reward are both high.
 - Heuristics generally penalize doing nothing (`wait_or_stop`).
 
+Repeated macro candidates are evaluated against their encoded target coordinates. Continued
+movement that reduces target distance is progress, not a stall. Ladder alignment scoring also
+favors nearby ladders so a distant alternate route does not tie with an almost-reached ladder.
+Only confirmed stalls produce blocked candidate metadata. Preliminary repetition and
+short-oscillation observations remain trace-only and never enter the model prompt.
+
 Scores should not be treated as proof of correctness. If a high-score candidate creates a loop, fix candidate coverage, scoring, or stall handling rather than assuming the model can infer the correction from text alone.
 
 ## Necessary And Sufficient Candidates
@@ -83,6 +89,7 @@ After the LLM returns a `candidateId`, `agent/service.py` validates the choice b
 - `requestedCandidateId`
 - `selectedCandidateId`
 - `actionValid`
+- `actionGuardSafe`
 - `fallbackUsed`
 - `fallbackReason`
 - `stallBlocked`
@@ -98,10 +105,11 @@ Validation records:
 - whether the requested id was known;
 - whether fallback was used and why;
 - whether the translated first action is still physically valid;
+- whether the action passes the normal-mode same-row guard safety boundary;
 - whether the stall supervisor blocked the candidate;
 - the model's reason text.
 
-`requestedCandidateId` and `selectedCandidateId` can differ when the model returns invalid JSON, chooses an unknown candidate, chooses a physically invalid action, or repeats a stall-blocked candidate. This makes traces explain whether a bad run came from candidate coverage, model selection, fallback behavior, or stall supervision.
+`requestedCandidateId` and `selectedCandidateId` can differ when the model returns invalid JSON, chooses an unknown candidate, chooses an unsafe or physically invalid action, or repeats a stall-blocked candidate. This makes traces explain whether a bad run came from candidate coverage, model selection, fallback behavior, safety validation, or stall supervision.
 
 ## Design Bias
 Prefer adding or refining candidates when the correct first action is missing. Prefer scoring/stall changes when the correct candidate exists but is not selected. Prefer action translation changes when the candidate is right but the legacy runtime does not execute it effectively.

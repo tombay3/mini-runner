@@ -32,6 +32,8 @@ ACTION_NAMES = {
     DIG_RIGHT_KEYCODE: "dig_right",
 }
 
+GUARD_PRESSURE_RISKS = {"medium", "high", "critical"}
+
 DIG_KEYCODES = {
     "dig_left": DIG_LEFT_KEYCODE,
     "dig_right": DIG_RIGHT_KEYCODE,
@@ -106,6 +108,11 @@ def generate_candidates(
     stall_report = analysis["stallReport"]
     risk = analysis["risk"]
     god_mode = bool(analysis["godMode"])
+    guard_pressure = (
+        not god_mode
+        and _dict(risk.get("nearestSameRowGuard")).get("risk")
+        in GUARD_PRESSURE_RISKS
+    )
     gold_complete = bool(analysis["goldComplete"])
     runner = analysis["runner"]
     runner_x = _to_int(runner.get("x"))
@@ -129,7 +136,10 @@ def generate_candidates(
         candidate_id: str | None = None,
     ) -> None:
         action = _normalize_action(key_code, ticks, reason, max_ticks=max_action_ticks)
+        action = limit_horizontal_ticks_under_guard_pressure(action, analysis)
         if not is_action_physically_valid(action, movement, dig):
+            return
+        if not is_action_guard_safe(action, analysis):
             return
         cid = candidate_id or make_candidate_id(kind, target, ACTION_NAMES[key_code])
         if cid in seen:
@@ -160,7 +170,7 @@ def generate_candidates(
     if gold_complete:
         add_exit_candidates(add, analysis, movement)
 
-    if risk.get("risk") in {"critical", "high"} and not god_mode:
+    if guard_pressure:
         add_non_god_escape_candidates(add, movement, dig, risk)
 
     if ladder.get("onLadder"):
@@ -203,7 +213,7 @@ def generate_candidates(
     if god_mode and not gold_complete:
         add_god_mode_progress_candidate(add, analysis)
 
-    if not (stall_report.get("severity") == "stalled" and candidates):
+    if not candidates or not (guard_pressure or stall_report.get("severity") == "stalled"):
         add_wait_candidate(add)
 
     candidates.sort(key=lambda item: (-int(item["score"]), item["id"]))
@@ -261,9 +271,12 @@ def add_exit_candidates(add, analysis: dict[str, Any], movement: dict[str, Any])
         )
 
 
-def add_non_god_escape_candidates(add, movement: dict[str, Any], dig: dict[str, Any], risk: dict[str, Any]) -> None:
+def add_non_god_escape_candidates(
+    add, movement: dict[str, Any], dig: dict[str, Any], risk: dict[str, Any]
+) -> None:
     guard = _dict(risk.get("nearestSameRowGuard"))
-    direction = guard.get("direction")
+    side = guard.get("side")
+    closing = bool(guard.get("closing"))
     if movement.get("canMoveUp"):
         add(
             kind="retreat_from_guard",
@@ -272,8 +285,8 @@ def add_non_god_escape_candidates(add, movement: dict[str, Any], dig: dict[str, 
             key_code=UP_KEYCODE,
             ticks=6,
             score=120,
-            reason="non-god-mode guard pressure is high and up is valid",
-            preconditions=["guard risk high/critical", "canMoveUp=true"],
+            reason="non-god-mode same-row guard pressure is active and up is valid",
+            preconditions=["guard risk medium/high/critical", "canMoveUp=true"],
         )
     if movement.get("canMoveDown"):
         add(
@@ -283,10 +296,10 @@ def add_non_god_escape_candidates(add, movement: dict[str, Any], dig: dict[str, 
             key_code=DOWN_KEYCODE,
             ticks=6,
             score=118,
-            reason="non-god-mode guard pressure is high and down is valid",
-            preconditions=["guard risk high/critical", "canMoveDown=true"],
+            reason="non-god-mode same-row guard pressure is active and down is valid",
+            preconditions=["guard risk medium/high/critical", "canMoveDown=true"],
         )
-    if direction == "left" and dig.get("canDigLeft"):
+    if side == "left" and dig.get("canDigLeft"):
         add(
             kind="defensive_dig",
             label="Dig left trap",
@@ -295,9 +308,9 @@ def add_non_god_escape_candidates(add, movement: dict[str, Any], dig: dict[str, 
             ticks=8,
             score=112,
             reason="guard pressure from left and dig_left is legal",
-            preconditions=["guard risk high/critical", "canDigLeft=true"],
+            preconditions=["guard risk medium/high/critical", "canDigLeft=true"],
         )
-    if direction == "right" and dig.get("canDigRight"):
+    if side == "right" and dig.get("canDigRight"):
         add(
             kind="defensive_dig",
             label="Dig right trap",
@@ -306,30 +319,40 @@ def add_non_god_escape_candidates(add, movement: dict[str, Any], dig: dict[str, 
             ticks=8,
             score=112,
             reason="guard pressure from right and dig_right is legal",
-            preconditions=["guard risk high/critical", "canDigRight=true"],
+            preconditions=["guard risk medium/high/critical", "canDigRight=true"],
         )
-    if direction == "left" and movement.get("canMoveRight"):
+    if side == "left" and movement.get("canMoveRight"):
         add(
             kind="retreat_from_guard",
-            label="Move right away from guard",
-            goal="Create safe distance from same-row guard on the left.",
+            label="Reposition right from guard",
+            goal="Move briefly away from the guard's current side, then reassess its position.",
             key_code=RIGHT_KEYCODE,
             ticks=6,
             score=108,
-            reason="guard is left; moving right increases distance",
-            preconditions=["guard risk high/critical", "canMoveRight=true"],
+            reason=_guard_reposition_reason("left", "right", closing),
+            preconditions=["guard risk medium/high/critical", "canMoveRight=true"],
+            stop_conditions=["reassess guard position after this short move"],
         )
-    if direction == "right" and movement.get("canMoveLeft"):
+    if side == "right" and movement.get("canMoveLeft"):
         add(
             kind="retreat_from_guard",
-            label="Move left away from guard",
-            goal="Create safe distance from same-row guard on the right.",
+            label="Reposition left from guard",
+            goal="Move briefly away from the guard's current side, then reassess its position.",
             key_code=LEFT_KEYCODE,
             ticks=6,
             score=108,
-            reason="guard is right; moving left increases distance",
-            preconditions=["guard risk high/critical", "canMoveLeft=true"],
+            reason=_guard_reposition_reason("right", "left", closing),
+            preconditions=["guard risk medium/high/critical", "canMoveLeft=true"],
+            stop_conditions=["reassess guard position after this short move"],
         )
+
+
+def _guard_reposition_reason(guard_side: str, move_direction: str, closing: bool) -> str:
+    motion = "closing" if closing else "not currently closing"
+    return (
+        f"guard is on the {guard_side} and {motion}; move {move_direction} briefly, "
+        "then reassess because the guard may follow and distance may not increase"
+    )
 
 
 def add_gold_candidates(add, analysis: dict[str, Any], god_mode: bool) -> None:
@@ -384,7 +407,12 @@ def add_ladder_alignment_candidates(add, analysis: dict[str, Any], god_mode: boo
             goal=f"Align with visible ladder at ({ladder['x']},{ladder['y']}).",
             key_code=key_code,
             ticks=ticks_for_alignment(distance),
-            score=118 if stalled_target else 98 if fine_align else 94 if god_mode else 90,
+            score=ladder_alignment_score(
+                distance,
+                god_mode=god_mode,
+                fine_align=fine_align,
+                stalled_target=stalled_target,
+            ),
             target={"x": ladder["x"], "y": ladder["y"], "tile": "H"},
             reason=f"visible ladder is {ladder['distance']} tiles to the {direction}",
             preconditions=[
@@ -398,6 +426,17 @@ def add_ladder_alignment_candidates(add, analysis: dict[str, Any], god_mode: boo
                 "terminal state reached",
             ],
         )
+
+
+def ladder_alignment_score(
+    distance: int, *, god_mode: bool, fine_align: bool, stalled_target: bool
+) -> int:
+    if stalled_target:
+        return 118
+    if fine_align:
+        return 104
+    base = 94 if god_mode else 90
+    return base + max(0, 12 - min(max(distance, 0), 12))
 
 
 def add_route_access_candidate(
@@ -659,6 +698,38 @@ def is_action_physically_valid(
     if key_code == DIG_RIGHT_KEYCODE:
         return bool(dig.get("canDigRight"))
     return False
+
+
+def is_action_guard_safe(action: dict[str, Any], analysis: dict[str, Any]) -> bool:
+    if analysis.get("godMode"):
+        return True
+    risk = _dict(analysis.get("risk"))
+    guard = _dict(risk.get("nearestSameRowGuard"))
+    if guard.get("risk") not in GUARD_PRESSURE_RISKS:
+        return True
+    side = guard.get("side")
+    key_code = action.get("keyCode")
+    if side == "left" and key_code == LEFT_KEYCODE:
+        return False
+    if side == "right" and key_code == RIGHT_KEYCODE:
+        return False
+    if guard.get("risk") in {"high", "critical"} and key_code == STOP_KEYCODE:
+        return False
+    return True
+
+
+def limit_horizontal_ticks_under_guard_pressure(
+    action: dict[str, Any], analysis: dict[str, Any]
+) -> dict[str, Any]:
+    if analysis.get("godMode"):
+        return action
+    risk = _dict(analysis.get("risk"))
+    guard = _dict(risk.get("nearestSameRowGuard"))
+    if guard.get("risk") not in GUARD_PRESSURE_RISKS:
+        return action
+    if action.get("keyCode") not in {LEFT_KEYCODE, RIGHT_KEYCODE}:
+        return action
+    return {**action, "ticks": min(4, int(action.get("ticks") or 1))}
 
 
 def _normalize_action(

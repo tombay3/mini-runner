@@ -488,7 +488,7 @@ function selectAdjacentRecord(state, delta) {
   finishUiAction(state);
 }
 
-async function playOrToggleCurrentRecording(state, event = null) {
+async function playOrToggleCurrentRecording(state, event = null, { startPaused = false } = {}) {
   const context = getCurrentContext();
   if (!context) {
     clearPlaybackDebugState(state);
@@ -523,6 +523,9 @@ async function playOrToggleCurrentRecording(state, event = null) {
     if (videoCapture) {
       startPlaybackVideoRecording(state, record, videoCapture);
     }
+    if (startPaused) {
+      pauseStoredPlayback(state);
+    }
     finishUiAction(state);
   } catch (_error) {
     stopMediaStream(videoCapture?.stream);
@@ -543,11 +546,15 @@ async function deleteCurrentRecording(state) {
     syncOverlayState(state);
     return;
   }
+  const record = state.currentRecord;
+  if (!record || !confirmRecordingDelete(record)) {
+    return;
+  }
   beginUiAction(state, "delete");
   try {
     const nextRecord = getRecordAfterDelete(state);
-    const recordId = state.currentRecord?.id;
-    const traceId = state.currentRecord?.traceId;
+    const recordId = record.id;
+    const traceId = record.traceId;
     const query = recordId
       ? `?recordId=${encodeURIComponent(recordId)}`
       : traceId
@@ -561,6 +568,21 @@ async function deleteCurrentRecording(state) {
     finishUiAction(state, { error: true });
     void checkBackendHealth(state);
   }
+}
+
+function confirmRecordingDelete(record) {
+  if (typeof window.confirm !== "function") {
+    return false;
+  }
+  return window.confirm(buildRecordingDeleteConfirmation(record));
+}
+
+function buildRecordingDeleteConfirmation(record) {
+  const runId = shortId(record?.traceId ?? record?.id);
+  const linkedTraceWarning = record?.traceId
+    ? "\n\nIts linked agent trace will also be deleted."
+    : "";
+  return `Delete stored run ${runId}?${linkedTraceWarning}\n\nThis cannot be undone.`;
 }
 
 function getRecordAfterDelete(state) {
@@ -693,10 +715,6 @@ function clearStoredDemoStopTimer(state) {
 }
 
 function handlePlaybackDebugKeyDown(state, event) {
-  if (!isWrapperPlaybackActive(state)) {
-    return;
-  }
-
   const isSpace = event.code === "Space" || event.key === " ";
   const isPeriod = event.code === "Period" || event.key === ".";
   const isComma = event.code === "Comma" || event.key === ",";
@@ -704,9 +722,16 @@ function handlePlaybackDebugKeyDown(state, event) {
     return;
   }
 
-  event.preventDefault();
-  event.stopPropagation();
-  event.stopImmediatePropagation?.();
+  if (!isWrapperPlaybackActive(state)) {
+    if (!isSpace || !canStartStoredPlaybackFromHotkey(state)) {
+      return;
+    }
+    stopKeyboardEvent(event);
+    void playOrToggleCurrentRecording(state, null, { startPaused: true });
+    return;
+  }
+
+  stopKeyboardEvent(event);
 
   if (isSpace) {
     toggleStoredPlaybackPause(state);
@@ -719,6 +744,32 @@ function handlePlaybackDebugKeyDown(state, event) {
   if (isComma && state.playbackPhase === "paused") {
     stepStoredPlaybackTraceStep(state);
   }
+}
+
+function canStartStoredPlaybackFromHotkey(state) {
+  return Boolean(
+    state.currentRecord &&
+      !state.busyAction &&
+      !state.agentRunning &&
+      !isLegacyManualGameplayActive(),
+  );
+}
+
+function isLegacyManualGameplayActive() {
+  const playMode = Number(window.playMode);
+  const gameState = Number(window.gameState);
+  const isManualMode =
+    playMode === Number(window.PLAY_CLASSIC) || playMode === Number(window.PLAY_MODERN);
+  const isActiveState = [window.GAME_START, window.GAME_RUNNING, window.GAME_PAUSE]
+    .map(Number)
+    .includes(gameState);
+  return isManualMode && isActiveState;
+}
+
+function stopKeyboardEvent(event) {
+  event.preventDefault();
+  event.stopPropagation();
+  event.stopImmediatePropagation?.();
 }
 
 function isWrapperPlaybackActive(state) {
@@ -1066,8 +1117,9 @@ function getPlaybackVideoExtension(mimeType) {
 }
 
 function getPlaybackVideoShortId(value) {
-  const firstSegment = String(value || "playback").split("-")[0];
-  return firstSegment
+  const rawValue = String(value || "playback");
+  const identifier = rawValue.includes("-") ? rawValue.split("-", 1)[0] : rawValue;
+  return identifier
     .trim()
     .replace(/[^a-zA-Z0-9_-]+/g, "-")
     .replace(/^-+|-+$/g, "")
@@ -1478,7 +1530,10 @@ function formatDebugLine(state) {
 }
 
 function shortId(value) {
-  return typeof value === "string" && value ? value.slice(0, 8) : "none";
+  if (typeof value !== "string" || !value) {
+    return "none";
+  }
+  return value.split("-", 1)[0].slice(0, 8);
 }
 
 function formatDemoTime(value) {
@@ -1574,7 +1629,9 @@ async function apiFetch(url, options) {
 }
 
 export const _test = {
+  buildRecordingDeleteConfirmation,
   buildPlaybackVideoFileName,
+  canStartStoredPlaybackFromHotkey,
   choosePlaybackVideoMimeType,
   copyArray,
   deriveOverlayViewModel,
@@ -1586,4 +1643,5 @@ export const _test = {
   getTracePlaybackProgress,
   getTraceStepTick,
   normalizeDemo,
+  shortId,
 };

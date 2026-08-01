@@ -10,7 +10,7 @@ The wrapper adds stored recording selection and playback around the legacy demo 
 - `Play`: play, pause, or resume the selected stored recording.
 - `Ctrl`/`Command` + `Play`: play the selected stored recording and record the browser tab.
 - `Prev` / `Next`: cycle through retained records for the current level.
-- `Delete`: delete the selected recording and its linked trace when present.
+- `Delete`: confirm, then delete the selected recording and its linked trace when present.
 - `Star`: toggle legacy god mode.
 - `Fullscreen`: enter or exit fullscreen and restart the legacy game.
 
@@ -42,7 +42,7 @@ The wrapper loads `GET /api/recordings/<playData>/<level>/records` and keeps a s
 - Records are sorted newest-first.
 - Prev/next cycles through retained records.
 - Play and delete operate on the selected record.
-- Delete sends the selected record id; agent record ids are their trace ids.
+- Delete asks for confirmation before sending the selected record id; agent record ids are their trace ids.
 
 ## Playback Flow
 When Play starts a selected record:
@@ -69,9 +69,9 @@ run 2/10 | agent failure | trace 46d79a4d | model minimax:MiniMax-M2.1 | demo 90
 For agent recordings, progress is aligned by comparing `window.demoTickCount` with trace step ticks loaded from `/api/agent/traces/<traceId>`. For user recordings without traces, progress uses the legacy demo action cursor: `keys <demoRecordIdx>/<demo.action.length / 2>`.
 
 ## Playback Debug Controls
-Keyboard shortcuts apply only during wrapper-started stored playback:
+Keyboard shortcuts (hotkeys) control the selected stored recording:
 
-- `Space`: pause or resume playback.
+- `Space`: when playback is inactive, start the selected recording already paused; otherwise pause or resume playback.
 - `.`: while paused, advance one recorded key/action segment (`demo.action` in `recordings.json`) → pause again.
 - `,`: while paused, advance one trace step (`run.steps` in `agent-traces.json`) → pause again.
 

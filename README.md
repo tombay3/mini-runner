@@ -60,6 +60,8 @@ OPENAI_API_KEY=your_openai_api_key
 npm run api
 ```
 
+The Flask development server automatically reloads after Python source changes.
+
 **Start the frontend**
 
 ```bash

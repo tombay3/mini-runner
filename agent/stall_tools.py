@@ -56,9 +56,23 @@ def build_stall_report(
     ladder = dict_value(analysis.get("ladder"))
     movement = dict_value(analysis.get("movement"))
     primary_target = dict_value(analysis.get("primaryProgressTarget"))
+    repeated_progress = assess_repeated_candidate_progress(recent, repeated_candidate_id)
 
-    bounded_horizontal_loop = (
+    full_horizontal_loop = (
         no_row_change and no_gold_change and len(positions) >= 6 and x_range <= 4 and direction_changes >= 4
+    )
+    short_horizontal_loop = detect_short_horizontal_loop(positions, key_codes, minimum_changes=4)
+    macro_target_completed = repeated_progress["targetReached"]
+    bounded_horizontal_loop = not macro_target_completed and (
+        full_horizontal_loop
+        or (no_row_change and no_gold_change and short_horizontal_loop["detected"])
+    )
+    short_horizontal_oscillation = (
+        not macro_target_completed
+        and no_row_change
+        and no_gold_change
+        and not bounded_horizontal_loop
+        and detect_short_horizontal_loop(positions, key_codes, size=4, minimum_changes=2)["detected"]
     )
     vertical_ladder_loop = detect_vertical_ladder_loop(
         positions=positions,
@@ -69,7 +83,12 @@ def build_stall_report(
         movement=movement,
     )
     same_candidate_no_progress = (
-        no_gold_change and no_row_change and same_candidate_streak >= 4 and repeated_candidate_id is not None
+        no_gold_change
+        and no_row_change
+        and same_candidate_streak >= 4
+        and repeated_candidate_id is not None
+        and not repeated_progress["madeProgress"]
+        and not repeated_progress["targetReached"]
     )
     same_tile_no_progress = no_gold_change and same_tile_streak >= 6 and repeated_candidate_id is not None
     route_access_loop = (
@@ -85,6 +104,8 @@ def build_stall_report(
             bounded_horizontal_loop
             or repeated_kind in {"exit_ladder_route", "align_ladder", "godmode_progress"}
             and same_candidate_streak >= 3
+            and not repeated_progress["madeProgress"]
+            and not repeated_progress["targetReached"]
         )
     )
     wait_loop = no_gold_change and no_row_change and (stop_streak >= 3 or repeated_kind == "wait_or_stop")
@@ -105,7 +126,12 @@ def build_stall_report(
     elif same_tile_no_progress:
         stall_type = "same_tile_no_progress"
 
-    severity = "stalled" if stall_type else "watch" if bounded_horizontal_loop or same_candidate_streak >= 3 else "none"
+    repeated_candidate_observed = (
+        same_candidate_streak >= 3
+        and not repeated_progress["madeProgress"]
+        and not repeated_progress["targetReached"]
+    )
+    severity = "stalled" if stall_type else "none"
     blocked_ids, blocked_kinds = blocked_candidates_for(stall_type, repeated_candidate_id, repeated_kind)
     blocked_directions = blocked_ladder_directions_for(stall_type, vertical_ladder_loop)
     preferred_kinds = preferred_recovery_kinds(stall_type, gold_complete, route_access, ladder)
@@ -128,6 +154,20 @@ def build_stall_report(
         "sameCandidateStreak": same_candidate_streak,
         "repeatedCandidateId": repeated_candidate_id,
         "repeatedCandidateKind": repeated_kind,
+        "repeatedCandidateTarget": repeated_progress["target"],
+        "repeatedCandidateStartDistance": repeated_progress["startDistance"],
+        "repeatedCandidateEndDistance": repeated_progress["endDistance"],
+        "repeatedCandidateProgress": repeated_progress["madeProgress"],
+        "repeatedCandidateTargetReached": repeated_progress["targetReached"],
+        "observations": {
+            "shortHorizontalOscillation": short_horizontal_oscillation,
+            "repeatedCandidate": repeated_candidate_observed,
+            "sameCandidateStreak": same_candidate_streak,
+            "repeatedCandidateId": repeated_candidate_id,
+            "targetProgress": repeated_progress["madeProgress"],
+            "targetReached": repeated_progress["targetReached"],
+        },
+        "recentTailXRange": short_horizontal_loop["xRange"],
         "blockedCandidateId": blocked_ids[0] if blocked_ids else None,
         "blockedCandidateIds": blocked_ids,
         "blockedCandidateKinds": blocked_kinds,
@@ -199,6 +239,20 @@ def base_report(
         "sameCandidateStreak": count_tail_equal(candidate_ids),
         "repeatedCandidateId": candidate_ids[-1] if candidate_ids else None,
         "repeatedCandidateKind": candidate_kind(candidate_ids[-1]) if candidate_ids else None,
+        "repeatedCandidateTarget": None,
+        "repeatedCandidateStartDistance": None,
+        "repeatedCandidateEndDistance": None,
+        "repeatedCandidateProgress": False,
+        "repeatedCandidateTargetReached": False,
+        "observations": {
+            "shortHorizontalOscillation": False,
+            "repeatedCandidate": False,
+            "sameCandidateStreak": count_tail_equal(candidate_ids),
+            "repeatedCandidateId": candidate_ids[-1] if candidate_ids else None,
+            "targetProgress": False,
+            "targetReached": False,
+        },
+        "recentTailXRange": 0,
         "blockedCandidateId": None,
         "blockedCandidateIds": [],
         "blockedCandidateKinds": [],
@@ -247,9 +301,105 @@ def collect_key_codes(recent: list[dict[str, Any]]) -> list[int]:
     return values
 
 
+def assess_repeated_candidate_progress(
+    recent: list[dict[str, Any]], candidate_id: str | None
+) -> dict[str, Any]:
+    target = candidate_target(candidate_id)
+    result = {
+        "target": target,
+        "startDistance": None,
+        "endDistance": None,
+        "madeProgress": False,
+        "targetReached": False,
+    }
+    if not target or not candidate_id:
+        return result
+
+    repeated_tail: list[dict[str, Any]] = []
+    for item in reversed(recent):
+        if item.get("candidateId") != candidate_id:
+            break
+        repeated_tail.append(item)
+    repeated_tail.reverse()
+    if not repeated_tail:
+        return result
+
+    start = runner_position(dict_value(repeated_tail[0].get("before")))
+    end = runner_position(dict_value(repeated_tail[-1].get("after")))
+    if start is None or end is None:
+        return result
+
+    start_distance = candidate_distance(candidate_id, start, target)
+    end_distance = candidate_distance(candidate_id, end, target)
+    result.update(
+        {
+            "startDistance": start_distance,
+            "endDistance": end_distance,
+            "madeProgress": end_distance < start_distance,
+            "targetReached": end == target,
+        }
+    )
+    return result
+
+
+def candidate_target(candidate_id: str | None) -> tuple[int, int] | None:
+    kind = candidate_kind(candidate_id)
+    if kind not in {"align_ladder", "collect_same_row_gold", "exit_ladder_route"}:
+        return None
+    prefix = f"{kind}_"
+    if not candidate_id or not candidate_id.startswith(prefix):
+        return None
+    parts = candidate_id[len(prefix) :].split("_")
+    if len(parts) < 2:
+        return None
+    x = to_int(parts[0])
+    y = to_int(parts[1])
+    return (x, y) if x is not None and y is not None else None
+
+
+def runner_position(state: dict[str, Any]) -> tuple[int, int] | None:
+    runner = dict_value(state.get("runner"))
+    x = to_int(runner.get("x"))
+    y = to_int(runner.get("y"))
+    return (x, y) if x is not None and y is not None else None
+
+
+def candidate_distance(
+    candidate_id: str, position: tuple[int, int], target: tuple[int, int]
+) -> int:
+    if candidate_kind(candidate_id) == "align_ladder" and position[1] == target[1]:
+        return abs(position[0] - target[0])
+    return abs(position[0] - target[0]) + abs(position[1] - target[1])
+
+
+def detect_short_horizontal_loop(
+    positions: list[tuple[int, int]],
+    key_codes: list[int],
+    *,
+    size: int = 6,
+    minimum_changes: int = 4,
+) -> dict[str, Any]:
+    if len(positions) < size:
+        return {"detected": False, "xRange": 0}
+    tail_positions = positions[-size:]
+    tail_keys = key_codes[-size:]
+    if len({y for _x, y in tail_positions}) != 1:
+        return {"detected": False, "xRange": 0}
+    x_values = [x for x, _y in tail_positions]
+    x_range = max(x_values) - min(x_values)
+    direction_changes = count_direction_changes(tail_keys)
+    net_x_delta = abs(x_values[-1] - x_values[0])
+    return {
+        "detected": x_range <= 4 and net_x_delta <= 2 and direction_changes >= minimum_changes,
+        "xRange": x_range,
+    }
+
+
 def blocked_candidates_for(
     stall_type: str | None, repeated_candidate_id: str | None, repeated_kind: str | None
 ) -> tuple[list[str], list[str]]:
+    if stall_type is None:
+        return [], []
     ids = [repeated_candidate_id] if repeated_candidate_id else []
     kinds: list[str] = []
     if stall_type == "horizontal_oscillation":

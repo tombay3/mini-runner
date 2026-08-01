@@ -1,5 +1,8 @@
 .vscode/
 *.code-workspace
+*.swp
+*.swo
+*~
 
 *.py[oc]
 __pycache__/

@@ -7,13 +7,31 @@ globalThis.window = {
   demoTickCount: 0,
   demoRecordIdx: 0,
   playMode: 0,
-  PLAY_DEMO_ONCE: 2,
+  gameState: 4,
+  PLAY_CLASSIC: 1,
+  PLAY_MODERN: 2,
+  PLAY_DEMO_ONCE: 7,
+  GAME_START: 0,
+  GAME_RUNNING: 1,
+  GAME_WAITING: 4,
+  GAME_PAUSE: 5,
 };
 
 const agentModule = await import("../src/agent.js");
 const recordingModule = await import("../src/recording.js");
 const agent = agentModule._test;
 const recording = recordingModule._test;
+
+window.crypto = {
+  getRandomValues(array) {
+    array.set(Array.from({ length: array.length }, (_value, index) => index));
+    return array;
+  },
+};
+assert.equal(agent.createRunId(), "00010203-0405-4607-8809-0a0b0c0d0e0f");
+window.crypto = {};
+const fallbackRunId = agent.createRunId();
+assert.match(fallbackRunId, /^[a-f0-9]{8}-\d+$/);
 
 function assertThrowsMessage(fn, text) {
   assert.throws(fn, (error) => error instanceof Error && error.message.includes(text));
@@ -178,6 +196,53 @@ overlayView = recording.deriveOverlayViewModel(
 );
 assert.equal(overlayView.buttons.play.title, "Stepping to next trace step");
 
+assert.equal(
+  recording.canStartStoredPlaybackFromHotkey({
+    currentRecord: { id: "record-1" },
+    busyAction: "",
+    agentRunning: false,
+  }),
+  true,
+);
+window.playMode = window.PLAY_CLASSIC;
+window.gameState = window.GAME_RUNNING;
+assert.equal(
+  recording.canStartStoredPlaybackFromHotkey({
+    currentRecord: { id: "record-1" },
+    busyAction: "",
+    agentRunning: false,
+  }),
+  false,
+  "Space remains available to active manual gameplay",
+);
+window.gameState = window.GAME_PAUSE;
+assert.equal(
+  recording.canStartStoredPlaybackFromHotkey({
+    currentRecord: { id: "record-1" },
+    busyAction: "",
+    agentRunning: false,
+  }),
+  false,
+  "Space does not replace a paused manual game with playback",
+);
+window.gameState = window.GAME_WAITING;
+assert.equal(
+  recording.canStartStoredPlaybackFromHotkey({
+    currentRecord: { id: "record-1" },
+    busyAction: "agent",
+    agentRunning: true,
+  }),
+  false,
+);
+assert.equal(
+  recording.canStartStoredPlaybackFromHotkey({
+    currentRecord: null,
+    busyAction: "",
+    agentRunning: false,
+  }),
+  false,
+);
+
 const sourceAction = [0, 39];
 const demo = recording.normalizeDemo(
   {
@@ -211,12 +276,22 @@ assert.equal(recording.getTraceStepTick({ historyTail: [{ tick: 4 }, { tick: 6 }
 
 assert.equal(recording.formatDemoTime(32), "2s");
 assert.equal(recording.formatDemoTime(0), "-");
+assert.equal(recording.shortId("037883a3-9cda-4bb9-aca0-b7c7a205e69b"), "037883a3");
+assert.equal(recording.shortId("248cc0d0-1783960882373"), "248cc0d0");
+assert.equal(recording.shortId(fallbackRunId), fallbackRunId.split("-", 1)[0]);
 assert.equal(
   recording.buildPlaybackVideoFileName(
     "23dfc383-aaaa-bbbb-cccc-dddddddddddd",
     new Date("2026-06-12T02:10:48.927Z"),
   ),
   "run-23dfc383-2026-06-12T02-10-48.webm",
+);
+assert.equal(
+  recording.buildPlaybackVideoFileName(
+    "248cc0d0-1783960882373",
+    new Date("2026-06-12T02:10:48.927Z"),
+  ),
+  "run-248cc0d0-2026-06-12T02-10-48.webm",
 );
 assert.equal(
   recording.buildPlaybackVideoFileName(
@@ -233,6 +308,17 @@ assert.equal(
   "video/webm;codecs=vp8,opus",
 );
 assert.equal(recording.choosePlaybackVideoMimeType({ isTypeSupported: () => false }), "");
+assert.equal(
+  recording.buildRecordingDeleteConfirmation({
+    id: "23dfc383-aaaa-bbbb-cccc-dddddddddddd",
+    traceId: "23dfc383-aaaa-bbbb-cccc-dddddddddddd",
+  }),
+  "Delete stored run 23dfc383?\n\nIts linked agent trace will also be deleted.\n\nThis cannot be undone.",
+);
+assert.equal(
+  recording.buildRecordingDeleteConfirmation({ id: "user:2026-06-12T02:10:48Z" }),
+  "Delete stored run user:202?\n\nThis cannot be undone.",
+);
 
 const traceState = {
   currentRecord: {
