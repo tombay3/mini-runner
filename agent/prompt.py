@@ -82,9 +82,13 @@ def format_state_summary(snapshot: dict[str, Any], analysis: dict[str, Any]) -> 
                 f"visibleGold={json.dumps(gold.get('visiblePositions', []), sort_keys=True)}"
             ),
             f"- primaryProgressTarget={json.dumps(primary_target, sort_keys=True)}",
+            f"- activeDig={json.dumps(analysis.get('activeDig'), sort_keys=True)}",
             (
-                f"- guardRisk={risk.get('risk')} nearestSameRowGuard="
-                f"{json.dumps(risk.get('nearestSameRowGuard'), sort_keys=True)}"
+                f"- guardRisk={risk.get('risk')} nearestGuard="
+                f"{json.dumps(risk.get('nearestGuard'), sort_keys=True)} "
+                f"pressureGuard={json.dumps(risk.get('pressureGuard'), sort_keys=True)} "
+                f"nearbyGuards={json.dumps(risk.get('nearbyGuards', []), sort_keys=True)} "
+                f"nearestSameRowGuard={json.dumps(risk.get('nearestSameRowGuard'), sort_keys=True)}"
             ),
             (
                 "- guard fields: side is the guard's position relative to the runner, "
@@ -100,6 +104,8 @@ def format_state_summary(snapshot: dict[str, Any], analysis: dict[str, Any]) -> 
                 f"recommended:{route_access.get('recommendedAction')}, "
                 f"followAvailable:{route_access.get('followAvailable')}, "
                 f"followAction:{route_access.get('followAction')}, "
+                f"followBlockedByGuard:{route_access.get('followBlockedByGuard', False)}, "
+                f"dropThreat:{json.dumps(route_access.get('dropThreat'), sort_keys=True)}, "
                 f"reason:{route_access.get('reason')}}}"
             ),
             f"- stall={{{', '.join(stall_parts)}}}",

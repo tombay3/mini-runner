@@ -17,5 +17,7 @@ dev-dist/
 *.log
 .env
 .env.local
+
 __*/
+__data1
 zset*

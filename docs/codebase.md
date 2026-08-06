@@ -9,7 +9,7 @@ Current layers:
 - `src/*`: Vite wrapper boot, recording/playback rail, browser AI loop, and host styles.
 - `app.py`: Flask API for recordings, traces, model calls, and local JSON stores.
 - `agent/*`: candidate-agent backend analysis, prompting, model calls, traces, and stall handling.
-- `scripts/*`: direct sanity checks and a read-only trace analytics notebook.
+- `scripts/*`: direct sanity checks, real-browser agent evaluation, and a read-only trace analytics notebook.
 
 ## Root Boot Flow
 1. Vite serves `index.html`.

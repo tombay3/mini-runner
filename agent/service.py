@@ -380,8 +380,11 @@ def validate_or_fallback_candidate(
         selected["firstAction"],
         analysis["movement"],
         analysis["dig"],
+        candidate_kind=selected.get("kind"),
     )
-    action_guard_safe = is_action_guard_safe(selected["firstAction"], analysis)
+    action_guard_safe = is_action_guard_safe(
+        selected["firstAction"], analysis, candidate_kind=selected.get("kind")
+    )
     if not action_valid or not action_guard_safe:
         replacement_reason = (
             "selected candidate action was no longer physically valid"
@@ -425,10 +428,15 @@ def first_nonblocked_valid_candidate(
     stall_report = analysis.get("stallReport") or analysis.get("progressMonitor") or {}
     for candidate in candidates:
         if not is_action_physically_valid(
-            candidate["firstAction"], analysis["movement"], analysis["dig"]
+            candidate["firstAction"],
+            analysis["movement"],
+            analysis["dig"],
+            candidate_kind=candidate.get("kind"),
         ):
             continue
-        if not is_action_guard_safe(candidate["firstAction"], analysis):
+        if not is_action_guard_safe(
+            candidate["firstAction"], analysis, candidate_kind=candidate.get("kind")
+        ):
             continue
         blocked, _reason = is_candidate_blocked(candidate, stall_report)
         if not blocked:

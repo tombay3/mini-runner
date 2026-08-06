@@ -12,6 +12,7 @@ from .reasoning_tools import (
     STOP_KEYCODE,
     UP_KEYCODE,
     assess_guard_risk,
+    assess_emergency_hole_escape_threat,
     find_nearest_gold_candidates,
     find_row_ladders,
     get_dig_affordance,
@@ -37,6 +38,42 @@ GUARD_PRESSURE_RISKS = {"medium", "high", "critical"}
 DIG_KEYCODES = {
     "dig_left": DIG_LEFT_KEYCODE,
     "dig_right": DIG_RIGHT_KEYCODE,
+}
+
+CLASSIC_EXIT_ROW_WAYPOINTS = {
+    14: 27,
+    13: 27,
+    12: 20,
+    11: 20,
+    10: 20,
+    9: 20,
+    8: 20,
+    7: 20,
+    6: 25,
+    5: 25,
+    4: 25,
+    3: 18,
+    2: 18,
+    1: 18,
+}
+
+CLASSIC_LOWER_GOLD_ROW_WAYPOINTS = {
+    3: 25,
+    4: 25,
+    5: 25,
+    6: 20,
+    7: 20,
+    8: 20,
+    9: 20,
+    10: 20,
+    11: 20,
+    12: 27,
+}
+
+CLASSIC_LEFT_GOLD_ROW_WAYPOINTS = {
+    9: 20,
+    10: 20,
+    11: 20,
 }
 
 
@@ -86,6 +123,7 @@ def analyze_state(snapshot: dict[str, Any], history: list[dict[str, Any]]) -> di
         "dig": get_dig_affordance(snapshot),
         "ladder": get_ladder_affordance(snapshot),
         "routeAccess": get_route_access_affordance(snapshot),
+        "activeDig": _dict(snapshot.get("activeDig")),
         "historyTail": history[-6:],
     }
     analysis["stallReport"] = build_stall_report(analysis, history)
@@ -108,11 +146,7 @@ def generate_candidates(
     stall_report = analysis["stallReport"]
     risk = analysis["risk"]
     god_mode = bool(analysis["godMode"])
-    guard_pressure = (
-        not god_mode
-        and _dict(risk.get("nearestSameRowGuard")).get("risk")
-        in GUARD_PRESSURE_RISKS
-    )
+    guard_pressure = not god_mode and risk.get("risk") in GUARD_PRESSURE_RISKS
     gold_complete = bool(analysis["goldComplete"])
     runner = analysis["runner"]
     runner_x = _to_int(runner.get("x"))
@@ -137,9 +171,10 @@ def generate_candidates(
     ) -> None:
         action = _normalize_action(key_code, ticks, reason, max_ticks=max_action_ticks)
         action = limit_horizontal_ticks_under_guard_pressure(action, analysis)
-        if not is_action_physically_valid(action, movement, dig):
+        action = limit_horizontal_ticks_before_open_hole(action, movement, kind)
+        if not is_action_physically_valid(action, movement, dig, candidate_kind=kind):
             return
-        if not is_action_guard_safe(action, analysis):
+        if not is_action_guard_safe(action, analysis, candidate_kind=kind):
             return
         cid = candidate_id or make_candidate_id(kind, target, ACTION_NAMES[key_code])
         if cid in seen:
@@ -167,11 +202,20 @@ def generate_candidates(
             }
         )
 
+    add_dig_completion_wait_candidate(add, analysis)
+    if _dict(analysis.get("activeDig")).get("active"):
+        candidates.sort(key=lambda item: (-int(item["score"]), item["id"]))
+        return candidates[:limit], analysis
+    add_floor_refill_wait_candidate(add, analysis)
+    if add_trap_resolution_wait_candidate(add, movement, risk):
+        candidates.sort(key=lambda item: (-int(item["score"]), item["id"]))
+        return candidates[:limit], analysis
+
     if gold_complete:
         add_exit_candidates(add, analysis, movement)
 
     if guard_pressure:
-        add_non_god_escape_candidates(add, movement, dig, risk)
+        add_non_god_escape_candidates(add, snapshot, movement, dig, risk)
 
     if ladder.get("onLadder"):
         direction = choose_ladder_direction(snapshot, analysis)
@@ -201,11 +245,14 @@ def generate_candidates(
         )
 
     if not gold_complete:
+        add_classic_upper_gold_route_candidate(add, analysis)
+        add_classic_lower_gold_route_candidate(add, analysis)
         add_gold_candidates(add, analysis, god_mode)
         add_continue_fall_candidate(add, analysis, movement)
         add_ladder_alignment_candidates(add, analysis, god_mode)
         add_route_access_candidate(add, route_access, stall_report)
         add_route_access_follow_candidate(add, analysis, route_access)
+        add_guard_clearance_wait_candidate(add, route_access)
         add_descent_candidate(add, analysis, movement)
     else:
         add_ladder_alignment_candidates(add, analysis, god_mode)
@@ -216,6 +263,12 @@ def generate_candidates(
     if not candidates or not (guard_pressure or stall_report.get("severity") == "stalled"):
         add_wait_candidate(add)
 
+    if not candidates and guard_pressure:
+        add_cross_row_pressure_hold_candidate(add, risk)
+
+    if not candidates:
+        add_emergency_hold_candidate(add, risk)
+
     candidates.sort(key=lambda item: (-int(item["score"]), item["id"]))
     return candidates[:limit], analysis
 
@@ -225,13 +278,27 @@ def add_exit_candidates(add, analysis: dict[str, Any], movement: dict[str, Any])
     runner = analysis["runner"]
     runner_x = _to_int(runner.get("x"))
     runner_y = _to_int(runner.get("y"))
+    if movement.get("canFinishExitClimb"):
+        add(
+            kind="finish_exit_climb",
+            label="Finish the top exit climb",
+            goal="Clear the final sub-tile offset at the top of the revealed exit ladder.",
+            key_code=UP_KEYCODE,
+            ticks=4,
+            score=150,
+            target={"x": 18, "y": 0, "tile": "S"},
+            reason="runner is at (18,0) but remains below exit center by a positive yOffset",
+            preconditions=["goldComplete=true", "runner=(18,0)", "runner.yOffset>0"],
+            stop_conditions=["game reaches finish", "runner clears exit offset"],
+        )
+        return
     if ladder.get("onExitLadder"):
         add(
             kind="exit_ladder_route",
             label="Climb revealed exit ladder",
             goal="All gold is collected; climb the revealed `S` exit ladder.",
             key_code=UP_KEYCODE,
-            ticks=8,
+            ticks=ticks_for_exit_alignment(runner_x, _to_int(ladder_item.get("x"))),
             score=130,
             target={"x": runner_x, "y": runner_y, "tile": "S"},
             reason="runner is already on the revealed exit ladder",
@@ -249,7 +316,7 @@ def add_exit_candidates(add, analysis: dict[str, Any], movement: dict[str, Any])
             label=f"Move {direction} to revealed exit ladder",
             goal=f"Align with revealed exit ladder at ({ladder_item['x']},{ladder_item['y']}).",
             key_code=key_code,
-            ticks=8,
+            ticks=20,
             score=125,
             target={"x": ladder_item["x"], "y": ladder_item["y"], "tile": "S"},
             reason="gold is complete and revealed exit ladder is on the runner row",
@@ -263,20 +330,299 @@ def add_exit_candidates(add, analysis: dict[str, Any], movement: dict[str, Any])
             label="Climb toward exit",
             goal="All gold is collected; climb upward looking for the exit route.",
             key_code=UP_KEYCODE,
-            ticks=8,
+            ticks=20,
             score=115,
             target={"x": runner_x, "y": runner_y},
             reason="gold is complete and upward movement is valid",
             preconditions=["goldComplete=true", "canMoveUp=true"],
         )
+        return
+
+    waypoint_x = CLASSIC_EXIT_ROW_WAYPOINTS.get(runner_y)
+    if waypoint_x is not None:
+        exit_waypoint = next(
+            (
+                item
+                for item in analysis["rowLadders"]
+                if item.get("tile") in {"H", "S"} and _to_int(item.get("x")) == waypoint_x
+            ),
+            None,
+        )
+        if exit_waypoint and runner_x != waypoint_x:
+            direction = "left" if runner_x is not None and runner_x > waypoint_x else "right"
+            add(
+                kind="exit_ladder_route",
+                label=f"Move {direction} to Classic exit waypoint ({waypoint_x},{runner_y})",
+                goal="All gold is collected; follow the fixed Classic level-1 ladder chain toward the exit.",
+                key_code=LEFT_KEYCODE if direction == "left" else RIGHT_KEYCODE,
+                ticks=ticks_for_exit_alignment(runner_x, waypoint_x),
+                score=132,
+                target={"x": waypoint_x, "y": runner_y, "tile": exit_waypoint.get("tile")},
+                reason=f"Classic level-1 exit chain uses x={waypoint_x} from row {runner_y}",
+                preconditions=[
+                    "goldComplete=true",
+                    f"runner row is {runner_y}",
+                    f"exit waypoint ({waypoint_x},{runner_y}) is visible",
+                ],
+                stop_conditions=[
+                    f"runner reaches ladder x={waypoint_x}",
+                    "route becomes blocked",
+                    "terminal state reached",
+                ],
+                candidate_id=f"exit_ladder_route_{waypoint_x}_{runner_y}_{direction}",
+            )
+
+
+def add_classic_upper_gold_route_candidate(add, analysis: dict[str, Any]) -> None:
+    target = _dict(analysis.get("primaryProgressTarget"))
+    if _to_int(target.get("x")) != 23 or _to_int(target.get("y")) != 3:
+        return
+    runner = _dict(analysis.get("runner"))
+    runner_x = _to_int(runner.get("x"))
+    runner_y = _to_int(runner.get("y"))
+    if runner_x is None or runner_y is None or runner_y <= 3:
+        return
+    waypoint_x = CLASSIC_EXIT_ROW_WAYPOINTS.get(runner_y)
+    if waypoint_x is None or runner_x == waypoint_x:
+        return
+    waypoint = next(
+        (
+            item
+            for item in analysis.get("rowLadders") or []
+            if _to_int(item.get("x")) == waypoint_x and _to_int(item.get("y")) == runner_y
+        ),
+        None,
+    )
+    if not waypoint:
+        return
+    direction = "left" if waypoint_x < runner_x else "right"
+    add(
+        kind="classic_upper_gold_route",
+        label=f"Route {direction} to upper-gold waypoint ({waypoint_x},{runner_y})",
+        goal="Use the fixed Classic ladder chain through x=20 and x=25 to reach gold at (23,3).",
+        key_code=LEFT_KEYCODE if direction == "left" else RIGHT_KEYCODE,
+        ticks=8,
+        score=130,
+        target={"x": waypoint_x, "y": runner_y, "tile": waypoint.get("tile")},
+        reason=(
+            f"Classic level-1 upper gold at (23,3) is reached through ladder x={waypoint_x} "
+            f"from row {runner_y}"
+        ),
+        preconditions=["remaining visible gold target is (23,3)"],
+        stop_conditions=["runner reaches waypoint ladder", "guard pressure changes", "terminal state reached"],
+    )
+
+
+def add_classic_lower_gold_route_candidate(add, analysis: dict[str, Any]) -> None:
+    target = _dict(analysis.get("primaryProgressTarget"))
+    target_x = _to_int(target.get("x"))
+    target_y = _to_int(target.get("y"))
+    if not target.get("visible", True):
+        return
+    runner = _dict(analysis.get("runner"))
+    runner_x = _to_int(runner.get("x"))
+    runner_y = _to_int(runner.get("y"))
+    if runner_x is None or runner_y is None:
+        return
+    if target_y == 14:
+        waypoint_x = CLASSIC_LOWER_GOLD_ROW_WAYPOINTS.get(runner_y)
+        route_goal = "Use the fixed Classic descent chain through x=25, x=20, and x=27 to reach row-14 gold."
+        route_reason = "row-14 gold"
+    elif target_x == 7 and target_y == 12:
+        waypoint_x = CLASSIC_LEFT_GOLD_ROW_WAYPOINTS.get(runner_y)
+        route_goal = "Use the x=20 descent ladder from rows 9–11 to reach left-side gold at (7,12)."
+        route_reason = "left-side gold at (7,12)"
+    else:
+        return
+    if waypoint_x is None or runner_x == waypoint_x:
+        return
+    direction = "left" if waypoint_x < runner_x else "right"
+    add(
+        kind="classic_lower_gold_route",
+        label=f"Route {direction} to lower-gold waypoint ({waypoint_x},{runner_y})",
+        goal=route_goal,
+        key_code=LEFT_KEYCODE if direction == "left" else RIGHT_KEYCODE,
+        ticks=8,
+        score=132,
+        target={"x": waypoint_x, "y": runner_y, "tile": "H"},
+        reason=(
+            f"Classic level-1 {route_reason} is reached through descent waypoint x={waypoint_x} "
+            f"from row {runner_y}"
+        ),
+        preconditions=[f"primary visible gold target is ({target_x},{target_y})"],
+        stop_conditions=["runner reaches descent waypoint", "guard pressure changes", "terminal state reached"],
+    )
 
 
 def add_non_god_escape_candidates(
-    add, movement: dict[str, Any], dig: dict[str, Any], risk: dict[str, Any]
+    add,
+    snapshot: dict[str, Any],
+    movement: dict[str, Any],
+    dig: dict[str, Any],
+    risk: dict[str, Any],
 ) -> None:
-    guard = _dict(risk.get("nearestSameRowGuard"))
-    side = guard.get("side")
+    guard = (
+        _dict(risk.get("pressureGuard"))
+        or _dict(risk.get("nearestGuard"))
+        or _dict(risk.get("nearestSameRowGuard"))
+    )
+    side = guard.get("side") or guard.get("relativeX")
     closing = bool(guard.get("closing"))
+    guard_risk = guard.get("risk")
+    left_dig = _dict(dig.get("left"))
+    right_dig = _dict(dig.get("right"))
+    active_trap = _trap_hole_between_pressure_guard(movement, risk)
+    same_row_guards = [
+        _dict(item) for item in risk.get("sameRowGuards") or [] if isinstance(item, dict)
+    ]
+    pinch = (
+        any(item.get("side") == "left" and item.get("risk") in GUARD_PRESSURE_RISKS for item in same_row_guards)
+        and any(item.get("side") == "right" and item.get("risk") in GUARD_PRESSURE_RISKS for item in same_row_guards)
+    )
+    left_dig_available = active_trap.get("side") != "left" and (bool(dig.get("canDigLeft")) or bool(
+        left_dig.get("canDefensiveDig") and left_dig.get("guardCouldFall")
+    ))
+    right_dig_available = active_trap.get("side") != "right" and (bool(dig.get("canDigRight")) or bool(
+        right_dig.get("canDefensiveDig") and right_dig.get("guardCouldFall")
+    ))
+    left_trap_ready = guard_risk in {"high", "critical"} or bool(
+        left_dig.get("guardCouldFall")
+    )
+    right_trap_ready = guard_risk in {"high", "critical"} or bool(
+        right_dig.get("guardCouldFall")
+    )
+    edge_defensive_trap = bool(
+        risk.get("runnerOnEdge")
+        and closing
+        and (
+            (side == "left" and left_dig_available and left_trap_ready)
+            or (side == "right" and right_dig_available and right_trap_ready)
+        )
+    )
+    runner = _dict(snapshot.get("runner"))
+    runner_x = _to_int(runner.get("x"))
+    guard_x = _to_int(guard.get("x"))
+    guard_distance = _to_int(guard.get("distance"))
+    guard_motion = str(guard.get("motion") or "unknown")
+    imminent_landing_side = (
+        side
+        if guard.get("relativeY") == "above"
+        and guard_motion in {"down", "fall"}
+        and guard_distance is not None
+        and guard_distance <= 3
+        else None
+    )
+    edge_escape_direction = None
+    if (
+        guard.get("relativeY") == "below"
+        and guard_distance is not None
+        and guard_distance <= 3
+        and runner_x is not None
+        and guard_x is not None
+    ):
+        if (
+            not movement.get("canMoveRight")
+            and movement.get("canMoveLeft")
+            and guard_x <= runner_x
+            and guard_motion in {"right", "up", "climb_out"}
+        ):
+            edge_escape_direction = "left"
+        elif (
+            not movement.get("canMoveLeft")
+            and movement.get("canMoveRight")
+            and guard_x >= runner_x
+            and guard_motion in {"left", "up", "climb_out"}
+        ):
+            edge_escape_direction = "right"
+    if edge_escape_direction:
+        add(
+            kind="evade_edge_ladder",
+            label=f"Step {edge_escape_direction} off climbing guard column",
+            goal="Leave the edge ladder column before the cross-row guard climbs into it.",
+            key_code=LEFT_KEYCODE if edge_escape_direction == "left" else RIGHT_KEYCODE,
+            ticks=4,
+            score=124,
+            reason=(
+                f"guard below is moving toward the edge ladder; step {edge_escape_direction} "
+                "before it enters the runner's column"
+            ),
+            preconditions=["guard is below and approaching the edge ladder column"],
+            stop_conditions=["runner leaves edge column", "guard geometry changes", "terminal state reached"],
+            candidate_id=f"retreat_from_guard_edge_column_{edge_escape_direction}",
+        )
+    left_open_hole = _dict(_dict(_dict(movement.get("details")).get("left")).get("openHole"))
+    right_open_hole = _dict(_dict(_dict(movement.get("details")).get("right")).get("openHole"))
+    hole_escape_direction = None
+    if guard.get("relativeY") in {"above", "below"} and not closing:
+        if (
+            _to_int(left_open_hole.get("distance")) == 1
+            and not left_open_hole.get("occupiedByTrappedGuard")
+            and movement.get("canMoveRight")
+            and _to_int(right_open_hole.get("distance")) != 1
+        ):
+            hole_escape_direction = "right"
+        elif (
+            _to_int(right_open_hole.get("distance")) == 1
+            and not right_open_hole.get("occupiedByTrappedGuard")
+            and movement.get("canMoveLeft")
+            and _to_int(left_open_hole.get("distance")) != 1
+        ):
+            hole_escape_direction = "left"
+    if hole_escape_direction:
+        if hole_escape_direction == imminent_landing_side:
+            hole_escape_direction = None
+    if hole_escape_direction:
+        add(
+            kind="evade_open_hole",
+            label=f"Step {hole_escape_direction} away from adjacent empty hole",
+            goal="Preserve a solid escape side instead of digging a second adjacent hole.",
+            key_code=RIGHT_KEYCODE if hole_escape_direction == "right" else LEFT_KEYCODE,
+            ticks=4,
+            score=124,
+            reason=(
+                f"adjacent empty hole blocks the opposite side; move {hole_escape_direction} "
+                "while the cross-row guard is not closing"
+            ),
+            preconditions=["one adjacent floor is an empty open hole", "cross-row guard is not closing"],
+            stop_conditions=["runner leaves the boxed column", "guard geometry changes", "terminal state reached"],
+            candidate_id=f"evade_open_hole_{hole_escape_direction}",
+        )
+    if guard_risk in GUARD_PRESSURE_RISKS:
+        for direction, key_code, movement_key in (
+            ("left", LEFT_KEYCODE, "canMoveLeft"),
+            ("right", RIGHT_KEYCODE, "canMoveRight"),
+        ):
+            movement_detail = _dict(_dict(movement.get("details")).get(direction))
+            hole = _dict(movement_detail.get("openHole"))
+            hole_y = _to_int(hole.get("y"))
+            terrain_height = _to_int(movement.get("terrainHeight"))
+            medium_retreat_drop = (
+                guard_risk == "medium"
+                and closing
+                and guard.get("relativeY") == "same"
+                and direction != side
+            )
+            if (
+                (guard_risk in {"high", "critical"} or medium_retreat_drop)
+                and movement.get(movement_key)
+                and _to_int(movement_detail.get("openDugHoleDistance")) == 1
+                and hole_y is not None
+                and terrain_height is not None
+                and hole_y < terrain_height - 1
+                and not assess_emergency_hole_escape_threat(snapshot, hole).get("unsafe")
+            ):
+                add(
+                    kind="escape_through_open_hole",
+                    label=f"Drop {direction} through adjacent open hole",
+                    goal="Break imminent guard contact by intentionally changing rows through the adjacent dug opening.",
+                    key_code=key_code,
+                    ticks=4,
+                    score=126,
+                    target={"x": hole.get("x"), "y": hole.get("y"), "tile": "open_hole"},
+                    reason=f"{guard_risk} guard pressure leaves an adjacent open escape hole to the {direction}",
+                    preconditions=[f"guard risk is {guard_risk}", f"adjacent {direction} floor is an open dug hole"],
+                    stop_conditions=["runner begins falling", "runner changes row", "terminal state reached"],
+                )
     if movement.get("canMoveUp"):
         add(
             kind="retreat_from_guard",
@@ -288,7 +634,7 @@ def add_non_god_escape_candidates(
             reason="non-god-mode same-row guard pressure is active and up is valid",
             preconditions=["guard risk medium/high/critical", "canMoveUp=true"],
         )
-    if movement.get("canMoveDown"):
+    if movement.get("canMoveDown") and not edge_defensive_trap:
         add(
             kind="retreat_from_guard",
             label="Descend away from guard pressure",
@@ -299,26 +645,36 @@ def add_non_god_escape_candidates(
             reason="non-god-mode same-row guard pressure is active and down is valid",
             preconditions=["guard risk medium/high/critical", "canMoveDown=true"],
         )
-    if side == "left" and dig.get("canDigLeft"):
+    if side == "left" and left_dig_available and left_trap_ready:
+        imminent_landing_trap = imminent_landing_side == "left"
         add(
             kind="defensive_dig",
             label="Dig left trap",
             goal="Trap or delay the approaching guard on the left.",
             key_code=DIG_LEFT_KEYCODE,
             ticks=8,
-            score=112,
-            reason="guard pressure from left and dig_left is legal",
+            score=136 if imminent_landing_trap else 134 if pinch else 132 if edge_defensive_trap else 112,
+            reason=(
+                "guard above-left is descending toward this row; dig_left now while centered"
+                if imminent_landing_trap
+                else "guard pressure from left and dig_left is legal"
+            ),
             preconditions=["guard risk medium/high/critical", "canDigLeft=true"],
         )
-    if side == "right" and dig.get("canDigRight"):
+    if side == "right" and right_dig_available and right_trap_ready:
+        imminent_landing_trap = imminent_landing_side == "right"
         add(
             kind="defensive_dig",
             label="Dig right trap",
             goal="Trap or delay the approaching guard on the right.",
             key_code=DIG_RIGHT_KEYCODE,
             ticks=8,
-            score=112,
-            reason="guard pressure from right and dig_right is legal",
+            score=136 if imminent_landing_trap else 134 if pinch else 132 if edge_defensive_trap else 112,
+            reason=(
+                "guard above-right is descending toward this row; dig_right now while centered"
+                if imminent_landing_trap
+                else "guard pressure from right and dig_right is legal"
+            ),
             preconditions=["guard risk medium/high/critical", "canDigRight=true"],
         )
     if side == "left" and movement.get("canMoveRight"):
@@ -345,6 +701,25 @@ def add_non_god_escape_candidates(
             preconditions=["guard risk medium/high/critical", "canMoveLeft=true"],
             stop_conditions=["reassess guard position after this short move"],
         )
+    if side == "same":
+        for direction, key_code, movement_key in (
+            ("left", LEFT_KEYCODE, "canMoveLeft"),
+            ("right", RIGHT_KEYCODE, "canMoveRight"),
+        ):
+            if not movement.get(movement_key):
+                continue
+            add(
+                kind="retreat_from_guard",
+                label=f"Break vertical alignment to the {direction}",
+                goal="Move off the pressure guard's column, then reassess its route.",
+                key_code=key_code,
+                ticks=4,
+                score=110,
+                reason=f"guard is vertically aligned on another row; move {direction} to break its approach line",
+                preconditions=["guard risk medium/high/critical", "guard is on runner column", f"{movement_key}=true"],
+                stop_conditions=["runner leaves guard column", "guard relation changes", "terminal state reached"],
+                candidate_id=f"retreat_from_guard_same_column_{direction}",
+            )
 
 
 def _guard_reposition_reason(guard_side: str, move_direction: str, closing: bool) -> str:
@@ -363,6 +738,28 @@ def add_gold_candidates(add, analysis: dict[str, Any], god_mode: bool) -> None:
         if not gold.get("sameRow"):
             continue
         direction = gold.get("direction")
+        if direction == "same":
+            runner = _dict(analysis.get("runner"))
+            x_offset = _to_int(runner.get("xOffset")) or 0
+            key_code = LEFT_KEYCODE if x_offset > 0 else RIGHT_KEYCODE if x_offset < 0 else STOP_KEYCODE
+            ticks = min(4, max(2, (abs(x_offset) + 3) // 4)) if x_offset else 2
+            add(
+                kind="collect_current_tile_gold",
+                label="Center on current-tile gold",
+                goal=f"Collect gold already under the runner at ({gold['x']},{gold['y']}).",
+                key_code=key_code,
+                ticks=ticks,
+                score=122,
+                target={"x": gold["x"], "y": gold["y"], "tile": "$"},
+                reason=(
+                    f"gold shares the runner tile; center from xOffset {x_offset}"
+                    if x_offset
+                    else "gold shares the centered runner tile; advance collision processing"
+                ),
+                preconditions=["visible gold shares runner coordinates"],
+                stop_conditions=["gold is collected", "terminal state reached"],
+            )
+            continue
         if direction not in {"left", "right"}:
             continue
         key_code = LEFT_KEYCODE if direction == "left" else RIGHT_KEYCODE
@@ -500,6 +897,156 @@ def add_route_access_follow_candidate(
     )
 
 
+def add_guard_clearance_wait_candidate(add, route_access: dict[str, Any]) -> None:
+    if not (
+        route_access.get("followBlockedByGuard") or route_access.get("digBlockedByGuard")
+    ):
+        return
+    opened_cell = _dict(
+        route_access.get("openedAccessCell") or route_access.get("plannedAccessCell")
+    )
+    threat = _dict(_dict(route_access.get("dropThreat")).get("nearestThreat"))
+    signature = "_".join(
+        str(threat.get(field, "x")) for field in ("id", "x", "y", "xOffset", "yOffset")
+    )
+    add(
+        kind="wait_for_guard_clearance",
+        label="Wait for access-route guard clearance",
+        goal="Delay entry into the opened drop until converging guards clear its landing corridor.",
+        key_code=STOP_KEYCODE,
+        ticks=2,
+        score=120,
+        target=opened_cell,
+        reason=str(route_access.get("reason", "guard blocks safe access-route entry")),
+        preconditions=["access hole is open", "a guard can intercept the drop"],
+        stop_conditions=["drop corridor clears", "guard reaches runner row", "terminal state reached"],
+        candidate_id=f"wait_for_guard_clearance_{signature}",
+    )
+
+
+def add_dig_completion_wait_candidate(add, analysis: dict[str, Any]) -> None:
+    active_dig = _dict(analysis.get("activeDig"))
+    if not active_dig.get("active"):
+        return
+    frame_index = _to_int(active_dig.get("frameIndex")) or 0
+    frame_count = _to_int(active_dig.get("frameCount")) or 0
+    target = {
+        "x": active_dig.get("x"),
+        "y": active_dig.get("y"),
+        "tile": "#",
+    }
+    add(
+        kind="wait_for_dig_completion",
+        label="Finish active defensive dig",
+        goal="Advance the legacy dig animation until the trap brick opens.",
+        key_code=STOP_KEYCODE,
+        ticks=2,
+        score=142,
+        target=target,
+        reason=(
+            f"legacy dig at ({target['x']},{target['y']}) is still active "
+            f"at frame {frame_index}/{frame_count}"
+        ),
+        preconditions=["activeDig.active=true"],
+        stop_conditions=["dig completes", "hole opens", "terminal state reached"],
+        candidate_id=(
+            f"wait_for_dig_completion_{target['x']}_{target['y']}_{frame_index}_{frame_count}"
+        ),
+    )
+
+
+def add_trap_resolution_wait_candidate(
+    add, movement: dict[str, Any], risk: dict[str, Any]
+) -> bool:
+    trap = _trap_hole_between_pressure_guard(movement, risk)
+    if not trap:
+        return False
+    hole = _dict(trap.get("hole"))
+    guard = _dict(trap.get("guard"))
+    guard_distance = _to_int(guard.get("distance"))
+    guard_motion = str(guard.get("motion") or "unknown")
+    if guard_motion in {"fall", "up", "climb_out"} or (
+        guard_distance is not None and guard_distance <= 2
+    ):
+        wait_ticks = 2
+    elif guard_distance is not None and guard_distance <= 4:
+        wait_ticks = 4
+    else:
+        wait_ticks = 8
+    signature = "_".join(
+        str(value)
+        for value in (
+            trap.get("side"),
+            hole.get("x"),
+            hole.get("y"),
+            hole.get("frameIndex"),
+            hole.get("frameTime"),
+            guard.get("id"),
+            guard.get("x"),
+            guard.get("y"),
+            guard.get("xOffset"),
+            guard.get("yOffset"),
+            guard.get("motion"),
+        )
+    )
+    add(
+        kind="wait_for_trap_resolution",
+        label="Hold behind active guard trap",
+        goal="Let the existing dug hole trap or redirect the separated pressure guard.",
+        key_code=STOP_KEYCODE,
+        ticks=wait_ticks,
+        score=140,
+        target={"x": hole.get("x"), "y": hole.get("y"), "tile": "open_hole"},
+        reason=(
+            f"open hole at ({hole.get('x')},{hole.get('y')}) already separates "
+            f"the {trap.get('side')}-side pressure guard"
+        ),
+        preconditions=["pressure guard is separated by an existing open hole"],
+        stop_conditions=["guard falls or changes geometry", "hole state changes", "terminal state reached"],
+        candidate_id=f"wait_for_trap_resolution_{signature}",
+    )
+    return True
+
+
+def add_floor_refill_wait_candidate(add, analysis: dict[str, Any]) -> None:
+    target = _dict(analysis.get("primaryProgressTarget"))
+    direction = target.get("direction")
+    if direction not in {"left", "right"} and analysis.get("goldComplete"):
+        runner = _dict(analysis.get("runner"))
+        runner_x = _to_int(runner.get("x"))
+        runner_y = _to_int(runner.get("y"))
+        waypoint_x = CLASSIC_EXIT_ROW_WAYPOINTS.get(runner_y)
+        if runner_x is not None and waypoint_x is not None and runner_x != waypoint_x:
+            direction = "left" if waypoint_x < runner_x else "right"
+    if direction not in {"left", "right"}:
+        return
+    movement = _dict(analysis.get("movement"))
+    detail = _dict(_dict(movement.get("details")).get(direction))
+    hole = _dict(detail.get("openHole"))
+    if _to_int(hole.get("distance")) != 1 or hole.get("occupiedByTrappedGuard"):
+        return
+    signature = "_".join(
+        str(hole.get(field, "x")) for field in ("x", "y", "frameIndex", "frameTime")
+    )
+    add(
+        kind="wait_for_floor_refill",
+        label="Wait for dug floor to refill",
+        goal="Hold on the safe side of the open brick until its timed refill completes.",
+        key_code=STOP_KEYCODE,
+        ticks=8,
+        score=120,
+        target={"x": hole.get("x"), "y": hole.get("y"), "tile": "#"},
+        reason=(
+            f"open dug brick at ({hole.get('x')},{hole.get('y')}) blocks safe {direction} "
+            f"{'exit' if analysis.get('goldComplete') else 'gold'} progress; "
+            f"refill frame {hole.get('frameIndex')} time {hole.get('frameTime')}"
+        ),
+        preconditions=["required horizontal route crosses an open dug brick"],
+        stop_conditions=["brick refills", "guard pressure changes", "terminal state reached"],
+        candidate_id=f"wait_for_floor_refill_{signature}",
+    )
+
+
 def add_descent_candidate(add, analysis: dict[str, Any], movement: dict[str, Any]) -> None:
     if not movement.get("canMoveDown"):
         return
@@ -615,6 +1162,53 @@ def add_wait_candidate(add) -> None:
     )
 
 
+def add_cross_row_pressure_hold_candidate(add, risk: dict[str, Any]) -> None:
+    guard = (
+        _dict(risk.get("pressureGuard"))
+        or _dict(risk.get("nearestGuard"))
+        or _dict(risk.get("nearestSameRowGuard"))
+    )
+    relative_y = guard.get("relativeY")
+    if relative_y not in {"above", "below"}:
+        return
+    signature = "_".join(
+        str(guard.get(key, "unknown"))
+        for key in ("id", "x", "y", "xOffset", "yOffset", "motion")
+    )
+    add(
+        kind="cross_row_pressure_hold",
+        label="Hold while cross-row guard passes",
+        goal="Preserve a safe separated-row position until guard geometry changes.",
+        key_code=STOP_KEYCODE,
+        ticks=2,
+        score=80,
+        reason=f"all ordinary actions are filtered while the pressure guard is {relative_y}",
+        preconditions=["guard is on another row", "no ordinary candidate is valid"],
+        stop_conditions=["guard geometry changes", "an ordinary candidate becomes valid"],
+        candidate_id=f"cross_row_pressure_hold_{signature}",
+    )
+
+
+def add_emergency_hold_candidate(add, risk: dict[str, Any]) -> None:
+    guard = _dict(risk.get("pressureGuard") or risk.get("nearestGuard"))
+    signature = "_".join(
+        str(guard.get(key, "unknown"))
+        for key in ("id", "x", "y", "xOffset", "yOffset", "motion")
+    )
+    add(
+        kind="emergency_hold",
+        label="Hold through fully blocked contact",
+        goal="Advance the legacy engine when every movement, dig, and ordinary wait is filtered.",
+        key_code=STOP_KEYCODE,
+        ticks=2,
+        score=0,
+        reason="no physically valid guard-safe action remains; use a bounded emergency hold",
+        preconditions=["candidate set would otherwise be empty"],
+        stop_conditions=["guard geometry changes", "a physical action becomes valid", "terminal state reached"],
+        candidate_id=f"emergency_hold_{signature}",
+    )
+
+
 def choose_ladder_direction(snapshot: dict[str, Any], analysis: dict[str, Any]) -> str:
     runner_y = _to_int(analysis["runner"].get("y")) or 0
     if bool(analysis["goldComplete"]):
@@ -670,6 +1264,12 @@ def ticks_for_alignment(distance: int) -> int:
     return 8
 
 
+def ticks_for_exit_alignment(runner_x: int | None, target_x: int | None) -> int:
+    if runner_x is None or target_x is None:
+        return 4
+    return min(20, max(4, abs(target_x - runner_x) * 4))
+
+
 def make_candidate_id(kind: str, target: dict[str, Any] | None, action_name: str) -> str:
     if target:
         x = target.get("x")
@@ -679,41 +1279,222 @@ def make_candidate_id(kind: str, target: dict[str, Any] | None, action_name: str
     return f"{kind}_{action_name}"
 
 
+def _trap_hole_between_pressure_guard(
+    movement: dict[str, Any], risk: dict[str, Any]
+) -> dict[str, Any]:
+    guard = (
+        _dict(risk.get("pressureGuard"))
+        or _dict(risk.get("nearestSameRowGuard"))
+        or _dict(risk.get("nearestGuard"))
+    )
+    side = guard.get("side") or guard.get("relativeX")
+    if side not in {"left", "right"} or guard.get("relativeY") != "same":
+        return {}
+    if guard.get("motion") in {"up", "climb_out"}:
+        return {}
+    detail = _dict(_dict(movement.get("details")).get(side))
+    hole = _dict(detail.get("openHole"))
+    if hole.get("occupiedByTrappedGuard"):
+        return {}
+    distance = _to_int(hole.get("distance"))
+    guard_x = _to_int(guard.get("x"))
+    hole_x = _to_int(hole.get("x"))
+    if distance not in {1, 2} or guard_x is None or hole_x is None:
+        return {}
+    guard_beyond_hole = guard_x <= hole_x if side == "left" else guard_x >= hole_x
+    if not guard_beyond_hole:
+        return {}
+    return {"side": side, "hole": hole, "guard": guard}
+
+
 def is_action_physically_valid(
-    action: dict[str, Any], movement: dict[str, Any], dig: dict[str, Any]
+    action: dict[str, Any],
+    movement: dict[str, Any],
+    dig: dict[str, Any],
+    *,
+    candidate_kind: str | None = None,
 ) -> bool:
     key_code = action.get("keyCode")
     if key_code == STOP_KEYCODE:
         return True
     if key_code == LEFT_KEYCODE:
+        if _action_reaches_open_hole(action, movement, "left", candidate_kind):
+            return False
         return bool(movement.get("canMoveLeft"))
     if key_code == RIGHT_KEYCODE:
+        if _action_reaches_open_hole(action, movement, "right", candidate_kind):
+            return False
         return bool(movement.get("canMoveRight"))
     if key_code == UP_KEYCODE:
-        return bool(movement.get("canMoveUp"))
+        return bool(movement.get("canMoveUp")) or bool(
+            candidate_kind == "finish_exit_climb" and movement.get("canFinishExitClimb")
+        )
     if key_code == DOWN_KEYCODE:
         return bool(movement.get("canMoveDown"))
     if key_code == DIG_LEFT_KEYCODE:
-        return bool(dig.get("canDigLeft"))
+        return bool(dig.get("canDigLeft")) or bool(
+            candidate_kind == "defensive_dig"
+            and _dict(dig.get("left")).get("canDefensiveDig")
+            and _dict(dig.get("left")).get("guardCouldFall")
+        )
     if key_code == DIG_RIGHT_KEYCODE:
-        return bool(dig.get("canDigRight"))
+        return bool(dig.get("canDigRight")) or bool(
+            candidate_kind == "defensive_dig"
+            and _dict(dig.get("right")).get("canDefensiveDig")
+            and _dict(dig.get("right")).get("guardCouldFall")
+        )
     return False
 
 
-def is_action_guard_safe(action: dict[str, Any], analysis: dict[str, Any]) -> bool:
+def limit_horizontal_ticks_before_open_hole(
+    action: dict[str, Any], movement: dict[str, Any], candidate_kind: str
+) -> dict[str, Any]:
+    if candidate_kind in {
+        "route_access_follow",
+        "collect_current_tile_gold",
+        "escape_through_open_hole",
+    }:
+        return action
+    key_code = action.get("keyCode")
+    direction = "left" if key_code == LEFT_KEYCODE else "right" if key_code == RIGHT_KEYCODE else None
+    if direction is None:
+        return action
+    detail = _dict(_dict(movement.get("details")).get(direction))
+    distance = _to_int(detail.get("openDugHoleDistance"))
+    if distance is None:
+        open_hole = _dict(detail.get("openHole"))
+        if not open_hole.get("occupiedByTrappedGuard"):
+            distance = _to_int(open_hole.get("distance"))
+    if distance is None or distance <= 1:
+        return action
+    safe_ticks = (distance - 1) * 4
+    return {**action, "ticks": min(int(action.get("ticks") or 1), safe_ticks)}
+
+
+def _action_reaches_open_hole(
+    action: dict[str, Any],
+    movement: dict[str, Any],
+    direction: str,
+    candidate_kind: str | None,
+) -> bool:
+    if candidate_kind in {
+        "route_access_follow",
+        "collect_current_tile_gold",
+        "escape_through_open_hole",
+    }:
+        return False
+    detail = _dict(_dict(movement.get("details")).get(direction))
+    distance = _to_int(detail.get("openDugHoleDistance"))
+    if distance is None:
+        open_hole = _dict(detail.get("openHole"))
+        if not open_hole.get("occupiedByTrappedGuard"):
+            distance = _to_int(open_hole.get("distance"))
+    if distance is None:
+        return False
+    action_span = max(1, (int(action.get("ticks") or 1) + 3) // 4)
+    return distance <= action_span
+
+
+def is_action_guard_safe(
+    action: dict[str, Any],
+    analysis: dict[str, Any],
+    *,
+    candidate_kind: str | None = None,
+) -> bool:
     if analysis.get("godMode"):
         return True
     risk = _dict(analysis.get("risk"))
-    guard = _dict(risk.get("nearestSameRowGuard"))
+    guard = (
+        _dict(risk.get("pressureGuard"))
+        or _dict(risk.get("nearestGuard"))
+        or _dict(risk.get("nearestSameRowGuard"))
+    )
     if guard.get("risk") not in GUARD_PRESSURE_RISKS:
         return True
-    side = guard.get("side")
+    side = guard.get("side") or guard.get("relativeX")
     key_code = action.get("keyCode")
+    if guard.get("risk") in {"high", "critical"} and side in {"left", "right"}:
+        for nearby in risk.get("nearbyGuards") or []:
+            nearby = _dict(nearby)
+            nearby_side = nearby.get("relativeX")
+            nearby_distance = _to_int(nearby.get("distance"))
+            if (
+                nearby.get("relativeY") == "same"
+                and nearby_side in {"left", "right"}
+                and nearby_side != side
+                and nearby.get("closing")
+                and nearby_distance is not None
+                and nearby_distance <= 7
+                and (
+                    (nearby_side == "left" and key_code == LEFT_KEYCODE)
+                    or (nearby_side == "right" and key_code == RIGHT_KEYCODE)
+                )
+            ):
+                return False
+    for nearby in risk.get("nearbyGuards") or []:
+        nearby = _dict(nearby)
+        if nearby.get("relativeY") != "same" or nearby.get("risk") not in GUARD_PRESSURE_RISKS:
+            continue
+        if nearby.get("relativeX") == "left" and key_code == LEFT_KEYCODE:
+            return False
+        if nearby.get("relativeX") == "right" and key_code == RIGHT_KEYCODE:
+            return False
+    if (
+        candidate_kind == "evade_edge_ladder"
+        and guard.get("relativeY") == "below"
+        and key_code in {LEFT_KEYCODE, RIGHT_KEYCODE}
+    ):
+        return True
+    if (
+        candidate_kind == "evade_open_hole"
+        and guard.get("relativeY") in {"above", "below"}
+        and not guard.get("closing")
+        and key_code in {LEFT_KEYCODE, RIGHT_KEYCODE}
+    ):
+        return True
+    if (
+        guard.get("risk") == "medium"
+        and guard.get("relativeY") in {"above", "below"}
+        and key_code in {LEFT_KEYCODE, RIGHT_KEYCODE}
+    ):
+        return True
     if side == "left" and key_code == LEFT_KEYCODE:
         return False
     if side == "right" and key_code == RIGHT_KEYCODE:
         return False
-    if guard.get("risk") in {"high", "critical"} and key_code == STOP_KEYCODE:
+    relative_y = guard.get("relativeY")
+    if (
+        candidate_kind == "cross_row_pressure_hold"
+        and relative_y in {"above", "below"}
+        and key_code == STOP_KEYCODE
+    ):
+        return True
+    if candidate_kind == "emergency_hold" and key_code == STOP_KEYCODE:
+        return True
+    if (
+        candidate_kind == "wait_for_dig_completion"
+        and key_code == STOP_KEYCODE
+        and _dict(analysis.get("activeDig")).get("active")
+    ):
+        return True
+    if (
+        candidate_kind == "wait_for_trap_resolution"
+        and key_code == STOP_KEYCODE
+        and _trap_hole_between_pressure_guard(
+            _dict(analysis.get("movement")), risk
+        )
+    ):
+        return True
+    if relative_y == "above" and key_code == UP_KEYCODE:
+        return False
+    if relative_y == "below" and key_code == DOWN_KEYCODE:
+        return False
+    runner_action = _dict(analysis.get("runner")).get("action")
+    if (
+        guard.get("risk") in {"high", "critical"}
+        and key_code == STOP_KEYCODE
+        and runner_action != "fall"
+    ):
         return False
     return True
 
@@ -724,7 +1505,11 @@ def limit_horizontal_ticks_under_guard_pressure(
     if analysis.get("godMode"):
         return action
     risk = _dict(analysis.get("risk"))
-    guard = _dict(risk.get("nearestSameRowGuard"))
+    guard = (
+        _dict(risk.get("pressureGuard"))
+        or _dict(risk.get("nearestGuard"))
+        or _dict(risk.get("nearestSameRowGuard"))
+    )
     if guard.get("risk") not in GUARD_PRESSURE_RISKS:
         return action
     if action.get("keyCode") not in {LEFT_KEYCODE, RIGHT_KEYCODE}:

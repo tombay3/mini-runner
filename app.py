@@ -389,6 +389,47 @@ def append_trace_step(run_id: str, step_trace: dict[str, Any]) -> dict[str, Any]
         return store["runs"][run_id]
 
 
+def finalize_trace_run(
+    trace_id: str,
+    *,
+    play_data: int,
+    level: int,
+    model: dict[str, Any] | None,
+    result: str,
+    reason: str | None,
+    final_snapshot: dict[str, Any] | None,
+) -> bool:
+    with _trace_store_lock:
+        store = load_trace_store()
+        run = store["runs"].get(trace_id)
+        if not isinstance(run, dict):
+            now = utc_now()
+            run = {
+                "id": trace_id,
+                "createdAt": now,
+                "updatedAt": now,
+                "playData": play_data,
+                "level": level,
+                "model": model,
+                "config": None,
+                "stepCount": 0,
+                "latestAction": None,
+                "steps": [],
+            }
+            store["runs"][trace_id] = run
+        now = utc_now()
+        run["updatedAt"] = now
+        run["outcome"] = {
+            "result": result,
+            "reason": reason,
+            "finalState": final_snapshot,
+        }
+        store["updatedAt"] = now
+        prune_trace_runs(store)
+        save_trace_store(store)
+        return True
+
+
 @app.get("/api/health")
 def health():
     return jsonify({"ok": True})
@@ -452,6 +493,9 @@ def put_recording(play_data: str, level: str):
         solver = validate_solver(payload.get("solver"))
         trace_id = validate_trace_id(payload.get("traceId", payload.get("traceRef")))
         record_id = validate_record_id(payload.get("id"))
+        final_snapshot = payload.get("finalSnapshot")
+        if final_snapshot is not None and not isinstance(final_snapshot, dict):
+            raise ValueError("finalSnapshot must be an object")
         if source == "agent" and trace_id is None:
             raise ValueError("agent recording requires traceId")
         if source == "agent" and record_id is not None and record_id != trace_id:
@@ -505,6 +549,15 @@ def put_recording(play_data: str, level: str):
             return jsonify({"error": "failed to persist recording"}), 500
 
     if source == "agent":
+        finalize_trace_run(
+            trace_id,
+            play_data=int(play_data_key),
+            level=int(level_key),
+            model=trace_model_summary(solver),
+            result=result,
+            reason=(solver or {}).get("failureReason"),
+            final_snapshot=final_snapshot,
+        )
         log_event(
             LOGGER,
             logging.INFO,

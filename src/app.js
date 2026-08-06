@@ -90,7 +90,7 @@ function ensureLegacyCanvas() {
 }
 
 function ensureTitle() {
-  document.title = "Lode Runner Web Game";
+  document.title = "Lode Runner Game";
 }
 
 function ensureFavicon() {

@@ -7,7 +7,7 @@ const DEFAULT_AGENT_CONFIG = {
     playData: AGENT_PLAY_DATA,
     level: AGENT_LEVEL,
     maxPlaybackTimeSeconds: 120,
-    maxSteps: 200,
+    maxSteps: 300,
     historyLimit: 24,
     modelProfile: null,
   },
@@ -24,6 +24,8 @@ export function createAgentController(deps) {
       state.agentPlanner = null;
       state.agentTraceId = null;
       state.agentRunId = null;
+      state.agentLastError = null;
+      state.agentRequestOptions = {};
     },
 
     bindButton(state, button) {
@@ -33,6 +35,20 @@ export function createAgentController(deps) {
     getButtonState(state) {
       const supported = isAgentSupported(deps.getCurrentContext);
       return deriveAgentButtonState(state, supported);
+    },
+
+    async runEvaluationAttempt(state) {
+      if (state.agentRunning || state.busyAction) {
+        throw new Error("agent evaluation cannot start while another operation is active");
+      }
+      if (!(await deps.checkBackendHealth(state))) {
+        throw new Error("AI server unavailable");
+      }
+      const record = await runAgent(state, deps);
+      if (!record) {
+        throw new Error(state.agentLastError || "agent evaluation produced no recording");
+      }
+      return record;
     },
   };
 }
@@ -73,6 +89,12 @@ async function runAgent(state, deps) {
   const playData = config.agent.playData;
   const level = config.agent.level;
   if (!hooks?.isSupportedContext?.(playData, level)) {
+    state.agentLastError = "agent supports Classic level 1 only";
+    deps.finishUiAction(state, { error: true });
+    return;
+  }
+  if (!hooks?.isReady?.()) {
+    state.agentLastError = "legacy runtime is not ready";
     deps.finishUiAction(state, { error: true });
     return;
   }
@@ -84,6 +106,8 @@ async function runAgent(state, deps) {
   state.agentPlanner = null;
   state.agentTraceId = null;
   state.agentRunId = createRunId();
+  state.agentLastError = null;
+  state.agentRequestOptions = getAgentRequestOptions(config);
   deps.beginUiAction(state, "agent");
 
   const history = [];
@@ -101,8 +125,15 @@ async function runAgent(state, deps) {
       const before = hooks.snapshot();
       const terminal = getTerminalResult(hooks, level);
       if (terminal) {
-        await finishAgentRun(state, deps, hooks, terminal.demo, terminal.result, terminal.reason, config);
-        return;
+        return finishAgentRun(
+          state,
+          deps,
+          hooks,
+          terminal.demo,
+          terminal.result,
+          terminal.reason,
+          config,
+        );
       }
       if (hasExceededPlaybackTime(before, config)) {
         failureReason = "agent max playback time reached";
@@ -118,7 +149,7 @@ async function runAgent(state, deps) {
           snapshot: before,
           history,
           runId: state.agentRunId,
-          ...getAgentRequestOptions(config),
+          ...state.agentRequestOptions,
         }),
         signal: state.agentAbort.signal,
       });
@@ -151,7 +182,7 @@ async function runAgent(state, deps) {
 
       const afterTerminal = getTerminalResult(hooks, level);
       if (afterTerminal) {
-        await finishAgentRun(
+        return finishAgentRun(
           state,
           deps,
           hooks,
@@ -160,7 +191,6 @@ async function runAgent(state, deps) {
           afterTerminal.reason,
           config,
         );
-        return;
       }
     }
     failureReason = failureReason === "agent stopped" ? "agent safety step limit reached" : failureReason;
@@ -173,8 +203,17 @@ async function runAgent(state, deps) {
 
   try {
     const failedDemo = hooks.dumpFailure(failureReason);
-    await saveAgentResult(state, deps, failedDemo, "failure", failureReason, config);
-  } catch (_error) {
+    return await saveAgentResult(
+      state,
+      deps,
+      failedDemo,
+      "failure",
+      failureReason,
+      config,
+      hooks.getTerminalSnapshot?.() ?? hooks.snapshot?.(),
+    );
+  } catch (error) {
+    state.agentLastError = getErrorMessage(error);
     deps.finishUiAction(state, { error: true });
     await deps.checkBackendHealth(state);
   } finally {
@@ -188,7 +227,15 @@ async function runAgent(state, deps) {
 
 async function finishAgentRun(state, deps, hooks, demo, result, reason, config) {
   try {
-    await saveAgentResult(state, deps, demo, result, reason, config);
+    return await saveAgentResult(
+      state,
+      deps,
+      demo,
+      result,
+      reason,
+      config,
+      hooks.getTerminalSnapshot?.() ?? hooks.snapshot?.(),
+    );
   } finally {
     hooks.stop({ resumeTicker: false });
     state.agentRunning = false;
@@ -238,6 +285,8 @@ function summarizeHistorySnapshot(snapshot) {
   const runner = snapshot.runner ?? {};
   const gold = snapshot.gold ?? {};
   return {
+    playData: snapshot.playData,
+    level: snapshot.level,
     tick: snapshot.tick,
     state: snapshot.gameStateName,
     goldCount: gold.remainingCount ?? snapshot.goldCount,
@@ -269,18 +318,32 @@ function getTerminalResult(hooks, level) {
   return null;
 }
 
-async function saveAgentResult(state, deps, demoData, result, reason, config) {
+async function saveAgentResult(
+  state,
+  deps,
+  demoData,
+  result,
+  reason,
+  config,
+  finalSnapshot = null,
+) {
   const playData = config.agent.playData;
   const level = config.agent.level;
+  const traceId = state.agentTraceId ?? state.agentRunId;
   const demo = deps.normalizeDemo(demoData, playData, level);
   demo.state = result === "success" ? 1 : 0;
+  const requestedModel = state.agentRequestOptions?.model ?? null;
+  const requestedProfile = state.agentRequestOptions?.modelProfile ?? config.agent.modelProfile;
   const solver = {
-    modelProfile: state.agentPlanner?.modelProfile ?? null,
-    provider: state.agentPlanner?.provider ?? "openai",
-    model: state.agentPlanner?.model ?? null,
+    modelProfile: state.agentPlanner?.modelProfile ?? requestedProfile ?? null,
+    provider:
+      state.agentPlanner?.provider ??
+      (requestedModel?.includes(":") ? requestedModel.split(":", 1)[0] : requestedProfile) ??
+      null,
+    model: state.agentPlanner?.model ?? requestedModel,
     generatedAt: state.agentPlanner?.generatedAt ?? new Date().toISOString(),
     responseId: state.agentPlanner?.responseId ?? null,
-    traceId: state.agentTraceId ?? null,
+    traceId: traceId ?? null,
     failureReason: result === "failure" ? reason : null,
   };
   const record = await deps.apiFetch(`${deps.recordingApiBase}/${playData}/${level}`, {
@@ -291,13 +354,55 @@ async function saveAgentResult(state, deps, demoData, result, reason, config) {
       source: "agent",
       result,
       solver,
-      traceId: state.agentTraceId ?? null,
+      traceId: traceId ?? null,
+      finalSnapshot: summarizeTerminalSnapshot(finalSnapshot),
     }),
   });
   state.currentRecord = record;
   state.currentGameLevel = deps.formatGameLevel({ playData, level });
   deps.finishUiAction(state, { error: result !== "success" });
   deps.scheduleRefresh(state);
+  return record;
+}
+
+function summarizeTerminalSnapshot(snapshot) {
+  if (!snapshot || typeof snapshot !== "object") {
+    return null;
+  }
+  const runner = snapshot.runner ?? {};
+  const gold = snapshot.gold ?? {};
+  return {
+    playData: snapshot.playData,
+    level: snapshot.level,
+    tick: snapshot.tick,
+    time: snapshot.time,
+    gameState: snapshot.gameStateName,
+    godMode: Boolean(snapshot.godMode),
+    runner: {
+      x: runner.x,
+      y: runner.y,
+      xOffset: runner.xOffset,
+      yOffset: runner.yOffset,
+      action: runner.actionName,
+    },
+    guards: Array.isArray(snapshot.guards)
+      ? snapshot.guards.map((guard) => ({
+          id: guard?.id,
+          x: guard?.x,
+          y: guard?.y,
+          xOffset: guard?.xOffset,
+          yOffset: guard?.yOffset,
+          action: guard?.actionName,
+          hasGold: guard?.hasGold,
+        }))
+      : [],
+    gold: {
+      remainingCount: gold.remainingCount ?? snapshot.goldCount,
+      complete: gold.complete ?? snapshot.goldComplete,
+      visiblePositions: Array.isArray(gold.visiblePositions) ? gold.visiblePositions : [],
+      carriedByGuards: Array.isArray(gold.carriedByGuards) ? gold.carriedByGuards : [],
+    },
+  };
 }
 
 function isAgentSupported(getCurrentContext) {
@@ -425,4 +530,5 @@ export const _test = {
   normalizeAgentAction,
   normalizeAgentConfig,
   summarizeHistorySnapshot,
+  summarizeTerminalSnapshot,
 };

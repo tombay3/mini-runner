@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 globalThis.window = {
   AI_VERSION: 4,
@@ -21,6 +22,12 @@ const agentModule = await import("../src/agent.js");
 const recordingModule = await import("../src/recording.js");
 const agent = agentModule._test;
 const recording = recordingModule._test;
+const agentHookSource = readFileSync(
+  new URL("../public/game/lodeRunner.agentHooks.js", import.meta.url),
+  "utf8",
+);
+assert.match(agentHookSource, /activeDig: snapshotActiveDig\(\)/);
+assert.match(agentHookSource, /holeObj\.action != ACT_DIGGING/);
 
 window.crypto = {
   getRandomValues(array) {
@@ -66,6 +73,43 @@ assert.equal(agent.normalizeAgentAction({ keyCode: 39, ticks: -2 }, config).tick
 assertThrowsMessage(() => agent.normalizeAgentAction(null, config), "no action");
 assertThrowsMessage(() => agent.normalizeAgentAction({ keyCode: 39, ticks: "bad" }, config), "invalid action");
 
+assert.deepEqual(
+  agent.summarizeTerminalSnapshot({
+    playData: 1,
+    level: 1,
+    tick: 42,
+    time: 3,
+    gameStateName: "runner_dead",
+    godMode: false,
+    runner: { x: 7, y: 6, xOffset: -8, yOffset: 0, actionName: "up" },
+    guards: [
+      { id: 2, x: 7, y: 5, xOffset: 0, yOffset: 12, actionName: "down", hasGold: 1 },
+    ],
+    gold: {
+      remainingCount: 1,
+      complete: false,
+      visiblePositions: [],
+      carriedByGuards: [{ id: 2, x: 7, y: 5, hasGold: 1 }],
+    },
+  }),
+  {
+    playData: 1,
+    level: 1,
+    tick: 42,
+    time: 3,
+    gameState: "runner_dead",
+    godMode: false,
+    runner: { x: 7, y: 6, xOffset: -8, yOffset: 0, action: "up" },
+    guards: [{ id: 2, x: 7, y: 5, xOffset: 0, yOffset: 12, action: "down", hasGold: 1 }],
+    gold: {
+      remainingCount: 1,
+      complete: false,
+      visiblePositions: [],
+      carriedByGuards: [{ id: 2, x: 7, y: 5, hasGold: 1 }],
+    },
+  },
+);
+
 assert.equal(
   agent.hasExceededPlaybackTime({ timing: { gameTime: 30 } }, config),
   true,
@@ -84,12 +128,16 @@ assert.equal(
 
 assert.deepEqual(
   agent.summarizeHistorySnapshot({
+    playData: 1,
+    level: 1,
     tick: 12,
     gameStateName: "running",
     gold: { remainingCount: 3, complete: false },
     runner: { x: 14, y: 14, xOffset: 0, yOffset: 0, actionName: "right" },
   }),
   {
+    playData: 1,
+    level: 1,
     tick: 12,
     state: "running",
     goldCount: 3,

@@ -49,6 +49,9 @@ def summarize_state(snapshot: dict[str, Any], analysis: dict[str, Any] | None) -
         "primaryProgressTarget": analysis.get("primaryProgressTarget"),
         "guardRisk": {
             "risk": risk.get("risk"),
+            "nearestGuard": risk.get("nearestGuard"),
+            "pressureGuard": risk.get("pressureGuard"),
+            "nearbyGuards": risk.get("nearbyGuards", []),
             "nearestSameRowGuard": risk.get("nearestSameRowGuard"),
         },
         "movement": {
@@ -56,6 +59,14 @@ def summarize_state(snapshot: dict[str, Any], analysis: dict[str, Any] | None) -
             "canMoveRight": movement.get("canMoveRight"),
             "canMoveUp": movement.get("canMoveUp"),
             "canMoveDown": movement.get("canMoveDown"),
+            "leftOpenDugHoleDistance": _dict(_dict(movement.get("details")).get("left")).get(
+                "openDugHoleDistance"
+            ),
+            "leftOpenHole": _dict(_dict(movement.get("details")).get("left")).get("openHole"),
+            "rightOpenDugHoleDistance": _dict(_dict(movement.get("details")).get("right")).get(
+                "openDugHoleDistance"
+            ),
+            "rightOpenHole": _dict(_dict(movement.get("details")).get("right")).get("openHole"),
         },
         "ladder": {
             "detail": ladder.get("detail"),
@@ -65,8 +76,12 @@ def summarize_state(snapshot: dict[str, Any], analysis: dict[str, Any] | None) -
             "recommendedAction": route_access.get("recommendedAction"),
             "followAvailable": route_access.get("followAvailable"),
             "followAction": route_access.get("followAction"),
+            "followBlockedByGuard": route_access.get("followBlockedByGuard", False),
+            "digBlockedByGuard": route_access.get("digBlockedByGuard", False),
+            "dropThreat": route_access.get("dropThreat"),
             "reason": route_access.get("reason"),
         },
+        "activeDig": analysis.get("activeDig"),
     }
 
 

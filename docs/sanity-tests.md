@@ -6,6 +6,10 @@ backend. These tests are intended as a fast regression check after wrapper/API r
 They do not execute the legacy game engine, run browser UI automation, or call the LLM
 planning endpoint.
 
+Use `npm run evaluate -- --smoke` for the separate real-browser boot check, or
+`npm run evaluate` for actual model-driven normal-mode trials. See
+[Agent evaluation](./evaluation.md).
+
 ```bash
 npm test
 ```
@@ -33,6 +37,8 @@ Notable checks:
 - Recording save/list/delete behavior works against the flat `records` store.
 - User recordings and agent recordings are normalized differently; agent recordings require `traceId`.
 - Deleting an agent recording also deletes its linked trace run.
+- Saving an agent recording finalizes its linked trace with result, reason, and compact
+  terminal runner/guard state.
 - Recording and trace retention keep only the newest 10 entries.
 - Invalid recording payloads and invalid agent request payloads are rejected with request errors.
 
@@ -45,6 +51,7 @@ Notable checks:
 - Agent actions are validated and tick counts are clamped.
 - AI playback time limits use legacy game time, with `recordTick` fallback.
 - History snapshots are summarized into compact runner/gold state.
+- Terminal snapshots preserve compact runner, guard, and gold state for outcome diagnosis.
 - Model profile precedence is URL `?profile=...`, then `window.__lodeRunnerAgentOptions`, then public config.
 - Stored demos are normalized without mutating source arrays.
 - Playback progress aligns agent traces by trace step ticks and user demos by recorded key events.

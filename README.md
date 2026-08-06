@@ -60,8 +60,6 @@ OPENAI_API_KEY=your_openai_api_key
 npm run api
 ```
 
-The Flask development server automatically reloads after Python source changes.
-
 **Start the frontend**
 
 ```bash
@@ -111,6 +109,18 @@ npm test
 
 These tests use direct helper and Flask test-client checks. They do not run the legacy game engine or call the LLM.
 
+### Repeatable Agent Evaluation
+
+Run fresh normal-mode attempts against the real browser game and configured model:
+
+```bash
+npm run evaluate -- --runs 10 --threshold 95
+```
+
+Use `npm run evaluate -- --smoke` to verify the complete local browser/runtime path without
+calling the model. See [Agent evaluation](docs/evaluation.md) for profiles, reports, normal-mode
+enforcement, and exit statuses.
+
 ### Documentation
 
 - [Codebase overview](docs/codebase.md): architecture, boot flow, and module map.
@@ -119,6 +129,7 @@ These tests use direct helper and Flask test-client checks. They do not run the 
 - [Backend spec](docs/backend-spec.md): Flask APIs, JSON stores, model profiles, and logging.
 - [Recording and playback](docs/record-playback.md): wrapper rail, run selection, pause/step controls, and fullscreen behavior.
 - [Sanity tests](docs/sanity-tests.md): quick backend/frontend regression checks.
+- [Agent evaluation](docs/evaluation.md): repeatable real-runtime normal-mode trials and reports.
 - [Puzzle game](docs/puzzle-game.md): Lode Runner rules and puzzle-solving concepts.
 - [Legacy runtime](docs/legacy-runtime.md): the original CreateJS game architecture and features.
 

@@ -20,6 +20,9 @@ HORIZONTAL_RECOVERY_COMMIT_KINDS = {
     "descend_route",
     "exit_ladder_route",
     "route_access_follow",
+    "classic_upper_gold_route",
+    "classic_lower_gold_route",
+    "finish_exit_climb",
 }
 
 
@@ -82,15 +85,29 @@ def build_stall_report(
         primary_target=primary_target,
         movement=movement,
     )
+    stall_exempt_kind = repeated_kind in {
+        "cross_row_pressure_hold",
+        "retreat_from_guard",
+        "wait_for_floor_refill",
+        "wait_for_guard_clearance",
+        "wait_for_dig_completion",
+        "wait_for_trap_resolution",
+    }
     same_candidate_no_progress = (
         no_gold_change
         and no_row_change
         and same_candidate_streak >= 4
         and repeated_candidate_id is not None
+        and not stall_exempt_kind
         and not repeated_progress["madeProgress"]
         and not repeated_progress["targetReached"]
     )
-    same_tile_no_progress = no_gold_change and same_tile_streak >= 6 and repeated_candidate_id is not None
+    same_tile_no_progress = (
+        no_gold_change
+        and same_tile_streak >= 6
+        and repeated_candidate_id is not None
+        and not stall_exempt_kind
+    )
     route_access_loop = (
         no_gold_change
         and no_row_change
@@ -108,7 +125,12 @@ def build_stall_report(
             and not repeated_progress["targetReached"]
         )
     )
-    wait_loop = no_gold_change and no_row_change and (stop_streak >= 3 or repeated_kind == "wait_or_stop")
+    wait_loop = (
+        no_gold_change
+        and no_row_change
+        and stop_streak >= 3
+        and repeated_kind == "wait_or_stop"
+    )
 
     stall_type = None
     if exit_ladder_loop:
@@ -405,7 +427,7 @@ def blocked_candidates_for(
     if stall_type == "horizontal_oscillation":
         if repeated_kind in HORIZONTAL_RECOVERY_COMMIT_KINDS:
             ids = []
-        kinds.extend(["godmode_progress", "retreat_from_guard", "wait_or_stop"])
+        kinds.extend(["godmode_progress", "wait_or_stop"])
     elif stall_type == "same_candidate_no_progress" and repeated_kind:
         kinds.append(repeated_kind)
     elif stall_type == "same_tile_no_progress":
@@ -458,6 +480,7 @@ def preferred_recovery_kinds(
         return ["climb_ladder", "descend_route", "collect_same_row_gold"]
     return [
         "collect_same_row_gold",
+        "collect_current_tile_gold",
         "climb_ladder",
         "align_ladder",
         "route_access_follow",
@@ -517,7 +540,8 @@ def detect_vertical_ladder_loop(
         vertical_keys[index] != vertical_keys[index - 1] for index in range(1, len(vertical_keys))
     )
     ladder_candidate_loop = candidate_ids and all(
-        candidate_kind(candidate_id) == "climb_ladder" for candidate_id in candidate_ids[-6:]
+        candidate_kind(candidate_id) in {"climb_ladder", "retreat_from_guard"}
+        for candidate_id in candidate_ids[-6:]
     )
     if not alternating_vertical or not ladder_candidate_loop:
         return {"detected": False}
@@ -613,6 +637,15 @@ def candidate_kind(candidate_id: str | None) -> str | None:
         "align_ladder",
         "descend_route",
         "wait_or_stop",
+        "wait_for_guard_clearance",
+        "wait_for_floor_refill",
+        "wait_for_dig_completion",
+        "wait_for_trap_resolution",
+        "cross_row_pressure_hold",
+        "emergency_hold",
+        "classic_upper_gold_route",
+        "classic_lower_gold_route",
+        "finish_exit_climb",
     ]
     for kind in known_kinds:
         if candidate_id == kind or candidate_id.startswith(f"{kind}_"):

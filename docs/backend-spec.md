@@ -102,23 +102,45 @@ The trace store has this shape:
       "config": {},
       "stepCount": 0,
       "latestAction": {},
+      "outcome": {
+        "result": "failure",
+        "reason": "runner dead",
+        "finalState": {}
+      },
       "steps": []
     }
   }
 }
 ```
 
+When an agent recording is saved, the linked trace run is finalized with `outcome`.
+`outcome.finalState` is a compact post-action terminal snapshot containing the runner,
+all guards (including offsets, motion, and carried gold), gold state, tick, game state, and
+god-mode state. This preserves the evidence needed to classify a fatal or successful final
+action without storing the full terrain grid again.
+
+The browser-generated run ID is also used as the trace ID when planning fails before the
+first model response. In that case the backend creates a zero-step trace containing model
+metadata and the terminal failure outcome, so provider/configuration failures are retained
+instead of producing an unlinked recording error.
+
 `step.state` is a prompt-parity summary rather than a full snapshot. It contains:
 
 - `gameState`, `tick`, and `godMode`;
 - compact `runner` and `gold` objects;
-- `primaryProgressTarget` and compact `guardRisk`;
+- `primaryProgressTarget` and compact `guardRisk`, including nearby guards on any row
+  and the nearest same-row guard;
 - movement booleans;
-- ladder detail and a compact route-access summary.
+- dynamic support under adjacent horizontal tiles, including whether movement would enter an open dug hole;
+- open-hole coordinates and legacy refill frame/time exposed by the agent hook for timed floor-wait candidates;
+- ladder detail and a compact route-access summary, including guard-blocked drop entry.
 
 Each step also stores `candidates`, `selectedCandidateId`, `selectedCandidateKind`,
 `validation`, `action`, `stallSupervisor`, and `historyTail`. Full terrain, guard lists,
 movement details, dig analysis, and raw model messages are not stored in `step.state`.
+`guardRisk.nearestGuard`, `guardRisk.pressureGuard`, and `guardRisk.nearbyGuards` include horizontal and vertical relation,
+motion, offsets, and carried-gold state. `nearestGuard` is geometric; `pressureGuard` is the
+highest-priority mobile threat after guard-state adjustment (`in_hole` is low immediate pressure).
 The compact `guardRisk.nearestSameRowGuard` uses `side` for relative location,
 `motion` for the guard's current movement action, and `closing` for the derived approach
 state. Step `validation.actionGuardSafe` records the deterministic normal-mode guard
@@ -204,7 +226,7 @@ Current shape:
     "playData": 1,
     "level": 1,
     "maxPlaybackTimeSeconds": 120,
-    "maxSteps": 200,
+    "maxSteps": 300,
     "historyLimit": 24,
     "modelProfile": null
   },
@@ -230,7 +252,7 @@ Browser fields:
 
 - `agent.playData` and `agent.level`: requested runtime context. The current backend still accepts only Classic `1:1`.
 - `agent.maxPlaybackTimeSeconds`: AI run limit in legacy game-time seconds.
-- `agent.maxSteps`: emergency backend-decision step cap.
+- `agent.maxSteps`: emergency backend-decision step cap. Classic level 1 defaults to 300 so guard-heavy normal-mode runs can finish while still remaining bounded.
 - `agent.historyLimit`: recent browser history entries sent to the backend.
 - `agent.modelProfile`: optional non-secret profile name. URL `?profile=...` and `window.__lodeRunnerAgentOptions.modelProfile` override it.
 

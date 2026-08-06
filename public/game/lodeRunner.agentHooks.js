@@ -8,19 +8,44 @@
 	var active = false;
 	var savedState = null;
 	var lastFailureReason = "";
+	var terminalSnapshot = null;
 
 	function isSupportedContext(playData, level) {
 		return Number(playData) === AGENT_PLAY_DATA && Number(level) === AGENT_LEVEL;
+	}
+
+	function isReady() {
+		return !!(
+			typeof preload !== "undefined" &&
+			preload &&
+			preload.loaded &&
+			mainStage &&
+			typeof mainMenuIconObj !== "undefined" &&
+			mainMenuIconObj &&
+			typeof demoIconObj !== "undefined" &&
+			demoIconObj &&
+			typeof themeColorObj !== "undefined" &&
+			themeColorObj &&
+			typeof startGame === "function"
+		);
 	}
 
 	function startLevel(playDataValue, levelValue) {
 		if (!isSupportedContext(playDataValue, levelValue)) {
 			throw new Error("Only Classic level 1 is supported");
 		}
+		if (!isReady()) {
+			throw new Error("Legacy runtime is not ready");
+		}
 		var preserveGodMode = !!godMode;
+		clearIdleDemoTimer();
+		disableAutoDemoTimer();
+		disableStageClickEvent();
+		stopPlayTicker();
 		saveState();
 		active = true;
 		lastFailureReason = "";
+		terminalSnapshot = null;
 		manualTime = 0;
 		playerName = playerName && playerName.length > 1 ? playerName : "Agent";
 		playMode = PLAY_MODERN;
@@ -36,7 +61,6 @@
 			sometimePlayInGodMode = 1;
 		}
 		stopPlayTicker();
-		disableAutoDemoTimer();
 		return snapshot();
 	}
 
@@ -49,6 +73,7 @@
 		for (var i = 0; i < normalizedTicks; i++) {
 			tickOnce();
 			if (gameState == GAME_FINISH || gameState == GAME_RUNNER_DEAD) {
+				terminalSnapshot = snapshot();
 				tickOnce();
 				break;
 			}
@@ -97,10 +122,44 @@
 			lastFailureReason: lastFailureReason,
 			runner: runnerSnapshot,
 			guards: guardSnapshots,
+			activeDig: snapshotActiveDig(),
+			openHoles: snapshotOpenHoles(),
 			terrainGrid: snapshotTerrainGrid(),
 			grid: snapshotGrid(1),
 			baseGrid: snapshotGrid(0)
 		};
+	}
+
+	function snapshotActiveDig() {
+		if (typeof holeObj === "undefined" || !holeObj ||
+			holeObj.action != ACT_DIGGING || !holeObj.pos) return null;
+		var frameCount = holeObj.shapeFrame && holeObj.shapeFrame.length || 0;
+		var frameIndex = holeObj.curFrameIdx || 0;
+		return {
+			active: true,
+			x: holeObj.pos.x,
+			y: holeObj.pos.y + 1,
+			direction: runner && runner.pos && holeObj.pos.x < runner.pos.x ? "left" : "right",
+			frameIndex: frameIndex,
+			frameCount: frameCount,
+			remainingFrames: Math.max(0, frameCount - frameIndex)
+		};
+	}
+
+	function snapshotOpenHoles() {
+		var result = [];
+		if (!fillHoleObj) return result;
+		for (var i = 0; i < fillHoleObj.length; i++) {
+			var hole = fillHoleObj[i];
+			if (!hole || !hole.pos) continue;
+			result.push({
+				x: hole.pos.x,
+				y: hole.pos.y,
+				frameIndex: hole.curFrameIdx || 0,
+				frameTime: hole.curFrameTime || 0
+			});
+		}
+		return result;
 	}
 
 	function snapshotRunner() {
@@ -298,6 +357,10 @@
 		return curDemoData;
 	}
 
+	function getTerminalSnapshot() {
+		return terminalSnapshot;
+	}
+
 	function dumpFailure(reason) {
 		lastFailureReason = String(reason || "agent failed");
 		if (recordMode == RECORD_KEY) {
@@ -344,7 +407,9 @@
 		snapshot: snapshot,
 		stop: stop,
 		getRecordedDemo: getRecordedDemo,
+		getTerminalSnapshot: getTerminalSnapshot,
 		dumpFailure: dumpFailure,
-		isSupportedContext: isSupportedContext
+		isSupportedContext: isSupportedContext,
+		isReady: isReady
 	};
 })();

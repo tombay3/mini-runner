@@ -7,9 +7,11 @@
     "api": "node scripts/api.mjs",
     "dev": "vite --force",
     "build": "vite build",
-    "test": "node scripts/sanity.mjs"
+    "test": "node scripts/sanity.mjs",
+    "evaluate": "node scripts/evaluate-agent.mjs"
   },
   "devDependencies": {
+    "playwright-core": "^1.62.1",
     "vite": "^6.3.5"
   }
 }

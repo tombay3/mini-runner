@@ -37,7 +37,7 @@ PUBLIC_AGENT_CONFIG_DEFAULTS: dict[str, Any] = {
         "playData": AGENT_PLAY_DATA,
         "level": AGENT_LEVEL,
         "maxPlaybackTimeSeconds": 120,
-        "maxSteps": 200,
+        "maxSteps": 300,
         "historyLimit": 24,
         "modelProfile": None,
     },

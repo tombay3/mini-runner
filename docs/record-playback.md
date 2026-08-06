@@ -59,12 +59,8 @@ downloads `run-<short-id>-<timestamp>.webm` (or `.mp4` when that is the selected
 format). Denying capture still starts normal playback.
 
 ## Debug Overlay
-The top gutter overlay appears when a stored run is selected, except while an AI run is
-being recorded. It shows selected-run metadata and playback progress:
-
-```text
-run 2/10 | agent failure | trace 46d79a4d | model minimax:MiniMax-M2.1 | demo 90s | steps 3/18
-```
+The top debug line appears when a stored run is selected, except while an AI run is
+being recorded. It shows selected-run metadata and playback progress.
 
 For agent recordings, progress is aligned by comparing `window.demoTickCount` with trace step ticks loaded from `/api/agent/traces/<traceId>`. For user recordings without traces, progress uses the legacy demo action cursor: `keys <demoRecordIdx>/<demo.action.length / 2>`.
 

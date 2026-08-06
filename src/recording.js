@@ -73,10 +73,62 @@ export function installRecording() {
 
   createOverlay(state);
   patchRecordingSave(state);
+  installEvaluationApi(state);
   void initializeBackend(state);
   state.refreshTimer = window.setInterval(() => void refreshWhenLevelChanges(state), 1200);
 
   return state;
+}
+
+function installEvaluationApi(state) {
+  window.__lodeRunnerEvaluation = Object.freeze({
+    ready() {
+      return (
+        state.installed &&
+        state.backendStatus === "online" &&
+        window.lodeRunnerAgentHooks?.isReady?.() &&
+        !state.agentRunning &&
+        !state.busyAction
+      );
+    },
+
+    status() {
+      return {
+        ready: this.ready(),
+        backendStatus: state.backendStatus,
+        agentRunning: state.agentRunning,
+        busyAction: state.busyAction,
+        godMode: Number(window.godMode),
+      };
+    },
+
+    async runAttempt() {
+      if (Number(window.godMode) === 1) {
+        if (typeof window.toggleGodMode !== "function") {
+          throw new Error("cannot disable god mode for evaluation");
+        }
+        window.toggleGodMode();
+      }
+      if (Number(window.godMode) !== 0) {
+        throw new Error("evaluation requires god mode off");
+      }
+      const record = await agentController.runEvaluationAttempt(state);
+      if (!record || record.source !== "agent") {
+        throw new Error("agent evaluation produced no recording");
+      }
+      return {
+        id: record.id,
+        traceId: record.traceId,
+        playData: record.playData,
+        level: record.level,
+        result: record.result,
+        savedAt: record.savedAt,
+        failureReason: record.solver?.failureReason ?? null,
+        demoTime: record.demo?.time ?? null,
+        godMode: record.demo?.godMode ?? null,
+      };
+    },
+  });
 }
 
 function patchRecordingSave(state) {
@@ -1621,7 +1673,8 @@ async function apiFetch(url, options) {
   const response = await fetch(url, options);
   const body = await response.json().catch(() => null);
   if (!response.ok) {
-    const error = new Error(body?.error || response.statusText);
+    const detail = typeof body?.detail === "string" ? body.detail : null;
+    const error = new Error(detail || body?.error || response.statusText);
     error.status = response.status;
     throw error;
   }
