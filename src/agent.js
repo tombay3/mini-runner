@@ -39,14 +39,18 @@ export function createAgentController(deps) {
 
     async runEvaluationAttempt(state) {
       if (state.agentRunning || state.busyAction) {
-        throw new Error("agent evaluation cannot start while another operation is active");
+        throw new Error(
+          "agent evaluator cannot start while another operation is active",
+        );
       }
       if (!(await deps.checkBackendHealth(state))) {
         throw new Error("AI server unavailable");
       }
       const record = await runAgent(state, deps);
       if (!record) {
-        throw new Error(state.agentLastError || "agent evaluation produced no recording");
+        throw new Error(
+          state.agentLastError || "agent evaluator produced no recording",
+        );
       }
       return record;
     },
@@ -54,7 +58,8 @@ export function createAgentController(deps) {
 }
 
 function deriveAgentButtonState(state, supported) {
-  const unrelatedBusy = Boolean(state.busyAction) && state.busyAction !== "agent";
+  const unrelatedBusy =
+    Boolean(state.busyAction) && state.busyAction !== "agent";
   if (state.agentRunning) {
     return { disabled: unrelatedBusy, title: "Cancel AI agent" };
   }
@@ -193,7 +198,10 @@ async function runAgent(state, deps) {
         );
       }
     }
-    failureReason = failureReason === "agent stopped" ? "agent safety step limit reached" : failureReason;
+    failureReason =
+      failureReason === "agent stopped"
+        ? "agent safety step limit reached"
+        : failureReason;
   } catch (error) {
     failureReason = getErrorMessage(error);
     if (error?.name !== "AbortError") {
@@ -225,7 +233,15 @@ async function runAgent(state, deps) {
   }
 }
 
-async function finishAgentRun(state, deps, hooks, demo, result, reason, config) {
+async function finishAgentRun(
+  state,
+  deps,
+  hooks,
+  demo,
+  result,
+  reason,
+  config,
+) {
   try {
     return await saveAgentResult(
       state,
@@ -264,12 +280,16 @@ function normalizeAgentAction(action, config) {
 function hasExceededPlaybackTime(snapshot, config) {
   const maxPlaybackTime = config.agent.maxPlaybackTimeSeconds;
   const maxPlaybackTicks = maxPlaybackTime * AGENT_PLAYBACK_TICKS_PER_SECOND;
-  const gameTime = getNumericSnapshotValue(snapshot?.timing?.gameTime ?? snapshot?.time);
+  const gameTime = getNumericSnapshotValue(
+    snapshot?.timing?.gameTime ?? snapshot?.time,
+  );
   if (gameTime !== null && gameTime >= maxPlaybackTime) {
     return true;
   }
 
-  const recordTick = getNumericSnapshotValue(snapshot?.timing?.recordTick ?? snapshot?.tick);
+  const recordTick = getNumericSnapshotValue(
+    snapshot?.timing?.recordTick ?? snapshot?.tick,
+  );
   return recordTick !== null && recordTick >= maxPlaybackTicks;
 }
 
@@ -313,7 +333,11 @@ function getTerminalResult(hooks, level) {
   }
   const snapshot = hooks.snapshot?.();
   if (snapshot?.gameStateName === "runner_dead") {
-    return { demo: hooks.dumpFailure?.("runner dead"), result: "failure", reason: "runner dead" };
+    return {
+      demo: hooks.dumpFailure?.("runner dead"),
+      result: "failure",
+      reason: "runner dead",
+    };
   }
   return null;
 }
@@ -333,12 +357,15 @@ async function saveAgentResult(
   const demo = deps.normalizeDemo(demoData, playData, level);
   demo.state = result === "success" ? 1 : 0;
   const requestedModel = state.agentRequestOptions?.model ?? null;
-  const requestedProfile = state.agentRequestOptions?.modelProfile ?? config.agent.modelProfile;
+  const requestedProfile =
+    state.agentRequestOptions?.modelProfile ?? config.agent.modelProfile;
   const solver = {
     modelProfile: state.agentPlanner?.modelProfile ?? requestedProfile ?? null,
     provider:
       state.agentPlanner?.provider ??
-      (requestedModel?.includes(":") ? requestedModel.split(":", 1)[0] : requestedProfile) ??
+      (requestedModel?.includes(":")
+        ? requestedModel.split(":", 1)[0]
+        : requestedProfile) ??
       null,
     model: state.agentPlanner?.model ?? requestedModel,
     generatedAt: state.agentPlanner?.generatedAt ?? new Date().toISOString(),
@@ -346,18 +373,21 @@ async function saveAgentResult(
     traceId: traceId ?? null,
     failureReason: result === "failure" ? reason : null,
   };
-  const record = await deps.apiFetch(`${deps.recordingApiBase}/${playData}/${level}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      demo,
-      source: "agent",
-      result,
-      solver,
-      traceId: traceId ?? null,
-      finalSnapshot: summarizeTerminalSnapshot(finalSnapshot),
-    }),
-  });
+  const record = await deps.apiFetch(
+    `${deps.recordingApiBase}/${playData}/${level}`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        demo,
+        source: "agent",
+        result,
+        solver,
+        traceId: traceId ?? null,
+        finalSnapshot: summarizeTerminalSnapshot(finalSnapshot),
+      }),
+    },
+  );
   state.currentRecord = record;
   state.currentGameLevel = deps.formatGameLevel({ playData, level });
   deps.finishUiAction(state, { error: result !== "success" });
@@ -399,8 +429,12 @@ function summarizeTerminalSnapshot(snapshot) {
     gold: {
       remainingCount: gold.remainingCount ?? snapshot.goldCount,
       complete: gold.complete ?? snapshot.goldComplete,
-      visiblePositions: Array.isArray(gold.visiblePositions) ? gold.visiblePositions : [],
-      carriedByGuards: Array.isArray(gold.carriedByGuards) ? gold.carriedByGuards : [],
+      visiblePositions: Array.isArray(gold.visiblePositions)
+        ? gold.visiblePositions
+        : [],
+      carriedByGuards: Array.isArray(gold.carriedByGuards)
+        ? gold.carriedByGuards
+        : [],
     },
   };
 }
@@ -409,9 +443,12 @@ function isAgentSupported(getCurrentContext) {
   const context = getCurrentContext();
   return Boolean(
     context &&
-      context.playData === AGENT_PLAY_DATA &&
-      context.level === AGENT_LEVEL &&
-      window.lodeRunnerAgentHooks?.isSupportedContext?.(context.playData, context.level),
+    context.playData === AGENT_PLAY_DATA &&
+    context.level === AGENT_LEVEL &&
+    window.lodeRunnerAgentHooks?.isSupportedContext?.(
+      context.playData,
+      context.level,
+    ),
   );
 }
 
@@ -436,18 +473,29 @@ async function loadAgentConfig() {
 
 function normalizeAgentConfig(raw) {
   const input = raw && typeof raw === "object" ? raw : {};
-  const agent = input.agent && typeof input.agent === "object" ? input.agent : {};
-  const backend = input.backend && typeof input.backend === "object" ? input.backend : {};
+  const agent =
+    input.agent && typeof input.agent === "object" ? input.agent : {};
+  const backend =
+    input.backend && typeof input.backend === "object" ? input.backend : {};
   return {
     agent: {
-      playData: positiveInteger(agent.playData, DEFAULT_AGENT_CONFIG.agent.playData),
+      playData: positiveInteger(
+        agent.playData,
+        DEFAULT_AGENT_CONFIG.agent.playData,
+      ),
       level: positiveInteger(agent.level, DEFAULT_AGENT_CONFIG.agent.level),
       maxPlaybackTimeSeconds: positiveInteger(
         agent.maxPlaybackTimeSeconds,
         DEFAULT_AGENT_CONFIG.agent.maxPlaybackTimeSeconds,
       ),
-      maxSteps: positiveInteger(agent.maxSteps, DEFAULT_AGENT_CONFIG.agent.maxSteps),
-      historyLimit: positiveInteger(agent.historyLimit, DEFAULT_AGENT_CONFIG.agent.historyLimit),
+      maxSteps: positiveInteger(
+        agent.maxSteps,
+        DEFAULT_AGENT_CONFIG.agent.maxSteps,
+      ),
+      historyLimit: positiveInteger(
+        agent.historyLimit,
+        DEFAULT_AGENT_CONFIG.agent.historyLimit,
+      ),
       modelProfile: optionalString(agent.modelProfile),
     },
     backend: {
@@ -480,7 +528,12 @@ function optionalString(value) {
 function getAgentRequestOptions(config) {
   const options = window.__lodeRunnerAgentOptions;
   const requestOptions = {};
-  if (options && typeof options === "object" && typeof options.model === "string" && options.model.trim()) {
+  if (
+    options &&
+    typeof options === "object" &&
+    typeof options.model === "string" &&
+    options.model.trim()
+  ) {
     requestOptions.model = options.model.trim();
   }
   const modelProfile = getAgentModelProfileOption(options, config);
@@ -496,7 +549,11 @@ function getAgentModelProfileOption(options, config) {
   if (queryProfile?.trim()) {
     return queryProfile.trim();
   }
-  if (options && typeof options === "object" && typeof options.modelProfile === "string") {
+  if (
+    options &&
+    typeof options === "object" &&
+    typeof options.modelProfile === "string"
+  ) {
     return options.modelProfile.trim() || null;
   }
   return config.agent.modelProfile;
@@ -510,7 +567,9 @@ function createRunId() {
     const bytes = window.crypto.getRandomValues(new Uint8Array(16));
     bytes[6] = (bytes[6] & 0x0f) | 0x40;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    const hex = Array.from(bytes, (value) => value.toString(16).padStart(2, "0"));
+    const hex = Array.from(bytes, (value) =>
+      value.toString(16).padStart(2, "0"),
+    );
     return [
       hex.slice(0, 4).join(""),
       hex.slice(4, 6).join(""),

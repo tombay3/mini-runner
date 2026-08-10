@@ -8,7 +8,7 @@ planning endpoint.
 
 Use `npm run evaluate -- --smoke` for the separate real-browser boot check, or
 `npm run evaluate` for actual model-driven normal-mode trials. See
-[Agent evaluation](./evaluation.md).
+[Agent evaluator](./evaluator.md).
 
 ```bash
 npm test
@@ -39,7 +39,10 @@ Notable checks:
 - Deleting an agent recording also deletes its linked trace run.
 - Saving an agent recording finalizes its linked trace with result, reason, and compact
   terminal runner/guard state.
-- Recording and trace retention keep only the newest 10 entries.
+- Recording retention keeps all pins plus the newest 10 unpinned entries; trace retention keeps
+  traces linked by recording pins plus the newest 10 other traces.
+- New records start unpinned, same-id saves preserve a pin, pinned deletion returns `409`, and
+  trace objects never duplicate pin state.
 - Invalid recording payloads and invalid agent request payloads are rejected with request errors.
 
 ## Frontend Coverage

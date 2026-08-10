@@ -25,7 +25,6 @@ from .debug_io import append_model_io_debug
 from .errors import AgentConfigError, AgentExecutionError, AgentRequestError
 from .logging_utils import get_logger, log_event, refresh_app_log_level
 from .prompt import build_agent_prompt
-from .stall_tools import is_candidate_blocked
 from .traces import serialize_step_trace
 
 
@@ -204,79 +203,26 @@ def run_candidate_selection(
         client,
         requested_model,
         snapshot,
-        history,
         candidates,
         analysis,
         options,
         public_config,
     )
     selected, validation = validate_or_fallback_candidate(result, candidates, analysis)
-    stall_supervisor = build_stall_supervisor(validation, analysis)
-    if validation.get("stallBlocked"):
-        retry_note = (
-            "The previous candidate repeats a detected stall. "
-            "Choose a non-blocked recovery candidate from the list. "
-            f"Stall reason: {validation.get('stallBlockReason')}. "
-            f"Preferred recovery kinds: {analysis.get('stallReport', {}).get('preferredCandidateKinds', [])}."
-        )
-        retry_result = run_model_turn(
-            client,
-            requested_model,
-            snapshot,
-            history,
-            candidates,
-            analysis,
-            options,
-            public_config,
-            retry_note=retry_note,
-        )
-        retry_selected, retry_validation = validate_or_fallback_candidate(
-            retry_result, candidates, analysis
-        )
-        stall_supervisor.update(
-            {
-                "retryAttempted": True,
-                "retryRequestedCandidateId": retry_validation.get("requestedCandidateId"),
-                "retrySelectedCandidateId": retry_validation.get("selectedCandidateId"),
-                "retryStallBlocked": retry_validation.get("stallBlocked"),
-            }
-        )
-        result = retry_result
-        selected = retry_selected
-        validation = retry_validation
-        if validation.get("stallBlocked"):
-            fallback = first_nonblocked_valid_candidate(candidates, analysis)
-            if fallback is None:
-                raise AgentExecutionError("agent stalled: no recovery candidate is available")
-            stall_supervisor.update(
-                {
-                    "fallbackAfterRetry": True,
-                    "fallbackCandidateId": fallback["id"],
-                    "fallbackReason": validation.get("stallBlockReason"),
-                }
-            )
-            selected = fallback
-            validation = {
-                **validation,
-                "selectedCandidateId": selected["id"],
-                "fallbackUsed": True,
-                "fallbackReason": "stall supervisor fallback after blocked retry",
-                "stallBlocked": False,
-                "stallBlockReason": None,
-            }
+    loop_monitor = build_loop_monitor(analysis)
 
     action = dict(selected["firstAction"])
-    planner = build_planner(result, requested_model, validation, public_config)
-    planner["candidateCount"] = len(candidates)
+    planner = build_planner(
+        result, requested_model, validation, public_config, len(candidates)
+    )
 
     trace = serialize_step_trace(
         snapshot=snapshot,
-        history=history,
         action=action,
         candidates=candidates,
         selected_candidate=selected,
         validation=validation,
-        stall_supervisor=stall_supervisor,
+        loop_monitor=loop_monitor,
         analysis=analysis,
     )
     return {
@@ -284,9 +230,6 @@ def run_candidate_selection(
         "planner": planner,
         "trace": trace,
         "candidateId": selected["id"],
-        "candidate": selected,
-        "candidates": summarize_candidates(candidates),
-        "validation": validation,
     }
 
 
@@ -294,20 +237,15 @@ def run_model_turn(
     client,
     model: ResolvedAgentModel,
     snapshot: dict[str, Any],
-    history: list[dict[str, Any]],
     candidates: list[dict[str, Any]],
     analysis: dict[str, Any],
     options: dict[str, Any],
     public_config: dict[str, Any],
-    retry_note: str | None = None,
 ) -> dict[str, Any]:
     prompt = build_agent_prompt(
         snapshot,
-        history,
         candidates=candidates,
         analysis=analysis,
-        retry_note=retry_note,
-        show_candidate_scores=public_config["prompt"]["showCandidateScores"],
     )
     messages = [
         {
@@ -344,7 +282,6 @@ def run_model_turn(
         append_model_io_debug(
             trace_id=options.get("runId"),
             model=model.model,
-            retry=retry_note is not None,
             prompt=prompt,
             response=response,
             parse_error=parse_error,
@@ -372,7 +309,7 @@ def validate_or_fallback_candidate(
     fallback_reason = None
 
     if selected is None:
-        selected = first_nonblocked_valid_candidate(candidates, analysis) or candidates[0]
+        selected = candidates[0]
         fallback_used = True
         fallback_reason = result.get("parseError") or f"unknown candidateId: {requested_id}"
 
@@ -381,6 +318,7 @@ def validate_or_fallback_candidate(
         analysis["movement"],
         analysis["dig"],
         candidate_kind=selected.get("kind"),
+        runner_x_offset=(analysis.get("runner") or {}).get("xOffset"),
     )
     action_guard_safe = is_action_guard_safe(
         selected["firstAction"], analysis, candidate_kind=selected.get("kind")
@@ -391,86 +329,28 @@ def validate_or_fallback_candidate(
             if not action_valid
             else "selected candidate action moved toward guard pressure"
         )
-        valid_candidate = first_nonblocked_valid_candidate(candidates, analysis)
-        if valid_candidate is None:
-            raise AgentExecutionError(
-                "selected candidate action is not safe and physically valid"
-            )
-        selected = valid_candidate
+        selected = candidates[0]
         action_valid = True
         action_guard_safe = True
         fallback_used = True
         fallback_reason = replacement_reason
-    stall_blocked, stall_block_reason = is_candidate_blocked(
-        selected, analysis.get("stallReport") or analysis.get("progressMonitor") or {}
-    )
-
     validation = {
         "requestedCandidateId": requested_id,
         "selectedCandidateId": selected["id"],
         "knownCandidate": requested_id in by_id,
         "fallbackUsed": fallback_used,
         "fallbackReason": fallback_reason,
-        "actionValid": action_valid,
-        "actionGuardSafe": action_guard_safe,
-        "stallBlocked": stall_blocked,
-        "stallBlockReason": stall_block_reason,
-        "stallReportType": (analysis.get("stallReport") or {}).get("type"),
-        "stallSeverity": (analysis.get("stallReport") or {}).get("severity"),
-        "choiceReason": choice.get("reason"),
     }
     return selected, validation
 
 
-def first_nonblocked_valid_candidate(
-    candidates: list[dict[str, Any]], analysis: dict[str, Any]
-) -> dict[str, Any] | None:
-    stall_report = analysis.get("stallReport") or analysis.get("progressMonitor") or {}
-    for candidate in candidates:
-        if not is_action_physically_valid(
-            candidate["firstAction"],
-            analysis["movement"],
-            analysis["dig"],
-            candidate_kind=candidate.get("kind"),
-        ):
-            continue
-        if not is_action_guard_safe(
-            candidate["firstAction"], analysis, candidate_kind=candidate.get("kind")
-        ):
-            continue
-        blocked, _reason = is_candidate_blocked(candidate, stall_report)
-        if not blocked:
-            return candidate
-    return None
-
-
-def build_stall_supervisor(validation: dict[str, Any], analysis: dict[str, Any]) -> dict[str, Any]:
-    stall_report = analysis.get("stallReport") or analysis.get("progressMonitor") or {}
-    observations = stall_report.get("observations") or {}
+def build_loop_monitor(analysis: dict[str, Any]) -> dict[str, Any]:
+    report = analysis.get("loopReport") or {}
     return {
-        "enabled": True,
-        "severity": stall_report.get("severity"),
-        "type": stall_report.get("type"),
-        "stalled": bool(stall_report.get("stalled")),
-        "blockedCandidateIds": stall_report.get("blockedCandidateIds", []),
-        "blockedCandidateKinds": stall_report.get("blockedCandidateKinds", []),
-        "preferredCandidateKinds": stall_report.get("preferredCandidateKinds", []),
-        "observations": {
-            "shortHorizontalOscillation": bool(
-                observations.get("shortHorizontalOscillation")
-            ),
-            "repeatedCandidate": bool(observations.get("repeatedCandidate")),
-            "sameCandidateStreak": observations.get("sameCandidateStreak", 0),
-            "repeatedCandidateId": observations.get("repeatedCandidateId"),
-            "targetProgress": bool(observations.get("targetProgress")),
-            "targetReached": bool(observations.get("targetReached")),
-        },
-        "initialRequestedCandidateId": validation.get("requestedCandidateId"),
-        "initialSelectedCandidateId": validation.get("selectedCandidateId"),
-        "initialStallBlocked": validation.get("stallBlocked"),
-        "initialStallBlockReason": validation.get("stallBlockReason"),
-        "retryAttempted": False,
-        "fallbackAfterRetry": False,
+        "active": bool(report.get("active")),
+        "type": report.get("type"),
+        "evidence": report.get("evidence", {}),
+        "suppressedCandidates": report.get("suppressedCandidates", []),
     }
 
 
@@ -500,10 +380,7 @@ def parse_candidate_response(response: Any) -> tuple[dict[str, Any] | None, str 
     candidate_id = payload.get("candidateId")
     if not isinstance(candidate_id, str) or not candidate_id.strip():
         return None, "candidateId must be a non-empty string"
-    return {
-        "candidateId": candidate_id.strip(),
-        "reason": str(payload.get("reason", ""))[:500],
-    }, None
+    return {"candidateId": candidate_id.strip()}, None
 
 
 def build_planner(
@@ -511,6 +388,7 @@ def build_planner(
     model: ResolvedAgentModel,
     validation: dict[str, Any],
     public_config: dict[str, Any],
+    candidate_count: int,
 ) -> dict[str, Any]:
     response = result.get("response")
     return {
@@ -523,27 +401,10 @@ def build_planner(
         "responseId": getattr(response, "id", None),
         "fallbackUsed": validation["fallbackUsed"],
         "fallbackReason": validation["fallbackReason"],
-        "candidateCount": None,
+        "candidateCount": candidate_count,
         "config": {
-            "showCandidateScores": public_config["prompt"]["showCandidateScores"],
             "candidateLimit": public_config["backend"]["candidateLimit"],
             "maxActionTicks": public_config["backend"]["maxActionTicks"],
             "temperature": public_config["backend"]["temperature"],
         },
     }
-
-
-def summarize_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [
-        {
-            "id": candidate["id"],
-            "kind": candidate["kind"],
-            "score": candidate["score"],
-            "stallBlocked": candidate.get("stallBlocked", False),
-            "stallRecovery": candidate.get("stallRecovery", False),
-            "target": candidate.get("target"),
-            "firstAction": candidate.get("firstAction"),
-            "goal": candidate.get("goal"),
-        }
-        for candidate in candidates
-    ]

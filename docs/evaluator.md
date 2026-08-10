@@ -1,4 +1,4 @@
-# Agent Evaluation
+# Agent Evaluator
 
 ## Purpose
 
@@ -12,6 +12,10 @@ CreateJS asset queue before the first attempt begins.
 
 The evaluator always disables god mode before an attempt and rejects a report when the
 recorded demo or terminal trace does not prove normal-mode execution.
+
+## Evaluation Loop
+
+![Agent evaluator loop](./eval-loop.svg)
 
 ## Usage
 
@@ -47,7 +51,7 @@ Each attempt records:
 - recording and trace IDs;
 - model metadata, legacy demo time, and backend decision count;
 - terminal runner, guard, and gold state;
-- candidate-kind counts, fallback count, confirmed stalls, and retry count;
+- candidate-kind counts, generic fallback count, confirmed loops, and suppressed-candidate count;
 - whether both the demo and terminal snapshot prove god mode was off.
 - whether every trace step stayed in Classic `1:1` with a monotonic tick timeline.
 
@@ -63,5 +67,6 @@ normal-mode violations. Exit status is:
 - `3`: at least one attempt was not proven to be normal mode.
 - `4`: a run changed context or reset its tick timeline, indicating legacy-runtime contamination.
 
-Recordings and traces still use their normal newest-10 retention. Use `--output` when a
-larger campaign needs a durable aggregate report.
+Stores retain every recording protected by a manual recording pin, its linked trace when
+present, and the newest 10 other entries. Use `--output` when a larger campaign needs a durable
+aggregate report.

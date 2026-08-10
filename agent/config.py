@@ -46,9 +46,6 @@ PUBLIC_AGENT_CONFIG_DEFAULTS: dict[str, Any] = {
         "maxActionTicks": AGENT_MAX_TICKS,
         "temperature": AGENT_TEMPERATURE,
     },
-    "prompt": {
-        "showCandidateScores": True,
-    },
 }
 
 
@@ -103,7 +100,6 @@ def load_public_agent_config() -> dict[str, Any]:
 
     agent = _dict(raw.get("agent"))
     backend = _dict(raw.get("backend"))
-    prompt = _dict(raw.get("prompt"))
     defaults = PUBLIC_AGENT_CONFIG_DEFAULTS
     return {
         "agent": {
@@ -136,12 +132,6 @@ def load_public_agent_config() -> dict[str, Any]:
                 defaults["backend"]["temperature"],
                 minimum=0.0,
                 maximum=2.0,
-            ),
-        },
-        "prompt": {
-            "showCandidateScores": _bool_value(
-                prompt.get("showCandidateScores"),
-                defaults["prompt"]["showCandidateScores"],
             ),
         },
     }
@@ -193,20 +183,6 @@ def _optional_string(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
-
-
-def _bool_value(value: Any, default: bool) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        normalized = value.strip().lower()
-        if normalized in {"1", "true", "yes", "on"}:
-            return True
-        if normalized in {"0", "false", "no", "off"}:
-            return False
-    if isinstance(value, (int, float)):
-        return bool(value)
-    return default
 
 
 def get_default_agent_model() -> str | None:

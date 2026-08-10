@@ -8,8 +8,9 @@ Current layers:
 - `public/game/*`: legacy gameplay, rendering, menus, input, editor, demo recording, and demo playback.
 - `src/*`: Vite wrapper boot, recording/playback rail, browser AI loop, and host styles.
 - `app.py`: Flask API for recordings, traces, model calls, and local JSON stores.
-- `agent/*`: candidate-agent backend analysis, prompting, model calls, traces, and stall handling.
-- `scripts/*`: direct sanity checks, real-browser agent evaluation, and a read-only trace analytics notebook.
+- `agent/*`: candidate-agent backend analysis, prompting, model calls, traces, and loop filtering.
+- `dash.py` and `loader.py`: read-only Streamlit and pandas trace dashboard.
+- `scripts/*`: direct sanity checks, real-browser agent evaluator, and a read-only trace analytics notebook.
 
 ## Root Boot Flow
 1. Vite serves `index.html`.
@@ -88,7 +89,7 @@ The wrapper adds tooling without replacing legacy gameplay:
 ### Runtime Flow
 
 Legacy snapshot → deterministic analysis → legal candidate generation/scoring → LLM selects
-`candidateId` → validation/stall retry or fallback → legacy `keyCode`/`ticks` execution →
+`candidateId` → generic validation fallback → legacy `keyCode`/`ticks` execution →
 recording and trace persistence.
 
 1. [src/agent.js](../src/agent.js) starts Classic level 1 through [public/game/lodeRunner.agentHooks.js](../public/game/lodeRunner.agentHooks.js).
@@ -96,9 +97,9 @@ recording and trace persistence.
 3. The browser sends `playData`, `level`, `snapshot`, bounded `history`, `runId`, and optional model selection to `/api/agent/next-action`.
 4. [app.py](../app.py) validates the request and calls `plan_next_action()`.
 5. [agent/service.py](../agent/service.py) resolves the model and orchestrates candidate planning.
-6. [agent/candidates.py](../agent/candidates.py), [agent/reasoning_tools.py](../agent/reasoning_tools.py), and [agent/stall_tools.py](../agent/stall_tools.py) analyze the snapshot/history and produce ranked candidates.
+6. [agent/candidates.py](../agent/candidates.py), [agent/reasoning_tools.py](../agent/reasoning_tools.py), and [agent/loop_tools.py](../agent/loop_tools.py) analyze the snapshot/history, remove confirmed loop actions, and produce ranked eligible candidates.
 7. [agent/prompt.py](../agent/prompt.py) asks the LLM to choose one candidate by ID.
-8. The backend validates the selected candidate, applies stall retry/fallback logic if needed, and returns one bounded legacy action.
+8. The backend validates the selected candidate, applies one generic fallback for malformed or unsafe selection, and returns one bounded legacy action.
 9. The browser steps the legacy runtime and repeats until success, failure, cancellation, the configured legacy playback-time limit, or the configured step limit.
 10. [src/agent.js](../src/agent.js) saves the final successful or failed demo through the recording API.
 
@@ -106,13 +107,13 @@ recording and trace persistence.
 Current backend agent modules:
 
 - [agent/config.py](../agent/config.py): constants, allowed keycodes, model normalization, default model lookup.
-- [agent/service.py](../agent/service.py): request validation, `aisuite` client wrapper, model call, candidate selection orchestration, retry/fallback handling.
+- [agent/service.py](../agent/service.py): request validation, `aisuite` client wrapper, one model call, candidate selection, and generic validation fallback.
 - [agent/candidates.py](../agent/candidates.py): normalized analysis and candidate generation/ranking.
 - [agent/reasoning_tools.py](../agent/reasoning_tools.py): deterministic snapshot helpers for movement, guard pressure, digging, route access, and progress facts.
-- [agent/stall_tools.py](../agent/stall_tools.py): deterministic oscillation/loop/stall detection and recovery hints.
+- [agent/loop_tools.py](../agent/loop_tools.py): compact stationary, horizontal, and vertical cycle detection plus candidate suppression.
 - [agent/prompt.py](../agent/prompt.py): compact candidate-selection prompt.
 - [agent/traces.py](../agent/traces.py): compact trace serialization for `state`, candidates,
-  selection, validation, action, stall supervision, and recent history.
+  selection, validation, action, and loop-monitor evidence.
 - [agent/errors.py](../agent/errors.py): request/config/execution error types.
 - [agent/logging_utils.py](../agent/logging_utils.py): low-noise Python logging setup.
 
@@ -125,7 +126,7 @@ backend does not maintain a second game simulator.
 
 The main technical risk is synchronization across legacy global state, browser snapshots,
 candidate heuristics, trace history, and recorded tick timelines. Structured hooks, compact
-traces, stall supervision, and tick-aligned playback controls make these boundaries
+traces, loop-filter evidence, and tick-aligned playback controls make these boundaries
 observable and debuggable.
 
 Current agent scope remains intentionally narrow: Classic `playData=1`, `level=1`.
@@ -136,5 +137,6 @@ Current agent scope remains intentionally narrow: Classic `playData=1`, `level=1
 - [LLM candidate agent](./llm-agent.md)
 - [Candidate design](./candidate-design.md)
 - [Backend spec](./backend-spec.md)
+- [Trace dashboard](./trace-dashboard.md)
 - [Recording and playback](./record-playback.md)
 - [Sanity tests](./sanity-tests.md)

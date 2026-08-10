@@ -12,15 +12,17 @@ sys.path.insert(0, str(ROOT))
 import app as app_module  # noqa: E402
 from agent import AgentRequestError, validate_agent_request  # noqa: E402
 from agent.candidates import (  # noqa: E402
+    apply_prospective_horizontal_endpoint_safety,
     generate_candidates,
     is_action_guard_safe,
     ladder_alignment_score,
     limit_horizontal_ticks_under_guard_pressure,
 )
-from agent.prompt import format_stall_report, format_state_summary  # noqa: E402
+from agent.prompt import format_state_summary  # noqa: E402
 from agent.reasoning_tools import assess_guard_risk, get_movement_affordance  # noqa: E402
 from agent.service import validate_or_fallback_candidate  # noqa: E402
-from agent.stall_tools import build_stall_report, is_candidate_blocked  # noqa: E402
+from agent.loop_tools import build_loop_report, candidate_suppression_reason  # noqa: E402
+from loader import _build_dataframes  # noqa: E402
 
 
 def assert_equal(actual: Any, expected: Any, message: str) -> None:
@@ -68,11 +70,10 @@ def write_trace_run(trace_id: str) -> None:
             "selectedCandidateId": None,
             "selectedCandidateKind": None,
             "validation": {},
-            "historyTail": [],
             "action": {"keyCode": 39, "ticks": 8, "reason": "test"},
-            "stallSupervisor": {},
+            "loopMonitor": {},
             "model": {"model": "openai:test", "provider": "openai"},
-            "config": {"showCandidateScores": True},
+            "config": {},
         },
     )
 
@@ -95,7 +96,7 @@ def movement_history(
     return history
 
 
-def stall_analysis() -> dict[str, Any]:
+def loop_analysis() -> dict[str, Any]:
     return {
         "goldComplete": False,
         "routeAccess": {},
@@ -107,7 +108,7 @@ def stall_analysis() -> dict[str, Any]:
     }
 
 
-def check_stall_supervisor_regressions() -> None:
+def check_loop_filter_regressions() -> None:
     right_ladder = "align_ladder_27_14_right"
     left_ladder = "align_ladder_4_14_left"
     progressing = movement_history(
@@ -116,10 +117,10 @@ def check_stall_supervisor_regressions() -> None:
         [39] * 4,
     )
     progressing[0]["before"]["runner"]["x"] = 17
-    report = build_stall_report(stall_analysis(), progressing)
-    assert_equal(report["severity"], "none", "target progress remains non-stalled")
-    assert_true(report["repeatedCandidateProgress"], "target progress is recorded")
-    assert_equal(report["blockedCandidateIds"], [], "non-stalled progress has no blocked ids")
+    report = build_loop_report(loop_analysis(), progressing)
+    assert_true(not report["active"], "target progress remains outside loop handling")
+    assert_true(report["evidence"]["targetProgress"], "target progress is recorded")
+    assert_equal(report["suppress"]["candidateIds"], [], "progress suppresses nothing")
 
     reached = movement_history(
         [right_ladder] * 4,
@@ -127,9 +128,9 @@ def check_stall_supervisor_regressions() -> None:
         [39] * 4,
     )
     reached[0]["before"]["runner"]["x"] = 22
-    report = build_stall_report(stall_analysis(), reached)
-    assert_equal(report["severity"], "none", "reaching macro target clears warning")
-    assert_true(report["repeatedCandidateTargetReached"], "macro target completion is recorded")
+    report = build_loop_report(loop_analysis(), reached)
+    assert_true(not report["active"], "reaching macro target clears loop warning")
+    assert_true(report["evidence"]["targetReached"], "macro target completion is recorded")
 
     reached_after_reversals = movement_history(
         [right_ladder, right_ladder, left_ladder, right_ladder, left_ladder]
@@ -137,43 +138,157 @@ def check_stall_supervisor_regressions() -> None:
         [(23, 14), (25, 14), (23, 14), (25, 14), (23, 14), (25, 14), (26, 14), (27, 14)],
         [39, 39, 37, 39, 37, 39, 39, 39],
     )
-    report = build_stall_report(stall_analysis(), reached_after_reversals)
-    assert_equal(report["severity"], "none", "macro completion clears prior reversal warning")
+    report = build_loop_report(loop_analysis(), reached_after_reversals)
+    assert_true(not report["active"], "macro completion clears prior reversal warning")
 
     stuck = movement_history([right_ladder] * 4, [(20, 14)] * 4, [39] * 4)
-    report = build_stall_report(stall_analysis(), stuck)
-    assert_equal(report["severity"], "stalled", "same candidate without movement stalls")
-    assert_equal(report["type"], "same_candidate_no_progress", "same candidate stall type")
-    assert_true(right_ladder in report["blockedCandidateIds"], "confirmed stall blocks repeated id")
+    report = build_loop_report(loop_analysis(), stuck)
+    assert_true(report["active"], "same candidate without movement activates loop filter")
+    assert_equal(report["type"], "stationary_repeat", "stationary repeat type")
+    assert_true("reason" not in report, "loop report omits redundant type-derived prose")
+    assert_true(
+        right_ladder in report["suppress"]["candidateIds"],
+        "confirmed repeat suppresses the exact candidate id",
+    )
 
     alternating = movement_history(
         [right_ladder, left_ladder, right_ladder, left_ladder],
         [(23, 14), (25, 14), (23, 14), (25, 14)],
         [39, 37, 39, 37],
     )
-    report = build_stall_report(stall_analysis(), alternating)
-    assert_equal(report["severity"], "none", "short alternation remains non-stalled")
-    assert_true(
-        report["observations"]["shortHorizontalOscillation"],
-        "short loop observation is recorded",
+    report = build_loop_report(loop_analysis(), alternating)
+    assert_true(not report["active"], "short alternation does not activate filtering")
+    assert_equal(report["suppress"]["candidateIds"], [], "inactive filter suppresses nothing")
+    trace_id = "trace-dashboard"
+    recordings = {
+        "records": {
+            trace_id: {
+                "id": trace_id,
+                "traceId": trace_id,
+                "source": "agent",
+                "result": "failure",
+                "playData": 1,
+                "level": 1,
+                "solver": {},
+                "demo": {},
+            }
+        }
+    }
+    traces = {
+        "version": 3,
+        "runs": {
+            trace_id: {
+                "id": trace_id,
+                "steps": [
+                    {
+                        "state": {
+                            "gameState": "running",
+                            "runner": {"x": 4, "y": 1},
+                            "gold": {"remainingCount": 2},
+                            "guardRisk": {"risk": "low"},
+                        },
+                        "candidates": [
+                            {
+                                "id": "requested",
+                                "kind": "classic_gold_route",
+                                "score": 100,
+                                "target": {"x": 7, "y": 1},
+                                "firstAction": {"keyCode": 39, "ticks": 8, "reason": "route"},
+                            },
+                            {
+                                "id": "executed",
+                                "kind": "retreat_from_guard",
+                                "score": 110,
+                                "target": None,
+                                "firstAction": {"keyCode": 37, "ticks": 4, "reason": "retreat"},
+                            },
+                        ],
+                        "selectedCandidateId": "executed",
+                        "selectedCandidateKind": "retreat_from_guard",
+                        "validation": {
+                            "requestedCandidateId": "requested",
+                            "selectedCandidateId": "executed",
+                            "knownCandidate": True,
+                            "fallbackUsed": True,
+                            "fallbackReason": "selected action became unsafe",
+                        },
+                        "action": {"keyCode": 37, "ticks": 4, "reason": "retreat"},
+                        "loopMonitor": {
+                            "active": True,
+                            "type": "horizontal_cycle",
+                            "evidence": {},
+                            "suppressedCandidates": [{"id": "blocked-route"}],
+                        },
+                    },
+                    {
+                        "state": {
+                            "gameState": "running",
+                            "runner": {"x": 3, "y": 1},
+                            "gold": {"remainingCount": 2},
+                            "guardRisk": {"risk": "medium"},
+                        },
+                        "candidates": [],
+                        "selectedCandidateId": "wait_or_stop",
+                        "selectedCandidateKind": "wait_or_stop",
+                        "validation": {
+                            "requestedCandidateId": "wait_or_stop",
+                            "selectedCandidateId": "wait_or_stop",
+                            "fallbackUsed": False,
+                            "fallbackReason": None,
+                        },
+                        "action": {"keyCode": 32, "ticks": 2, "reason": "wait"},
+                        "loopMonitor": {
+                            "active": False,
+                            "type": None,
+                            "evidence": {},
+                            "suppressedCandidates": [],
+                        },
+                    },
+                ],
+                "outcome": {
+                    "result": "failure",
+                    "reason": "fixture terminal",
+                    "finalState": {
+                        "gameState": "running",
+                        "runner": {"x": 3, "y": 1},
+                        "gold": {"remainingCount": 2},
+                    },
+                },
+            }
+        },
+    }
+    _runs_df, steps_df = _build_dataframes(recordings, traces)
+    assert_equal(_runs_df.iloc[0]["pinned"], False, "legacy recording is unpinned")
+    assert_equal(
+        _runs_df.iloc[0]["averageCandidateCount"],
+        1.0,
+        "loader averages candidate count across trace steps",
     )
-    assert_equal(report["blockedCandidateIds"], [], "observation does not expose blocked ids")
+    first = steps_df.iloc[0]
+    final = steps_df.iloc[1]
+    assert_equal(first["requestedCandidateId"], "requested", "loader exposes raw model choice")
+    assert_equal(first["selectedCandidateId"], "executed", "loader exposes executed choice")
+    assert_equal(first["fallbackReason"], "selected action became unsafe", "loader exposes fallback")
+    assert_equal(first["loop_suppressedIds"], "blocked-route", "loader exposes suppression")
+    assert_equal(first["after_runner_x"], 3, "loader derives next-step runner outcome")
+    assert_equal(first["after_risk_level"], "medium", "loader derives next-step risk outcome")
+    assert_equal(final["after_runner_x"], 3, "loader uses final state for last action")
+    assert_equal(final["terminal_result"], "failure", "loader exposes terminal result")
+    assert_true("loop_reason" not in steps_df.columns, "loader omits redundant loop prose")
 
     confirmed_loop = movement_history(
         [right_ladder, left_ladder] * 3,
         [(23, 14), (25, 14), (23, 14), (25, 14), (23, 14), (25, 14)],
         [39, 37] * 3,
     )
-    confirmed_report = build_stall_report(stall_analysis(), confirmed_loop)
-    assert_equal(confirmed_report["severity"], "stalled", "sustained alternation stalls")
-    assert_equal(
-        confirmed_report["type"], "horizontal_oscillation", "horizontal oscillation type"
-    )
+    confirmed_report = build_loop_report(loop_analysis(), confirmed_loop)
+    assert_true(confirmed_report["active"], "sustained alternation activates filter")
+    assert_equal(confirmed_report["type"], "horizontal_cycle", "horizontal cycle type")
     assert_true(
-        bool(confirmed_report["blockedCandidateKinds"]),
-        "confirmed horizontal stall retains enforceable blocked kinds",
+        left_ladder in confirmed_report["suppress"]["candidateIds"],
+        "confirmed non-progress route candidate is removed from the next selection",
     )
-    guard_retreat_blocked, _guard_retreat_reason = is_candidate_blocked(
+    guard_retreat_reason = candidate_suppression_reason(
         {
             "id": "retreat_from_guard_right",
             "kind": "retreat_from_guard",
@@ -181,11 +296,8 @@ def check_stall_supervisor_regressions() -> None:
         },
         confirmed_report,
     )
-    assert_true(
-        not guard_retreat_blocked,
-        "horizontal stall never suppresses a safety retreat from guard pressure",
-    )
-    wait_blocked, _wait_reason = is_candidate_blocked(
+    assert_true(not guard_retreat_reason, "cycle filter preserves a safety retreat")
+    wait_reason = candidate_suppression_reason(
         {
             "id": "wait_or_stop",
             "kind": "wait_or_stop",
@@ -193,24 +305,170 @@ def check_stall_supervisor_regressions() -> None:
         },
         confirmed_report,
     )
-    assert_true(wait_blocked, "horizontal stall still blocks non-progress waiting")
+    assert_true(bool(wait_reason), "horizontal cycle suppresses non-progress waiting")
+
+    progressing_safety_tug = movement_history(
+        ["retreat_from_guard_right", left_ladder] * 3,
+        [(12, 14), (11, 14), (12, 14), (13, 14), (14, 14), (13, 14)],
+        [39, 37] * 3,
+    )
+    progressing_tug_report = build_loop_report(loop_analysis(), progressing_safety_tug)
+    assert_true(
+        not progressing_tug_report["active"],
+        "route progress during a guard-driven horizontal tug is not mislabeled as a loop",
+    )
+
+    safety_retreat_tug = movement_history(
+        [left_ladder, "retreat_from_guard_right"] * 3,
+        [(13, 14), (14, 14), (13, 14), (14, 14), (13, 14), (14, 14)],
+        [37, 39] * 3,
+    )
+    safety_tug_report = build_loop_report(loop_analysis(), safety_retreat_tug)
+    assert_true(
+        not safety_tug_report["active"],
+        "a repeated guard-driven retreat is classified as safety movement, not a hard loop",
+    )
+
+    post_cycle_dig_wait = movement_history(
+        [
+            "collect_same_row_gold_7_12_left",
+            "retreat_from_guard_right",
+            "collect_same_row_gold_7_12_left",
+            "retreat_from_guard_right",
+            "collect_same_row_gold_7_12_left",
+            "retreat_from_guard_right",
+            "defensive_dig_dig_left",
+            "wait_for_dig_completion_26_13_7_11",
+            "wait_for_dig_completion_26_13_9_11",
+        ],
+        [(26, 12), (27, 12), (26, 12), (27, 12), (26, 12), (27, 12), (27, 12), (27, 12), (27, 12)],
+        [37, 39, 37, 39, 37, 39, 90, 32, 32],
+    )
+    post_cycle_wait_report = build_loop_report(loop_analysis(), post_cycle_dig_wait)
+    assert_true(
+        not post_cycle_wait_report["active"],
+        "dig-animation progress ends a preceding horizontal cycle signal",
+    )
+
+    post_cycle_emergency = movement_history(
+        [
+            "collect_same_row_gold_7_12_left",
+            "retreat_from_guard_right",
+            "collect_same_row_gold_7_12_left",
+            "retreat_from_guard_right",
+            "defensive_dig_dig_left",
+            "wait_for_dig_completion_26_13_7_11",
+            "wait_for_dig_completion_26_13_9_11",
+            "emergency_hold_0_27_14_0_-18_up",
+        ],
+        [(26, 12), (27, 12), (26, 12), (27, 12), (27, 12), (27, 12), (27, 12), (27, 12)],
+        [37, 39, 37, 39, 90, 32, 32, 32],
+    )
+    post_cycle_emergency_report = build_loop_report(loop_analysis(), post_cycle_emergency)
+    assert_true(
+        not post_cycle_emergency_report["active"],
+        "bounded emergency safety hold is not suppressed by a stale horizontal cycle",
+    )
 
     mixed_vertical_loop = movement_history(
         ["climb_ladder_27_13_up", "retreat_from_guard_down"] * 3,
         [(27, 13), (27, 12), (27, 13), (27, 12), (27, 13), (27, 12)],
         [38, 40] * 3,
     )
-    vertical_analysis = stall_analysis()
+    vertical_analysis = loop_analysis()
     vertical_analysis["primaryProgressTarget"] = {"x": 24, "y": 11, "direction": "left"}
-    vertical_report = build_stall_report(vertical_analysis, mixed_vertical_loop)
+    vertical_report = build_loop_report(vertical_analysis, mixed_vertical_loop)
     assert_equal(
         vertical_report["type"],
-        "vertical_ladder_oscillation",
-        "mixed climb/retreat vertical oscillation is detected",
+        "vertical_cycle",
+        "mixed climb/retreat vertical cycle is detected",
     )
     assert_true(
-        bool(vertical_report["blockedLadderDirections"]),
-        "vertical oscillation blocks at least one reversing ladder direction",
+        bool(vertical_report["suppress"]["directions"]),
+        "vertical cycle suppresses at least one reversing ladder direction",
+    )
+
+    three_row_vertical_loop = movement_history(
+        [
+            "retreat_from_guard_down",
+            "retreat_from_guard_down",
+            "climb_ladder_2_8_up",
+            "climb_ladder_2_7_up",
+        ]
+        * 2,
+        [(2, 7), (2, 8), (2, 7), (2, 6)] * 2,
+        [40, 40, 38, 38] * 2,
+    )
+    targetless_vertical_analysis = loop_analysis()
+    targetless_vertical_analysis["primaryProgressTarget"] = None
+    targetless_vertical_analysis["movement"] = {
+        "canMoveLeft": True,
+        "canMoveRight": True,
+    }
+    three_row_report = build_loop_report(
+        targetless_vertical_analysis, three_row_vertical_loop
+    )
+    assert_equal(
+        three_row_report["type"],
+        "vertical_cycle",
+        "multi-action three-row ladder cycle is detected from direction runs",
+    )
+    assert_equal(
+        three_row_report["suppress"]["directions"],
+        ["up"],
+        "targetless carried-gold cycle suppresses the reversing progress climb",
+    )
+    climb_reason = candidate_suppression_reason(
+        {
+            "id": "climb_ladder_2_8_up",
+            "kind": "climb_ladder",
+            "firstAction": {"keyCode": 38, "ticks": 6},
+        },
+        three_row_report,
+    )
+    assert_true(bool(climb_reason), "three-row loop blocks the upward ladder reversal")
+    retreat_reason = candidate_suppression_reason(
+        {
+            "id": "retreat_from_guard_down",
+            "kind": "retreat_from_guard",
+            "firstAction": {"keyCode": 40, "ticks": 6},
+        },
+        three_row_report,
+    )
+    assert_true(not retreat_reason, "vertical recovery preserves the guard-driven retreat")
+
+    carried_descent_cycle = movement_history(
+        ["descend_route_7_3_down", "climb_ladder_7_3_up"] * 3,
+        [(7, 3), (7, 1)] * 3,
+        [40, 38] * 3,
+    )
+    carried_descent_analysis = loop_analysis()
+    carried_descent_analysis["primaryProgressTarget"] = None
+    carried_descent_report = build_loop_report(
+        carried_descent_analysis, carried_descent_cycle
+    )
+    assert_equal(
+        carried_descent_report["type"],
+        "vertical_cycle",
+        "guard-carried descend/climb cycle is detected",
+    )
+    assert_true(
+        "up" in carried_descent_report["suppress"]["directions"],
+        "guard-carried vertical recovery suppresses the upward reversal",
+    )
+
+    stationary_wait_hold = movement_history(
+        ["wait_or_stop", "emergency_hold_1_7_1_0_0_right"] * 4,
+        [(7, 1)] * 8,
+        [32] * 8,
+    )
+    stationary_wait_hold_report = build_loop_report(
+        loop_analysis(), stationary_wait_hold
+    )
+    assert_equal(
+        stationary_wait_hold_report["type"],
+        "stationary_repeat",
+        "emergency fallback does not erase an alternating same-tile wait loop",
     )
 
     floor_wait_history = movement_history(
@@ -218,39 +476,33 @@ def check_stall_supervisor_regressions() -> None:
         [(25, 12)] * 6,
         [32] * 6,
     )
-    floor_wait_report = build_stall_report(stall_analysis(), floor_wait_history)
-    assert_equal(
-        floor_wait_report["severity"],
-        "none",
-        "timed floor refill progress is not a same-tile stall",
-    )
+    floor_wait_report = build_loop_report(loop_analysis(), floor_wait_history)
+    assert_true(not floor_wait_report["active"], "timed floor refill is environment progress")
 
-    observed_analysis = stall_analysis()
-    observed_analysis.update(
+    inactive_analysis = loop_analysis()
+    inactive_analysis.update(
         {
             "runner": {"x": 25, "y": 14},
             "gold": {"remainingCount": 5, "visiblePositions": []},
-            "risk": {"risk": "low", "nearestSameRowGuard": None},
+            "risk": {"risk": "low", "pressureGuard": None, "nearbyGuards": []},
             "routeAccess": {},
             "ladder": {"detail": "ladder nearby"},
-            "stallReport": report,
+            "loopReport": report,
         }
     )
-    observed_prompt = format_stall_report(observed_analysis)
     state_prompt = format_state_summary(
-        {"playData": 1, "level": 1, "gameStateName": "running"}, observed_analysis
+        {"playData": 1, "level": 1, "gameStateName": "running"}, inactive_analysis
     )
-    assert_equal(observed_prompt, "", "trace-only observations are absent from prompt")
-    assert_true("blocked:" not in state_prompt, "non-stalled state hides blocked ids")
+    assert_true("loop={active:False" in state_prompt, "state exposes compact inactive loop status")
 
     assert_true(
-        ladder_alignment_score(5, god_mode=False, fine_align=False, stalled_target=False)
-        > ladder_alignment_score(18, god_mode=False, fine_align=False, stalled_target=False),
+        ladder_alignment_score(5, god_mode=False, fine_align=False, loop_target=False)
+        > ladder_alignment_score(18, god_mode=False, fine_align=False, loop_target=False),
         "near ladder outranks distant ladder",
     )
     assert_true(
-        ladder_alignment_score(1, god_mode=False, fine_align=True, stalled_target=False)
-        > ladder_alignment_score(2, god_mode=False, fine_align=False, stalled_target=False),
+        ladder_alignment_score(1, god_mode=False, fine_align=True, loop_target=False)
+        > ladder_alignment_score(2, god_mode=False, fine_align=False, loop_target=False),
         "fine alignment remains highest near target",
     )
 
@@ -262,14 +514,13 @@ def check_guard_safety_regressions() -> None:
         "terrainGrid": [" " * 28 for _ in range(16)],
     }
     risk = assess_guard_risk(snapshot)
-    guard = risk["nearestSameRowGuard"]
+    guard = risk["pressureGuard"]
     assert_equal(risk["risk"], "high", "three-tile same-row guard is high risk")
-    assert_equal(guard["side"], "left", "guard side is relative position")
+    assert_equal(guard["relativeX"], "left", "guard side is relative position")
     assert_equal(guard["motion"], "right", "guard motion is separate from side")
     assert_true(guard["closing"], "right-moving guard on left is closing")
     assert_true("direction" not in guard, "ambiguous guard direction field is absent")
-    assert_equal(risk["nearestGuard"]["relativeX"], "left", "nearest guard horizontal relation")
-    assert_equal(risk["nearestGuard"]["relativeY"], "same", "nearest guard vertical relation")
+    assert_equal(guard["relativeY"], "same", "guard vertical relation")
 
     analysis = {"godMode": False, "risk": risk}
     assert_true(
@@ -280,16 +531,40 @@ def check_guard_safety_regressions() -> None:
         is_action_guard_safe({"keyCode": 39}, analysis),
         "normal-mode movement away from high-risk guard is safe",
     )
+    adjacent_climb_out_analysis = {
+        "godMode": False,
+        "risk": {
+            "risk": "critical",
+            "pressureGuard": {
+                "distance": 1,
+                "risk": "critical",
+                "relativeX": "left",
+                "relativeY": "same",
+                "motion": "climb_out",
+            },
+            "nearbyGuards": [],
+        },
+    }
+    assert_true(
+        not is_action_guard_safe({"keyCode": 38}, adjacent_climb_out_analysis),
+        "runner does not follow an adjacent climbing guard upward into its escape lane",
+    )
+    assert_true(
+        is_action_guard_safe({"keyCode": 40}, adjacent_climb_out_analysis),
+        "runner may continue down away from an adjacent climbing guard",
+    )
     medium_analysis = {
         "godMode": False,
         "risk": {
             "risk": "medium",
-            "nearestSameRowGuard": {
+            "pressureGuard": {
                 "x": 20,
                 "distance": 4,
                 "risk": "medium",
-                "side": "left",
+                "relativeX": "left",
+                "relativeY": "same",
             },
+            "nearbyGuards": [],
         },
     }
     assert_true(
@@ -310,9 +585,115 @@ def check_guard_safety_regressions() -> None:
         8,
         "defensive dig duration is preserved",
     )
+    edge_endpoint_analysis = {
+        "godMode": False,
+        "runner": {"x": 26, "y": 12, "xOffset": 8, "yOffset": 0},
+        "risk": {
+            "risk": "high",
+            "pressureGuard": {
+                "risk": "high",
+                "closing": True,
+                "relativeX": "left",
+                "relativeY": "below",
+            },
+        },
+        "movement": {"terrainHeight": 16, "details": {"right": {}}},
+    }
+    assert_true(
+        apply_prospective_horizontal_endpoint_safety(
+            {"keyCode": 39, "ticks": 4, "reason": "retreat right"},
+            edge_endpoint_analysis,
+            "retreat_from_guard",
+        )
+        is None,
+        "right-edge regression rejects an off-center retreat with a closing guard behind",
+    )
+    bottom_hole_endpoint_analysis = {
+        "godMode": False,
+        "runner": {"x": 20, "y": 14, "xOffset": -8, "yOffset": 0},
+        "risk": {
+            "risk": "medium",
+            "pressureGuard": {
+                "risk": "medium",
+                "closing": True,
+                "relativeX": "left",
+                "relativeY": "same",
+            },
+        },
+        "movement": {
+            "terrainHeight": 16,
+            "details": {
+                "right": {
+                    "openHole": {
+                        "distance": 2,
+                        "x": 22,
+                        "y": 15,
+                        "occupiedByTrappedGuard": False,
+                    }
+                }
+            },
+        },
+    }
+    centered_before_hole = apply_prospective_horizontal_endpoint_safety(
+        {"keyCode": 39, "ticks": 4, "reason": "route right"},
+        bottom_hole_endpoint_analysis,
+        "classic_gold_route",
+    )
+    assert_equal(
+        centered_before_hole["ticks"] if centered_before_hole else None,
+        1,
+        "bottom-hole regression shortens the route to center on the safe tile",
+    )
+    assert_true(
+        "stop centered" in str((centered_before_hole or {}).get("reason")),
+        "shortened endpoint action explains the prospective safety stop",
+    )
+    nonclosing_endpoint = apply_prospective_horizontal_endpoint_safety(
+        {"keyCode": 39, "ticks": 4, "reason": "route right"},
+        {
+            **bottom_hole_endpoint_analysis,
+            "risk": {
+                "risk": "medium",
+                "pressureGuard": {
+                    "risk": "medium",
+                    "closing": False,
+                    "relativeX": "left",
+                    "relativeY": "same",
+                },
+            },
+        },
+        "classic_gold_route",
+    )
+    assert_equal(
+        (nonclosing_endpoint or {}).get("ticks"),
+        4,
+        "nonclosing guard does not shorten ordinary bottom-hole routing",
+    )
     assert_true(
         is_action_guard_safe({"keyCode": 37}, {**analysis, "godMode": True}),
         "god mode permits progress through guard contact",
+    )
+    god_candidates, _god_analysis = generate_candidates(
+        {
+            "playData": 1,
+            "level": 1,
+            "gameStateName": "running",
+            "godMode": True,
+            "runner": {"x": 10, "y": 10, "xOffset": 0, "yOffset": 0, "actionName": "stop"},
+            "guards": [],
+            "gold": {
+                "complete": False,
+                "remainingCount": 1,
+                "visiblePositions": [{"x": 15, "y": 5}],
+                "carriedByGuards": [],
+            },
+            "terrainGrid": [" " * 28 for _ in range(16)],
+        },
+        [],
+    )
+    assert_true(
+        "god_mode_progress" in {candidate["kind"] for candidate in god_candidates},
+        "god mode retains direct progress toward off-row targets",
     )
 
     prompt_analysis = {
@@ -322,15 +703,13 @@ def check_guard_safety_regressions() -> None:
         "movement": {},
         "ladder": {},
         "routeAccess": {},
-        "stallReport": {"severity": "none", "type": None},
+        "loopReport": {"active": False, "type": None},
     }
     state_prompt = format_state_summary(
         {"playData": 1, "level": 1, "gameStateName": "running"}, prompt_analysis
     )
-    assert_true('"side": "left"' in state_prompt, "prompt exposes guard side")
-    assert_true('"motion": "right"' in state_prompt, "prompt exposes guard motion")
-    assert_true("nearestGuard=" in state_prompt, "prompt exposes the nearest guard on any row")
-    assert_true("side is the guard's position" in state_prompt, "prompt defines side semantics")
+    assert_true("guardRisk=high" in state_prompt, "prompt exposes compact guard risk")
+    assert_true("pressureGuard" not in state_prompt, "prompt omits backend guard geometry")
 
     ladder_terrain = [" " * 28 for _ in range(16)]
     ladder_terrain[5] = "       H" + " " * 20
@@ -342,7 +721,7 @@ def check_guard_safety_regressions() -> None:
         "godMode": False,
     }
     vertical_risk = assess_guard_risk(vertical_snapshot)
-    assert_equal(vertical_risk["nearestGuard"]["relativeY"], "above", "vertical guard relation")
+    assert_equal(vertical_risk["pressureGuard"]["relativeY"], "above", "vertical guard relation")
     movement = get_movement_affordance(vertical_snapshot)
     assert_true(not movement["canMoveUp"], "normal mode cannot climb into a guard-occupied tile")
     assert_equal(movement["details"]["up"]["reason"], "occupied by guard", "blocked climb reason")
@@ -361,7 +740,7 @@ def check_guard_safety_regressions() -> None:
     )
     assert_equal(trapped_risk["risk"], "low", "contained guard is low immediate pressure")
     assert_equal(
-        trapped_risk["nearestGuard"]["motion"],
+        trapped_risk["nearbyGuards"][0]["motion"],
         "in_hole",
         "geometrically nearest contained guard remains observable",
     )
@@ -380,17 +759,13 @@ def check_guard_safety_regressions() -> None:
     )
     mixed_row_risk = {
         "risk": "high",
-        "nearestGuard": {
+        "pressureGuard": {
             "distance": 2,
             "risk": "high",
             "relativeX": "left",
             "relativeY": "below",
         },
-        "nearestSameRowGuard": {
-            "distance": 12,
-            "risk": "low",
-            "side": "left",
-        },
+        "nearbyGuards": [],
     }
     assert_true(
         not is_action_guard_safe(
@@ -408,9 +783,9 @@ def check_guard_safety_regressions() -> None:
         is_action_guard_safe(
             {"keyCode": 32},
             {"godMode": False, "risk": mixed_row_risk, "runner": {"action": "stop"}},
-            candidate_kind="cross_row_pressure_hold",
+            candidate_kind="emergency_hold",
         ),
-        "explicit emergency hold is safe only for separated-row pressure",
+        "explicit emergency hold advances a fully blocked state",
     )
     medium_cross_row_risk = {
         "risk": "medium",
@@ -464,7 +839,55 @@ def check_guard_safety_regressions() -> None:
         "goldCount": 4,
         "terrainGrid": terrain,
     }
+
+    god_route_cycle_history = movement_history(
+        ["god_mode_progress_4_1_left", "align_ladder_7_6_right"] * 4,
+        [(4, 6), (5, 6)] * 4,
+        [37, 39] * 4,
+    )
+    god_route_cycle_snapshot = {
+        **pressure_snapshot,
+        "godMode": True,
+        "runner": {"x": 5, "y": 6, "xOffset": 8, "yOffset": 0, "actionName": "right"},
+        "guards": [],
+        "gold": {
+            "complete": False,
+            "remainingCount": 2,
+            "visiblePositions": [{"x": 4, "y": 1}, {"x": 23, "y": 3}],
+            "carriedByGuards": [],
+        },
+        "goldCount": 2,
+    }
+    god_route_candidates, god_route_analysis = generate_candidates(
+        god_route_cycle_snapshot, god_route_cycle_history
+    )
+    god_route_ids = {candidate["id"] for candidate in god_route_candidates}
+    assert_true(
+        not god_route_analysis["loopReport"]["active"],
+        "god-route fixture reproduces the trace state where local ladder progress hid the cycle",
+    )
+    assert_true(
+        "align_ladder_7_6_right" in god_route_ids,
+        "god mode retains the structured ladder route toward upper gold",
+    )
+    assert_true(
+        "god_mode_progress_4_1_left" not in god_route_ids,
+        "direct god-mode fallback cannot reverse a viable ladder route",
+    )
+
     candidates, _analysis = generate_candidates(pressure_snapshot, [])
+    assert_true(
+        all(
+            set(candidate) == {"id", "kind", "score", "target", "firstAction"}
+            for candidate in candidates
+        ),
+        "candidate schema stays minimal",
+    )
+    signatures = [
+        (candidate["firstAction"]["keyCode"], candidate["firstAction"]["ticks"])
+        for candidate in candidates
+    ]
+    assert_equal(len(signatures), len(set(signatures)), "executed actions are deduplicated")
     candidate_ids = {candidate["id"] for candidate in candidates}
     assert_true(
         "collect_same_row_gold_7_12_left" not in candidate_ids,
@@ -479,12 +902,207 @@ def check_guard_safety_regressions() -> None:
     )
     assert_equal(retreat["firstAction"]["ticks"], 4, "retreat is reassessed after four ticks")
     assert_true(
-        "closing" in retreat["reason"] and "guard may follow" in retreat["reason"],
+        "closing" in retreat["firstAction"]["reason"]
+        and "guard may follow" in retreat["firstAction"]["reason"],
         "retreat explains guard motion without promising increased distance",
     )
     assert_true(
-        "reassess" in retreat["goal"].lower(),
+        "reassess" in retreat["firstAction"]["reason"].lower(),
         "retreat is framed as a short reposition followed by reassessment",
+    )
+
+    edge_endpoint_snapshot = {
+        **pressure_snapshot,
+        "runner": {"x": 26, "y": 12, "xOffset": 8, "yOffset": 0, "actionName": "left"},
+        "guards": [
+            {"id": 1, "x": 25, "y": 14, "xOffset": 16, "yOffset": 0, "actionName": "right"}
+        ],
+        "gold": {
+            "complete": False,
+            "remainingCount": 1,
+            "visiblePositions": [{"x": 7, "y": 12}],
+            "carriedByGuards": [],
+        },
+        "goldCount": 1,
+    }
+    edge_endpoint_candidates, edge_endpoint_generated_analysis = generate_candidates(
+        edge_endpoint_snapshot, []
+    )
+    assert_equal(
+        edge_endpoint_generated_analysis["risk"]["risk"],
+        "high",
+        "right-edge endpoint fixture preserves the death trace pressure class",
+    )
+    edge_endpoint_retreat = next(
+        candidate
+        for candidate in edge_endpoint_candidates
+        if candidate["id"] == "retreat_from_guard_right"
+    )
+    assert_equal(
+        edge_endpoint_retreat["firstAction"]["ticks"],
+        4,
+        "retreat remains eligible when the projected edge tile has a ladder escape",
+    )
+    assert_true(
+        "emergency_hold" not in {candidate["kind"] for candidate in edge_endpoint_candidates},
+        "usable right-edge ladder escape is preferred over holding in the approach column",
+    )
+
+    bottom_hole_grid = terrain.copy()
+    bottom_hole_floor = list(bottom_hole_grid[15])
+    bottom_hole_floor[22] = " "
+    bottom_hole_grid[15] = "".join(bottom_hole_floor)
+    bottom_hole_endpoint_snapshot = {
+        **pressure_snapshot,
+        "runner": {"x": 20, "y": 14, "xOffset": -8, "yOffset": 0, "actionName": "right"},
+        "guards": [
+            {"id": 2, "x": 16, "y": 14, "xOffset": 0, "yOffset": 0, "actionName": "right"}
+        ],
+        "gold": {
+            "complete": False,
+            "remainingCount": 1,
+            "visiblePositions": [{"x": 23, "y": 3}],
+            "carriedByGuards": [],
+        },
+        "goldCount": 1,
+        "grid": bottom_hole_grid,
+        "openHoles": [{"x": 22, "y": 15, "frameIndex": 0, "frameTime": 130}],
+    }
+    bottom_hole_candidates, bottom_hole_generated_analysis = generate_candidates(
+        bottom_hole_endpoint_snapshot, []
+    )
+    assert_equal(
+        bottom_hole_generated_analysis["risk"]["risk"],
+        "medium",
+        "bottom-hole endpoint fixture preserves the death trace pressure class",
+    )
+    bottom_hole_route = next(
+        candidate
+        for candidate in bottom_hole_candidates
+        if candidate["id"] == "classic_gold_route_27_14_right"
+    )
+    assert_equal(
+        bottom_hole_route["firstAction"]["ticks"],
+        1,
+        "full generator centers before the bottom hole instead of ending off-center beside it",
+    )
+
+    adjacent_bottom_hole_snapshot = {
+        **bottom_hole_endpoint_snapshot,
+        "runner": {"x": 21, "y": 14, "xOffset": -16, "yOffset": 0, "actionName": "stop"},
+        "guards": [
+            {"id": 2, "x": 20, "y": 14, "xOffset": -8, "yOffset": 0, "actionName": "right"}
+        ],
+    }
+    adjacent_bottom_hole_candidates, adjacent_bottom_hole_analysis = generate_candidates(
+        adjacent_bottom_hole_snapshot, []
+    )
+    adjacent_bottom_hole_route = next(
+        candidate
+        for candidate in adjacent_bottom_hole_candidates
+        if candidate["id"] == "classic_gold_route_27_14_right"
+    )
+    assert_equal(
+        adjacent_bottom_hole_analysis["risk"]["risk"],
+        "critical",
+        "adjacent bottom-hole fixture preserves the live trace pressure class",
+    )
+    assert_equal(
+        adjacent_bottom_hole_route["firstAction"]["ticks"],
+        2,
+        "sub-tile motion may center without entering the adjacent bottom hole",
+    )
+    assert_true(
+        "emergency_hold"
+        not in {candidate["kind"] for candidate in adjacent_bottom_hole_candidates},
+        "safe centering prevents the adjacent-hole emergency-hold failure",
+    )
+    adjacent_bottom_hole_selected, adjacent_bottom_hole_validation = (
+        validate_or_fallback_candidate(
+            {"choice": {"candidateId": adjacent_bottom_hole_route["id"]}},
+            adjacent_bottom_hole_candidates,
+            adjacent_bottom_hole_analysis,
+        )
+    )
+    assert_equal(
+        adjacent_bottom_hole_selected["id"],
+        adjacent_bottom_hole_route["id"],
+        "post-model validation preserves the safe sub-tile centering candidate",
+    )
+    assert_true(
+        not adjacent_bottom_hole_validation["fallbackUsed"],
+        "post-model validation shares the prospective endpoint horizon",
+    )
+
+    carried_gold_trap_snapshot = {
+        **pressure_snapshot,
+        "runner": {"x": 4, "y": 6, "xOffset": 0, "yOffset": 0, "actionName": "stop"},
+        "guards": [
+            {
+                "id": 1,
+                "x": 7,
+                "y": 6,
+                "xOffset": -8,
+                "yOffset": -6,
+                "actionName": "left",
+                "hasGold": 12,
+            }
+        ],
+        "gold": {
+            "complete": False,
+            "remainingCount": 1,
+            "visiblePositions": [],
+            "carriedByGuards": [{"id": 1, "x": 7, "y": 6, "hasGold": 12}],
+        },
+        "goldCount": 1,
+    }
+    carried_trap_candidates, carried_trap_analysis = generate_candidates(
+        carried_gold_trap_snapshot, []
+    )
+    assert_equal(
+        carried_trap_analysis["risk"]["risk"],
+        "high",
+        "carried-gold trap fixture matches the trace pressure class",
+    )
+    assert_true(
+        "defensive_dig_dig_right"
+        in {candidate["id"] for candidate in carried_trap_candidates},
+        "closing gold carrier exposes the prepared right-side trap",
+    )
+
+    row_one_offset_snapshot = {
+        **pressure_snapshot,
+        "runner": {"x": 4, "y": 1, "xOffset": -8, "yOffset": 0, "actionName": "stop"},
+        "guards": [
+            {"id": 0, "x": 9, "y": 10, "xOffset": 0, "yOffset": -20, "actionName": "up"},
+            {"id": 1, "x": 13, "y": 12, "xOffset": 8, "yOffset": 0, "actionName": "right"},
+            {"id": 2, "x": 20, "y": 6, "xOffset": -8, "yOffset": 12, "actionName": "left"},
+        ],
+        "gold": {
+            "complete": False,
+            "remainingCount": 1,
+            "visiblePositions": [{"x": 23, "y": 3}],
+            "carriedByGuards": [],
+        },
+        "goldCount": 1,
+    }
+    row_one_offset_candidates, row_one_offset_analysis = generate_candidates(
+        row_one_offset_snapshot, []
+    )
+    assert_equal(
+        row_one_offset_analysis["risk"]["risk"],
+        "low",
+        "row-1 offset regression preserves the live failure's low pressure class",
+    )
+    assert_true(
+        "classic_gold_route_7_1_right"
+        in {candidate["id"] for candidate in row_one_offset_candidates},
+        "row-1 route remains available immediately after collecting offset gold",
+    )
+    assert_true(
+        "retreat_from_guard_left"
+        not in {candidate["id"] for candidate in carried_trap_candidates},
+        "decisive distance-three trap withholds the loop-entering retreat",
     )
     monotonic_retreat_history = movement_history(
         ["retreat_from_guard_right"] * 6,
@@ -496,8 +1114,8 @@ def check_guard_safety_regressions() -> None:
         monotonic_retreat_history,
     )
     assert_true(
-        not retreat_analysis["stallReport"]["stalled"],
-        "monotonic guard retreat is not blocked as a same-candidate or same-tile stall",
+        not retreat_analysis["loopReport"]["active"],
+        "monotonic guard retreat is treated as environment progress",
     )
 
     tied_pressure_snapshot = {
@@ -573,12 +1191,17 @@ def check_guard_safety_regressions() -> None:
     edge_escape = next(
         candidate
         for candidate in edge_intercept_candidates
-        if candidate["id"] == "retreat_from_guard_edge_column_left"
+        if candidate["id"] == "evade_edge_ladder_left"
     )
     assert_equal(
         edge_escape["firstAction"]["keyCode"],
         37,
         "right-edge runner steps left before a below guard enters the ladder column",
+    )
+    assert_true(
+        "defensive_dig_dig_left"
+        not in {candidate["id"] for candidate in edge_intercept_candidates},
+        "edge-ladder evasion is exclusive over a conflicting defensive dig",
     )
 
     fully_blocked_snapshot = {
@@ -686,13 +1309,13 @@ def check_guard_safety_regressions() -> None:
             "remainingFrames": 3,
         },
     }
-    active_dig_stall_history = movement_history(
+    active_dig_loop_history = movement_history(
         ["align_ladder_27_14_right", "align_ladder_4_14_left"] * 3,
         [(16, 14), (17, 14), (16, 14), (17, 14), (16, 14), (17, 14)],
         [39, 37] * 3,
     )
     active_dig_candidates, active_dig_analysis = generate_candidates(
-        active_dig_snapshot, active_dig_stall_history
+        active_dig_snapshot, active_dig_loop_history
     )
     dig_wait = next(
         candidate
@@ -707,8 +1330,10 @@ def check_guard_safety_regressions() -> None:
         "active dig completion is exclusive until the future hole becomes observable",
     )
     assert_true(
-        not dig_wait.get("stallBlocked", False),
-        "active dig completion remains eligible during a horizontal stall",
+        dig_wait["id"] not in {
+            item["id"] for item in active_dig_analysis["loopReport"]["suppressedCandidates"]
+        },
+        "active dig completion remains eligible during a horizontal cycle",
     )
 
     separated_trap_grid = terrain.copy()
@@ -785,8 +1410,10 @@ def check_guard_safety_regressions() -> None:
         "occupied hole is not treated as separating another approaching guard",
     )
     assert_true(
-        "retreat_from_guard_right"
-        in {candidate["id"] for candidate in supported_bridge_candidates},
+        any(
+            candidate["firstAction"]["keyCode"] == 39
+            for candidate in supported_bridge_candidates
+        ),
         "runner can retreat across the opposite guard-supported hole",
     )
 
@@ -827,7 +1454,7 @@ def check_guard_safety_regressions() -> None:
     upper_route = next(
         candidate
         for candidate in upper_route_candidates
-        if candidate["kind"] == "classic_upper_gold_route"
+        if candidate["kind"] == "classic_gold_route"
     )
     assert_equal(
         upper_route["target"]["x"],
@@ -838,6 +1465,201 @@ def check_guard_safety_regressions() -> None:
         upper_route["firstAction"]["keyCode"],
         39,
         "upper-gold waypoint moves right from the left network",
+    )
+
+    post_top_gold_snapshot = {
+        **upper_gold_route_snapshot,
+        "runner": {"x": 4, "y": 1, "xOffset": -8, "yOffset": 0, "actionName": "stop"},
+    }
+    post_top_gold_candidates, _post_top_gold_analysis = generate_candidates(
+        post_top_gold_snapshot, []
+    )
+    post_top_gold_route = next(
+        candidate
+        for candidate in post_top_gold_candidates
+        if candidate["kind"] == "classic_gold_route"
+    )
+    assert_equal(
+        post_top_gold_route["target"]["x"],
+        7,
+        "post-top-gold routing returns to the row-one descent entry",
+    )
+    assert_equal(
+        post_top_gold_route["firstAction"]["keyCode"],
+        39,
+        "post-top-gold routing moves right instead of waiting",
+    )
+    assert_true(
+        "wait_or_stop" not in {candidate["kind"] for candidate in post_top_gold_candidates},
+        "post-top-gold state has a progress candidate",
+    )
+
+    carried_only_row_one_snapshot = {
+        **post_top_gold_snapshot,
+        "gold": {
+            "complete": False,
+            "remainingCount": 1,
+            "visiblePositions": [],
+            "carriedByGuards": [{"id": 1, "x": 7, "y": 5, "hasGold": 14}],
+        },
+        "goldCount": 1,
+        "guards": [
+            {"id": 1, "x": 7, "y": 5, "xOffset": 0, "yOffset": 0, "actionName": "down", "hasGold": 14}
+        ],
+    }
+    carried_row_one_candidates, carried_row_one_analysis = generate_candidates(
+        carried_only_row_one_snapshot, []
+    )
+    carried_row_one_route = next(
+        candidate
+        for candidate in carried_row_one_candidates
+        if candidate["kind"] == "classic_gold_route"
+    )
+    assert_true(
+        carried_row_one_analysis["primaryProgressTarget"] is None,
+        "guard-carried gold remains excluded from unsafe direct targeting",
+    )
+    assert_equal(
+        carried_row_one_route["target"]["x"],
+        7,
+        "carried-only row-one state returns to the descent entry",
+    )
+    assert_equal(
+        carried_row_one_route["firstAction"]["keyCode"],
+        39,
+        "carried-only recovery moves right instead of falling back to repeated stops",
+    )
+    assert_true(
+        "wait_or_stop"
+        not in {candidate["kind"] for candidate in carried_row_one_candidates},
+        "carried-only row-one state has no generic wait",
+    )
+
+    carried_entry_snapshot = {
+        **carried_only_row_one_snapshot,
+        "godMode": True,
+        "runner": {"x": 7, "y": 1, "xOffset": 0, "yOffset": 18, "actionName": "stop"},
+        "guards": [
+            {
+                "id": 1,
+                "x": 7,
+                "y": 1,
+                "xOffset": 0,
+                "yOffset": 7,
+                "actionName": "left",
+                "hasGold": 4,
+            }
+        ],
+        "gold": {
+            "complete": False,
+            "remainingCount": 1,
+            "visiblePositions": [],
+            "carriedByGuards": [{"id": 1, "x": 7, "y": 1, "hasGold": 4}],
+        },
+    }
+    carried_entry_candidates, carried_entry_analysis = generate_candidates(
+        carried_entry_snapshot, []
+    )
+    carried_entry_route = next(
+        candidate
+        for candidate in carried_entry_candidates
+        if candidate["id"] == "classic_gold_route_7_2_down"
+    )
+    assert_equal(
+        carried_entry_route["firstAction"]["keyCode"],
+        40,
+        "carried-only recovery descends from the row-one x=7 entry",
+    )
+    assert_equal(
+        carried_entry_route["firstAction"]["ticks"],
+        4,
+        "carried-only descent uses a short reassessed ladder entry",
+    )
+    assert_true(
+        "wait_or_stop" not in {candidate["kind"] for candidate in carried_entry_candidates},
+        "trace-shaped carried-only entry cannot fall back to waiting",
+    )
+    assert_true(
+        "same-row gold is available"
+        not in carried_entry_analysis["routeAccess"]["reason"],
+        "guard-carried gold does not block structural route access as collectible gold",
+    )
+
+    carried_ladder_snapshot = {
+        **carried_entry_snapshot,
+        "runner": {"x": 7, "y": 2, "xOffset": 0, "yOffset": 0, "actionName": "down"},
+        "guards": [
+            {
+                "id": 1,
+                "x": 7,
+                "y": 3,
+                "xOffset": 0,
+                "yOffset": -18,
+                "actionName": "down",
+                "hasGold": 4,
+            }
+        ],
+        "gold": {
+            "complete": False,
+            "remainingCount": 1,
+            "visiblePositions": [],
+            "carriedByGuards": [{"id": 1, "x": 7, "y": 3, "hasGold": 4}],
+        },
+    }
+    carried_ladder_candidates, _carried_ladder_analysis = generate_candidates(
+        carried_ladder_snapshot, []
+    )
+    carried_ladder_climb = next(
+        candidate
+        for candidate in carried_ladder_candidates
+        if candidate["kind"] == "climb_ladder"
+    )
+    assert_equal(
+        carried_ladder_climb["firstAction"]["keyCode"],
+        40,
+        "carried-only ladder recovery continues down instead of reversing upward",
+    )
+    assert_true(
+        all(candidate["kind"] != "descend_route" for candidate in carried_ladder_candidates),
+        "guard carrier is excluded from ordinary descent targeting",
+    )
+
+    dropped_entry_snapshot = {
+        **carried_entry_snapshot,
+        "guards": [
+            {
+                "id": 1,
+                "x": 7,
+                "y": 1,
+                "xOffset": 0,
+                "yOffset": 0,
+                "actionName": "right",
+                "hasGold": -1,
+            }
+        ],
+        "gold": {
+            "complete": False,
+            "remainingCount": 1,
+            "visiblePositions": [{"x": 7, "y": 1}],
+            "carriedByGuards": [],
+        },
+    }
+    dropped_entry_candidates, dropped_entry_analysis = generate_candidates(
+        dropped_entry_snapshot, []
+    )
+    dropped_entry_collect = next(
+        candidate
+        for candidate in dropped_entry_candidates
+        if candidate["id"] == "collect_current_tile_gold_7_1_up"
+    )
+    assert_true(
+        dropped_entry_analysis["movement"]["canFinishLadderClimb"],
+        "row-one offset state exposes final ladder alignment",
+    )
+    assert_equal(
+        dropped_entry_collect["firstAction"]["ticks"],
+        3,
+        "same-tile dropped gold centers vertically instead of issuing repeated stops",
     )
 
     lower_gold_route_snapshot = {
@@ -858,7 +1680,7 @@ def check_guard_safety_regressions() -> None:
     lower_route = next(
         candidate
         for candidate in lower_route_candidates
-        if candidate["kind"] == "classic_lower_gold_route"
+        if candidate["kind"] == "classic_gold_route"
     )
     assert_equal(
         lower_route["target"]["x"],
@@ -889,7 +1711,7 @@ def check_guard_safety_regressions() -> None:
     left_route = next(
         candidate
         for candidate in left_route_candidates
-        if candidate["kind"] == "classic_lower_gold_route"
+        if candidate["kind"] == "classic_gold_route"
     )
     assert_equal(
         left_route["target"]["x"],
@@ -900,6 +1722,49 @@ def check_guard_safety_regressions() -> None:
         left_route["firstAction"]["keyCode"],
         39,
         "left-side lower-gold waypoint leaves the dead-end x=2 ladder to the right",
+    )
+
+    bottom_left_route_snapshot = {
+        **left_gold_route_snapshot,
+        "runner": {"x": 11, "y": 14, "xOffset": 0, "yOffset": 0, "actionName": "stop"},
+        "guards": [
+            {
+                "id": 2,
+                "x": 9,
+                "y": 11,
+                "xOffset": 0,
+                "yOffset": 17,
+                "actionName": "down",
+            }
+        ],
+    }
+    bottom_left_candidates, bottom_left_analysis = generate_candidates(
+        bottom_left_route_snapshot, []
+    )
+    bottom_left_route = next(
+        candidate
+        for candidate in bottom_left_candidates
+        if candidate["kind"] == "classic_gold_route"
+    )
+    assert_equal(
+        bottom_left_route["target"]["x"],
+        27,
+        "row-fourteen routing for gold at (7,12) uses the viable right-edge ladder",
+    )
+    assert_equal(
+        bottom_left_route["firstAction"]["keyCode"],
+        39,
+        "bottom left-gold route agrees with retreat away from the left-side guard",
+    )
+    assert_equal(
+        bottom_left_analysis["risk"]["risk"],
+        "medium",
+        "bottom route regression preserves the trace guard-pressure class",
+    )
+    assert_true(
+        "align_ladder_4_14_left"
+        not in {candidate["id"] for candidate in bottom_left_candidates},
+        "explicit Classic routing removes the conflicting dead-end ladder alternative",
     )
 
     exit_offset_snapshot = {
@@ -917,7 +1782,7 @@ def check_guard_safety_regressions() -> None:
     }
     exit_offset_candidates, exit_offset_analysis = generate_candidates(exit_offset_snapshot, [])
     finish_exit = next(
-        candidate for candidate in exit_offset_candidates if candidate["kind"] == "finish_exit_climb"
+        candidate for candidate in exit_offset_candidates if candidate["kind"] == "exit_ladder_route"
     )
     assert_true(
         exit_offset_analysis["movement"]["canFinishExitClimb"],
@@ -1141,7 +2006,7 @@ def check_guard_safety_regressions() -> None:
     assert_equal(boxed_analysis["risk"]["risk"], "high", "boxed fixture has cross-row pressure")
     assert_equal(
         [candidate["kind"] for candidate in boxed_candidates],
-        ["cross_row_pressure_hold"],
+        ["emergency_hold"],
         "separated-row pressure never produces an empty candidate set",
     )
     boxed_selected, boxed_validation = validate_or_fallback_candidate(
@@ -1156,10 +2021,10 @@ def check_guard_safety_regressions() -> None:
     )
     assert_equal(
         boxed_selected["kind"],
-        "cross_row_pressure_hold",
+        "emergency_hold",
         "validator preserves the generated emergency candidate",
     )
-    assert_true(boxed_validation["actionGuardSafe"], "validator shares candidate safety context")
+    assert_true(not boxed_validation["fallbackUsed"], "validator accepts the generated hold")
 
     cross_row_wait_history = movement_history(
         [boxed_candidates[0]["id"]] * 6,
@@ -1170,8 +2035,8 @@ def check_guard_safety_regressions() -> None:
         boxed_snapshot, cross_row_wait_history
     )
     assert_true(
-        not boxed_wait_analysis["stallReport"]["stalled"],
-        "guard-signature cross-row holds are classified as environment progress waits",
+        not boxed_wait_analysis["loopReport"]["active"],
+        "guard-signature cross-row holds are environment progress",
     )
 
     aligned_grid = terrain.copy()
@@ -1205,7 +2070,7 @@ def check_guard_safety_regressions() -> None:
         "same-column cross-row pressure exposes both legal horizontal escapes",
     )
     assert_true(
-        "cross_row_pressure_hold" not in {candidate["kind"] for candidate in aligned_candidates},
+        "emergency_hold" not in {candidate["kind"] for candidate in aligned_candidates},
         "emergency hold remains reserved for positions without an ordinary escape",
     )
 
@@ -1239,6 +2104,33 @@ def check_guard_safety_regressions() -> None:
         climb_out_escape["firstAction"]["keyCode"],
         40,
         "edge runner descends before the adjacent guard completes climb-out",
+    )
+
+    lower_climb_out_snapshot = {
+        **pressure_snapshot,
+        "runner": {"x": 27, "y": 13, "xOffset": 0, "yOffset": 10, "actionName": "down"},
+        "guards": [
+            {"id": 1, "x": 26, "y": 13, "xOffset": 0, "yOffset": -18, "actionName": "climb_out"},
+        ],
+    }
+    lower_climb_out_candidates, lower_climb_out_analysis = generate_candidates(
+        lower_climb_out_snapshot, []
+    )
+    lower_climb_out_actions = {
+        candidate["firstAction"]["keyCode"] for candidate in lower_climb_out_candidates
+    }
+    assert_equal(
+        lower_climb_out_analysis["risk"]["risk"],
+        "critical",
+        "lower climb-out regression preserves the live failure's pressure class",
+    )
+    assert_true(
+        40 in lower_climb_out_actions,
+        "runner may continue down the edge ladder away from a climbing guard",
+    )
+    assert_true(
+        38 not in lower_climb_out_actions,
+        "runner is not offered an upward reversal into a climbing guard's escape lane",
     )
 
     adjacent_hole_snapshot = {
@@ -1439,8 +2331,8 @@ def check_guard_safety_regressions() -> None:
         "ordinary gold progress does not enter an open dug hole",
     )
     assert_true(
-        "wait_or_stop" in {candidate["id"] for candidate in open_floor_candidates},
-        "solver can wait for a required dug floor tile to refill",
+        "wait_or_stop" not in {candidate["id"] for candidate in open_floor_candidates},
+        "generic waiting does not compete with a timed floor-refill candidate",
     )
     refill = next(
         candidate
@@ -1477,7 +2369,7 @@ def check_guard_safety_regressions() -> None:
         [(4, 6), (5, 6), (4, 6), (5, 6), (4, 6), (5, 6)],
         [39, 37] * 3,
     )
-    exit_open_floor_candidates, _exit_open_floor_analysis = generate_candidates(
+    exit_open_floor_candidates, exit_open_floor_analysis = generate_candidates(
         exit_open_floor_snapshot, exit_loop_history
     )
     exit_refill = next(
@@ -1486,10 +2378,16 @@ def check_guard_safety_regressions() -> None:
         if candidate["kind"] == "wait_for_floor_refill"
     )
     assert_true(
-        not exit_refill.get("stallBlocked", False),
-        "exit routing can wait for a required dug brick during a confirmed stall",
+        exit_refill["id"] not in {
+            item["id"]
+            for item in exit_open_floor_analysis["loopReport"]["suppressedCandidates"]
+        },
+        "exit routing can wait for a required dug brick during a confirmed cycle",
     )
-    assert_true("exit progress" in exit_refill["reason"], "exit refill reason is explicit")
+    assert_true(
+        "exit progress" in exit_refill["firstAction"]["reason"],
+        "exit refill reason is explicit",
+    )
 
     approach_floor_grid = terrain.copy()
     approach_floor_row = list(approach_floor_grid[13])
@@ -1644,7 +2542,7 @@ def check_guard_safety_regressions() -> None:
 
 
 def run() -> None:
-    check_stall_supervisor_regressions()
+    check_loop_filter_regressions()
     check_guard_safety_regressions()
     original_store = app_module.STORE_PATH
     original_trace_store = app_module.TRACE_STORE_PATH
@@ -1668,12 +2566,38 @@ def run() -> None:
                     "demo": demo(time=16),
                     "source": "user",
                     "result": "success",
+                    "pinned": True,
                 },
             )
             assert_equal(user_record["id"], "user:first", "user record id")
             assert_equal(user_record["source"], "user", "user source")
             assert_equal(user_record["result"], "success", "user result")
             assert_equal(user_record["demo"]["time"], 16, "demo time stored")
+            assert_equal(user_record["pinned"], False, "new recording starts unpinned")
+
+            store = json.loads(app_module.STORE_PATH.read_text())
+            store["records"]["user:first"]["pinned"] = True
+            app_module.STORE_PATH.write_text(json.dumps(store))
+            user_record = put_record(
+                client,
+                {
+                    "id": "user:first",
+                    "demo": demo(time=24),
+                    "source": "user",
+                    "result": "success",
+                    "pinned": False,
+                },
+            )
+            assert_equal(user_record["pinned"], True, "record save preserves pin")
+            blocked_user_delete = client.delete(
+                "/api/recordings/1/1?recordId=user:first"
+            )
+            assert_equal(blocked_user_delete.status_code, 409, "pinned delete blocked")
+            assert_equal(
+                blocked_user_delete.get_json()["pinned"],
+                True,
+                "pinned delete response",
+            )
 
             put_record(
                 client,
@@ -1707,6 +2631,8 @@ def run() -> None:
             )
 
             write_trace_run("trace-agent")
+            trace_store = json.loads(app_module.TRACE_STORE_PATH.read_text())
+            assert_equal(trace_store["version"], 3, "trace store uses compact loop schema")
             agent_record = put_record(
                 client,
                 {
@@ -1733,8 +2659,13 @@ def run() -> None:
             )
             assert_equal(agent_record["id"], "trace-agent", "agent id equals traceId")
             assert_equal(agent_record["solver"]["model"], "openai:test", "solver model stored")
+            assert_equal(agent_record["pinned"], False, "new agent record starts unpinned")
             trace_response = client.get("/api/agent/traces/trace-agent")
             assert_equal(trace_response.status_code, 200, "trace exists before delete")
+            assert_true(
+                "pinned" not in trace_response.get_json(),
+                "trace does not duplicate recording pin",
+            )
             outcome = trace_response.get_json()["outcome"]
             assert_equal(outcome["result"], "failure", "trace outcome result stored")
             assert_equal(outcome["reason"], "test failure", "trace outcome reason stored")
@@ -1743,6 +2674,25 @@ def run() -> None:
                 5,
                 "trace terminal guard state stored",
             )
+            store = json.loads(app_module.STORE_PATH.read_text())
+            store["records"]["trace-agent"]["pinned"] = True
+            app_module.STORE_PATH.write_text(json.dumps(store))
+            blocked_agent_delete = client.delete(
+                "/api/recordings/1/1?traceId=trace-agent"
+            )
+            assert_equal(
+                blocked_agent_delete.status_code,
+                409,
+                "pinned agent deletion blocked",
+            )
+            assert_equal(
+                client.get("/api/agent/traces/trace-agent").status_code,
+                200,
+                "pinned linked trace remains",
+            )
+            store = json.loads(app_module.STORE_PATH.read_text())
+            store["records"]["trace-agent"]["pinned"] = False
+            app_module.STORE_PATH.write_text(json.dumps(store))
             deleted_agent = client.delete("/api/recordings/1/1?traceId=trace-agent")
             assert_true(deleted_agent.get_json()["traceDeleted"], "linked trace deleted")
             missing_trace = client.get("/api/agent/traces/trace-agent")
@@ -1790,7 +2740,20 @@ def run() -> None:
                     },
                 )
             store = json.loads(app_module.STORE_PATH.read_text())
-            assert_equal(len(store["records"]), 10, "recording retention limit")
+            pinned_records = [
+                record
+                for record in store["records"].values()
+                if record.get("pinned") is True
+            ]
+            unpinned_records = [
+                record
+                for record in store["records"].values()
+                if record.get("pinned") is not True
+            ]
+            assert_equal(len(pinned_records), 1, "pinned recording retained")
+            assert_equal(pinned_records[0]["id"], "user:first", "old pin survives")
+            assert_equal(len(unpinned_records), 10, "recording rolling retention limit")
+            assert_equal(len(store["records"]), 11, "pin is outside rolling limit")
 
             trace_store = {
                 "runs": {
@@ -1800,10 +2763,41 @@ def run() -> None:
                     for index in range(12)
                 }
             }
-            app_module.prune_trace_runs(trace_store)
-            assert_equal(len(trace_store["runs"]), 10, "trace retention limit")
+            pinned_trace_ids = app_module.pinned_trace_ids_from_store(
+                {
+                    "records": {
+                        "trace-00": {
+                            "pinned": True,
+                            "source": "agent",
+                            "traceId": "trace-00",
+                        },
+                        "user:pinned": {
+                            "pinned": True,
+                            "source": "user",
+                            "traceId": "trace-01",
+                        },
+                        "missing-trace": {
+                            "pinned": True,
+                            "source": "agent",
+                            "traceId": "trace-missing",
+                        },
+                    }
+                }
+            )
+            assert_equal(
+                pinned_trace_ids,
+                {"trace-00", "trace-missing"},
+                "only pinned agent recordings contribute trace ids",
+            )
+            app_module.prune_trace_runs(trace_store, pinned_trace_ids)
+            assert_equal(len(trace_store["runs"]), 11, "trace pin is outside rolling limit")
             assert_true("trace-11" in trace_store["runs"], "newest trace retained")
-            assert_true("trace-00" not in trace_store["runs"], "oldest trace pruned")
+            assert_true("trace-00" in trace_store["runs"], "oldest pinned trace retained")
+            assert_true("trace-01" not in trace_store["runs"], "oldest unpinned trace pruned")
+            assert_true(
+                "trace-missing" not in trace_store["runs"],
+                "missing pinned trace is not recreated",
+            )
 
             validate_agent_request(
                 {

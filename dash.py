@@ -23,6 +23,23 @@ KEY_MAP = {
 _WORKSPACE_ROOT = os.path.abspath(os.path.dirname(__file__))
 
 
+def _display_scalar(value, fallback="—"):
+    if value is None or value == "":
+        return fallback
+    try:
+        if pd.isna(value):
+            return fallback
+    except (TypeError, ValueError):
+        pass
+    if (
+        not isinstance(value, (str, bool))
+        and hasattr(value, "is_integer")
+        and value.is_integer()
+    ):
+        return int(value)
+    return value
+
+
 def _resolve_folder(path: str) -> str:
     """Return an absolute path; relative paths are anchored to the workspace root."""
     p = os.path.expanduser(path.strip())
@@ -133,33 +150,53 @@ with st.expander(f"📋 Section 1 — Run Overview{_inspect_label}", expanded=Tr
             "traceId_short",
             "savedAt",
             "result",
-            "stepCount",
             "demoTime",
+            "stepCount",
             "failureReason",
             "godMode",
-            "show_score",
+            "averageCandidateCount",
+            "lowerScoreRequestCount",
+            "warningStepCount",
+            "activeLoopCount",
             "recordTime",
             "model",
         ]
         cols_present = [c for c in display_cols if c in overview_runs_df.columns]
         view = overview_runs_df[cols_present].copy()
+        if "traceId_short" in view.columns and "source" in overview_runs_df.columns:
+            view.loc[
+                overview_runs_df["source"].eq("user"), "traceId_short"
+            ] = "user"
+        if "traceId_short" in view.columns and "pinned" in overview_runs_df.columns:
+            pinned_rows = overview_runs_df["pinned"].eq(True)
+            view.loc[pinned_rows, "traceId_short"] = (
+                view.loc[pinned_rows, "traceId_short"].astype(str) + " 📌"
+            )
+        if "result" in view.columns:
+            view["result"] = view["result"].eq("success")
         view = view.rename(
             columns={
                 "traceId_short": "traceId",
+                "result": "▶",
                 "stepCount": "steps",
                 "demoTime": "time",
                 "failureReason": "reason",
-                "godMode": "god",
-                "show_score": "score",
+                "godMode": "★",
+                "averageCandidateCount": "🎯",
+                "lowerScoreRequestCount": "✨",
+                "warningStepCount": "⚠️",
+                "activeLoopCount": "🔁",
                 "recordTime": "record",
             }
         )
         if "savedAt" in view.columns:
             saved_at = pd.to_datetime(view["savedAt"], utc=True, errors="coerce")
             view["savedAt"] = saved_at.map(
-                lambda value: ""
-                if pd.isna(value)
-                else value.to_pydatetime().astimezone().strftime("%m-%d %H:%M:%S")
+                lambda value: (
+                    ""
+                    if pd.isna(value)
+                    else value.to_pydatetime().astimezone().strftime("%m-%d %H:%M")
+                )
             )
 
         row_h, header_h = 35, 38
@@ -169,103 +206,23 @@ with st.expander(f"📋 Section 1 — Run Overview{_inspect_label}", expanded=Tr
             hide_index=True,
             height=header_h + row_h * len(view),
             column_config={
-                "god": st.column_config.CheckboxColumn("god"),
-                "score": st.column_config.CheckboxColumn("score"),
+                "▶": st.column_config.CheckboxColumn("▶", width=30),
+                "reason": st.column_config.TextColumn("reason", width=200),
+                "★": st.column_config.CheckboxColumn("★", width=30),
+                "🎯": st.column_config.NumberColumn("🎯", width=30, format="%.1f"),
+                "✨": st.column_config.NumberColumn("✨", width=30),
+                "⚠️": st.column_config.NumberColumn("⚠️", width=30),
+                "🔁": st.column_config.NumberColumn("🔁", width=30),
+                "model": st.column_config.TextColumn("model", width=100),
             },
             on_select="rerun",
             selection_mode="single-row",
             key="run_overview_table",
         )
-
-
-def _stall_stories(trace_df: pd.DataFrame) -> list[tuple[int, str]]:
-    """Return (display_step, narrative paragraph) for confirmed stalls."""
-    stalled = trace_df[trace_df["stall_stalled"].fillna(False)].sort_values(
-        "stepIndex"
-    )
-    if stalled.empty:
-        return []
-
-    all_steps = trace_df.sort_values("stepIndex").reset_index(drop=True)
-    stories = []
-
-    for _, row in stalled.iterrows():
-        sidx = int(row["stepIndex"])
-        display_step = sidx + 1
-
-        rx = row.get("runner_x")
-        ry = row.get("runner_y")
-        pos_str = f"({rx}, {ry})" if rx is not None else "unknown position"
-
-        stype = row.get("stall_type") or "unknown pattern"
-        sev = row.get("stall_severity") or "unknown"
-        blocked = row.get("stall_blockedKinds") or ""
-        blocked_str = (
-            f" The stall supervisor blocked: **{blocked}**." if blocked else ""
+        st.caption(
+            "🎯 average candidates/step · ✨ lower-score request · "
+            "⚠️ replacement/suppression · 🔁 active loop"
         )
-
-        sel_kind = row.get("selectedCandidateKind") or "unknown"
-        sel_id = row.get("selectedCandidateId") or ""
-        reason = row.get("action_reason") or ""
-        keycode = int(row.get("action_keyCode") or 0)
-        action_str = KEY_MAP.get(keycode, f"key {keycode}")
-
-        retry = row.get("stall_retryAttempted", False)
-        fallback = row.get("fallbackUsed", False)
-        fallback_reason = row.get("fallbackReason") or ""
-
-        # What happened next?
-        next_rows = all_steps[all_steps["stepIndex"] > sidx].head(1)
-        if not next_rows.empty:
-            nr = next_rows.iloc[0]
-            nkc = int(nr.get("action_keyCode") or 0)
-            next_action = KEY_MAP.get(nkc, f"key {nkc}")
-            next_kind = nr.get("selectedCandidateKind") or "unknown"
-            next_still_stalled = nr.get("stall_stalled", False)
-            next_str = (
-                f"On the next step the agent chose **{next_action}** via `{next_kind}`"
-                + (" — still stalled." if next_still_stalled else " — stall cleared.")
-            )
-        else:
-            next_str = "This was the final step."
-
-        response_parts = []
-        if retry:
-            response_parts.append("retried the LLM call")
-        if fallback:
-            fb_detail = f" ({fallback_reason})" if fallback_reason else ""
-            response_parts.append(f"used a fallback candidate{fb_detail}")
-        response_str = (
-            "The agent " + " and ".join(response_parts) + "."
-            if response_parts
-            else "The agent proceeded without retry or fallback."
-        )
-
-        para = (
-            f"🔴 **Stall** — severity `{sev}`, pattern `{stype}`\n\n"
-            f"The runner was at {pos_str}.{blocked_str} "
-            f"The agent selected **{action_str}** via `{sel_kind}`"
-            + (f" (`{sel_id}`)" if sel_id else "")
-            + (f': *"{reason}"*' if reason else "")
-            + f". {response_str} {next_str}"
-        )
-        stories.append((display_step, para))
-
-    return stories
-
-
-def _observation_text(row) -> str:
-    """Summarize trace-only pre-stall observations without implying enforcement."""
-    parts = []
-    if row.get("observation_shortHorizontalOscillation", False):
-        parts.append("short horizontal oscillation")
-    if row.get("observation_repeatedCandidate", False):
-        candidate_id = row.get("observation_repeatedCandidateId") or "unknown candidate"
-        streak = int(row.get("observation_sameCandidateStreak") or 0)
-        progress = "progressing" if row.get("observation_targetProgress", False) else "not progressing"
-        reached = ", target reached" if row.get("observation_targetReached", False) else ""
-        parts.append(f"repeated `{candidate_id}` ×{streak} ({progress}{reached})")
-    return "; ".join(parts)
 
 
 # ── Section 2: Trace Inspector ───────────────────────────────────────────────
@@ -301,28 +258,7 @@ with st.expander(_s2_label, expanded=False):
         if trace_steps.empty:
             st.warning("No steps found for this trace.")
         else:
-            # Build stall index for this trace
-            stall_set = set(
-                int(r["stepIndex"])
-                for _, r in trace_steps.iterrows()
-                if r.get("stall_stalled", False)
-            )
-            stall_indices = sorted(stall_set)
-
-            def _step_label(i, row):
-                base = f"Step {int(row['stepIndex']) + 1}"
-                if int(row["stepIndex"]) in stall_set:
-                    return f"⚠️ {base} [stalled]"
-                return base
-
-            step_labels = [
-                _step_label(i, r) for i, (_, r) in enumerate(trace_steps.iterrows())
-            ]
-            n_steps = len(step_labels)
-
-            # Stall stories, keyed by display step, rendered inline in each
-            # stalled step's expander (left column, under Reasoning).
-            stall_stories = dict(_stall_stories(trace_steps))
+            n_steps = len(trace_steps)
 
             # Cumulative elapsed clock time (m:ss) at the START of each step.
             # Each step's action_ticks is how long *that* step's action ran,
@@ -347,11 +283,27 @@ with st.expander(_s2_label, expanded=False):
                 key_label = KEY_MAP.get(keycode, f"key {keycode}")
                 ticks = int(step_row.get("action_ticks") or 0)
 
-                sel_kind = step_row.get("selectedCandidateKind") or "—"
-                sel_id = step_row.get("selectedCandidateId", "—")
-                stall_sev = step_row.get("stall_severity") or "none"
-                stall_type = step_row.get("stall_type") or "—"
-                fallback = "✓" if step_row.get("fallbackUsed", False) else "✗"
+                sel_id = str(
+                    _display_scalar(step_row.get("selectedCandidateId"), "—")
+                )
+                requested_id = str(
+                    _display_scalar(step_row.get("requestedCandidateId"), "")
+                )
+                cands = step_row.get("candidates_raw", [])
+                requested_below_top_score = bool(
+                    step_row.get("event_lowerScoreRequest", False)
+                )
+                candidate_replaced = bool(
+                    step_row.get("event_candidateReplaced", False)
+                )
+                suppressed = str(
+                    _display_scalar(step_row.get("loop_suppressedIds"), "")
+                )
+                candidate_suppressed = bool(
+                    step_row.get("event_candidateSuppressed", False)
+                )
+                loop_active = bool(step_row.get("loop_active", False))
+                loop_type = step_row.get("loop_type") or "—"
                 rx = step_row.get("runner_x")
                 ry = step_row.get("runner_y")
                 gold = step_row.get("gold_remaining")
@@ -364,63 +316,123 @@ with st.expander(_s2_label, expanded=False):
                     f"gold {gold}",
                     f"risk {step_row.get('risk_level', '—')}",
                 ]
-                if stall_sev not in ("none", ""):
-                    stat_bits.append(
-                        f"stall {stall_sev}"
-                        + (f" ({stall_type})" if stall_type != "—" else "")
-                    )
-                observation_text = _observation_text(step_row)
-                if observation_text:
-                    stat_bits.append("observed")
-                if step_row.get("fallbackUsed", False):
-                    stat_bits.append("fallback")
-                if not step_row.get("valid_actionGuardSafe", True):
-                    stat_bits.append("guard-unsafe")
+                if loop_active:
+                    stat_bits.append(f"`loop {loop_type}`")
+                if candidate_replaced:
+                    stat_bits.append("candidate replaced")
+                if candidate_suppressed:
+                    stat_bits.append("candidate suppressed")
+                if requested_below_top_score:
+                    stat_bits.append("lower-score request")
 
                 clock_str = _step_clocks[chosen_idx]
                 step_label = (
-                    f"Step {display_step}" + " · ".join(stat_bits) + f" — `{sel_id}` ({clock_str})"
+                    f"Step {display_step}"
+                    + " · ".join(stat_bits)
+                    + f" — `{sel_id}` ({clock_str})"
                 )
-                if stall_sev not in ("none", ""):
-                    step_label = f"⚠️ {step_label}"
+                event_icons = []
+                if loop_active:
+                    event_icons.append("🔁")
+                if candidate_replaced or candidate_suppressed:
+                    event_icons.append("⚠️")
+                if requested_below_top_score:
+                    event_icons.append("✨")
+                if event_icons:
+                    step_label = f"{' '.join(event_icons)} {step_label}"
 
                 with steps_panel.expander(step_label, expanded=False):
-                    details_col, candidates_col = st.columns([30, 70])
+                    fallback_used = bool(step_row.get("fallbackUsed", False))
+                    if fallback_used or (requested_id and requested_id != sel_id):
+                        replacement = f"**Validation:** LLM requested `{requested_id or '—'}`"
+                        replacement += f" → backend executed `{sel_id}`"
+                        fallback_reason = str(
+                            _display_scalar(step_row.get("fallbackReason"), "")
+                        )
+                        if fallback_reason:
+                            replacement += f" — {fallback_reason}"
+                        st.markdown(replacement)
 
-                    with details_col:
-                        choice_reason = step_row.get("valid_choiceReason", "")
-                        if choice_reason:
-                            st.markdown(f"**Reasoning:** {choice_reason}")
-                        if display_step in stall_stories:
-                            st.markdown(stall_stories[display_step])
-                        if observation_text:
-                            st.markdown(f"**Trace observation:** {observation_text}")
-                        if not step_row.get("valid_actionGuardSafe", True):
-                            st.error("The requested action failed backend guard-safety validation.")
+                    if suppressed:
+                        st.markdown(f"**Suppressed:** `{suppressed}`")
 
-                    with candidates_col:
-                        cands = step_row.get("candidates_raw", [])
-                        if cands:
+                    before_pos = f"({rx}, {ry})"
+                    after_x = _display_scalar(step_row.get("after_runner_x"), None)
+                    after_y = _display_scalar(step_row.get("after_runner_y"), None)
+                    outcome_bits = [
+                        (
+                            f"pos {before_pos} → ({after_x}, {after_y})"
+                            if after_x is not None and after_y is not None
+                            else f"pos {before_pos} → pending"
+                        )
+                    ]
+                    after_gold = _display_scalar(
+                        step_row.get("after_gold_remaining"), None
+                    )
+                    if after_gold is not None:
+                        outcome_bits.append(
+                            f"gold {_display_scalar(gold)} → {after_gold}"
+                        )
+                    before_risk = _display_scalar(step_row.get("risk_level"))
+                    after_risk = _display_scalar(
+                        step_row.get("after_risk_level"), None
+                    )
+                    if after_risk is not None:
+                        outcome_bits.append(f"risk {before_risk} → {after_risk}")
+                    before_state = _display_scalar(step_row.get("game_state"), None)
+                    after_state = _display_scalar(step_row.get("after_game_state"), None)
+                    if after_state is not None and after_state != before_state:
+                        outcome_bits.append(f"state {before_state or '—'} → {after_state}")
+                    terminal_result = str(
+                        _display_scalar(step_row.get("terminal_result"), "")
+                    )
+                    if terminal_result:
+                        terminal_reason = str(
+                            _display_scalar(step_row.get("terminal_reason"), "")
+                        )
+                        terminal = f"result {terminal_result}"
+                        if terminal_reason:
+                            terminal += f" ({terminal_reason})"
+                        outcome_bits.append(terminal)
+                    if cands:
+                        outcome_col, candidates_col = st.columns([1, 3])
+                        with outcome_col:
+                            st.markdown("**Outcome:** " + " · ".join(outcome_bits))
+                        with candidates_col:
                             cand_df = pd.DataFrame(
                                 [
                                     {
-                                        "candidate": c.get("kind", "")
-                                        + (
-                                            "\u00a0\u00a0✅"
-                                            if c.get("id") == sel_id
-                                            else ""
-                                        ),
+                                        "▶": c.get("id") == sel_id,
+                                        "candidate": c.get("id", ""),
                                         "score": c.get("score", 0),
-                                        "goal": c.get("goal", ""),
+                                        "reason": (c.get("firstAction") or {}).get(
+                                            "reason", ""
+                                        ),
                                     }
-                                    for c in sorted(
-                                        cands,
-                                        key=lambda x: x.get("score", 0),
-                                        reverse=True,
-                                    )
+                                    for c in cands
                                 ]
                             )
-                            st.dataframe(cand_df, width="stretch", hide_index=True)
+                            st.dataframe(
+                                cand_df,
+                                width="stretch",
+                                hide_index=True,
+                                column_config={
+                                    "▶": st.column_config.CheckboxColumn(
+                                        "▶", width=30
+                                    ),
+                                    "candidate": st.column_config.TextColumn(
+                                        "candidate", width=150
+                                    ),
+                                    "score": st.column_config.NumberColumn(
+                                        "score", width=50
+                                    ),
+                                    "reason": st.column_config.TextColumn(
+                                        "reason", width=400
+                                    ),
+                                },
+                            )
+                    else:
+                        st.markdown("**Outcome:** " + " · ".join(outcome_bits))
 
 
 # ── Section 3: Candidate Score Breakdown ─────────────────────────────────────

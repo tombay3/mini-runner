@@ -40,6 +40,7 @@ Visual style is consistent across the rail:
 The wrapper loads `GET /api/recordings/<playData>/<level>/records` and keeps a selected record index.
 
 - Records are sorted newest-first.
+- Manual completions are saved as user records; agent completions are saved only by the agent flow.
 - Prev/next cycles through retained records.
 - Play and delete operate on the selected record.
 - Delete asks for confirmation before sending the selected record id; agent record ids are their trace ids.
@@ -55,11 +56,12 @@ When Play starts a selected record:
 Ctrl-clicking Play, or Command-clicking on macOS, requests browser display capture before
 playback starts. The browser controls the source picker; current-tab capture cannot be
 forced. If capture is allowed, the wrapper records until playback ends or is cancelled and
-downloads `run-<short-id>-<timestamp>.webm` (or `.mp4` when that is the selected recorder
-format). Denying capture still starts normal playback.
+downloads `run-<short-id>-<timestamp>.mp4`. Recording requires browser-native MP4 support;
+if MP4 encoding is unavailable or capture is denied, normal playback still starts without
+video recording.
 
 ## Debug Overlay
-The top debug line appears when a stored run is selected, except while an AI run is
+The top debug line appears as UI overlay when a stored run is selected, except while an AI run is
 being recorded. It shows selected-run metadata and playback progress.
 
 For agent recordings, progress is aligned by comparing `window.demoTickCount` with trace step ticks loaded from `/api/agent/traces/<traceId>`. For user recordings without traces, progress uses the legacy demo action cursor: `keys <demoRecordIdx>/<demo.action.length / 2>`.
@@ -67,6 +69,8 @@ For agent recordings, progress is aligned by comparing `window.demoTickCount` wi
 ## Playback Debug Controls
 Keyboard shortcuts (hotkeys) control the selected stored recording:
 
+- `Tab`: select the next stored run when rail navigation is available.
+- `Shift-Tab`: select the previous stored run when rail navigation is available.
 - `Space`: when playback is inactive, start the selected recording already paused; otherwise pause or resume playback.
 - `.`: while paused, advance one recorded key/action segment (`demo.action` in `recordings.json`) → pause again.
 - `,`: while paused, advance one trace step (`run.steps` in `agent-traces.json`) → pause again.

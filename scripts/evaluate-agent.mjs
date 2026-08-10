@@ -240,14 +240,16 @@ function summarizeAttempt(number, startedAt, result, trace) {
   const steps = Array.isArray(trace?.steps) ? trace.steps : [];
   const kinds = {};
   let fallbacks = 0;
-  let confirmedStalls = 0;
-  let retries = 0;
+  let confirmedLoops = 0;
+  let suppressedCandidates = 0;
   for (const step of steps) {
     const kind = step?.selectedCandidateKind || "unknown";
     kinds[kind] = (kinds[kind] || 0) + 1;
     if (step?.validation?.fallbackUsed) fallbacks += 1;
-    if (step?.stallSupervisor?.severity === "stalled") confirmedStalls += 1;
-    if (step?.stallSupervisor?.retryAttempted) retries += 1;
+    if (step?.loopMonitor?.active) confirmedLoops += 1;
+    suppressedCandidates += Array.isArray(step?.loopMonitor?.suppressedCandidates)
+      ? step.loopMonitor.suppressedCandidates.length
+      : 0;
   }
   const terminalGodMode = trace?.outcome?.finalState?.godMode;
   const recordedGodMode = Number(result.godMode);
@@ -279,8 +281,8 @@ function summarizeAttempt(number, startedAt, result, trace) {
     timelineValid,
     outcome: trace?.outcome ?? null,
     fallbacks,
-    confirmedStalls,
-    retries,
+    confirmedLoops,
+    suppressedCandidates,
     selectedCandidateKinds: kinds,
   };
 }
@@ -294,7 +296,7 @@ function buildReport(config, attempts, executablePath) {
     (attempt) => !attempt.contextValid || !attempt.timelineValid,
   ).length;
   return {
-    version: 1,
+    version: 2,
     createdAt: new Date().toISOString(),
     config: {
       runs: config.runs,

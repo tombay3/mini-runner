@@ -182,6 +182,7 @@ const overlayFacts = (overrides = {}) => ({
   busyAction: "",
   backendStatus: "online",
   hasRecord: true,
+  recordPinned: false,
   recordCount: 2,
   playbackPhase: "inactive",
   videoRecording: false,
@@ -199,6 +200,40 @@ assert.equal(overlayView.buttons.play.disabled, false);
 assert.equal(overlayView.buttons.prev.disabled, false);
 assert.equal(overlayView.buttons.next.disabled, false);
 assert.equal(overlayView.buttons.delete.disabled, false);
+overlayView = recording.deriveOverlayViewModel(
+  overlayFacts({ recordPinned: true }),
+);
+assert.equal(overlayView.buttons.delete.disabled, true);
+assert.equal(
+  overlayView.buttons.delete.title,
+  "Unpin stored run before deleting",
+);
+assert.equal(
+  recording.getRecordNavigationDelta({ code: "Tab", key: "Tab", shiftKey: false }),
+  1,
+);
+assert.equal(
+  recording.getRecordNavigationDelta({ code: "Tab", key: "Tab", shiftKey: true }),
+  -1,
+);
+assert.equal(recording.getRecordNavigationDelta({ code: "Space", key: " " }), 0);
+assert.equal(
+  recording.canNavigateStoredRecords({
+    records: [{ id: "new" }, { id: "old" }],
+    busyAction: "",
+    playbackPhase: "inactive",
+  }),
+  true,
+);
+assert.equal(
+  recording.canNavigateStoredRecords({
+    records: [{ id: "new" }, { id: "old" }],
+    busyAction: "",
+    playbackPhase: "paused",
+  }),
+  false,
+  "run navigation remains disabled during playback",
+);
 
 overlayView = recording.deriveOverlayViewModel(
   overlayFacts({
@@ -253,6 +288,16 @@ assert.equal(
   true,
 );
 window.playMode = window.PLAY_CLASSIC;
+window.gameState = window.GAME_START;
+assert.equal(
+  recording.canStartStoredPlaybackFromHotkey({
+    currentRecord: { id: "record-1" },
+    busyAction: "",
+    agentRunning: false,
+  }),
+  true,
+  "Space starts selected playback from the idle level start",
+);
 window.gameState = window.GAME_RUNNING;
 assert.equal(
   recording.canStartStoredPlaybackFromHotkey({
@@ -310,36 +355,84 @@ assert.equal(demo.level, 1);
 assert.equal(demo.playData, 1);
 assert.equal(demo.action.length, 2, "normalizeDemo copies action array");
 assert.deepEqual(recording.copyArray("nope"), []);
+assert.equal(
+  recording.shouldSaveUserCompletion({ agentRunning: false, busyAction: "" }),
+  true,
+  "manual completion is saved as a user recording",
+);
+assert.equal(
+  recording.shouldSaveUserCompletion({
+    agentRunning: true,
+    busyAction: "agent",
+  }),
+  false,
+  "agent completion is not also saved as a user recording",
+);
+assert.equal(
+  recording.shouldSaveUserCompletion({
+    agentRunning: false,
+    busyAction: "agent",
+  }),
+  false,
+  "agent save transition does not create a user recording",
+);
 
 const traceTicks = recording.extractTraceStepTicks({
   steps: [
     { state: { tick: 32 } },
-    { historyTail: [{ tick: 8 }, { tick: 16 }] },
+    { state: {} },
     { state: { tick: "bad" } },
   ],
 });
-assert.deepEqual(traceTicks, [16, 32]);
+assert.deepEqual(traceTicks, [32]);
 assert.equal(recording.getTraceStepTick({ state: { tick: 12 } }), 12);
-assert.equal(recording.getTraceStepTick({ historyTail: [{ tick: 4 }, { tick: 6 }] }), 6);
 
-assert.equal(recording.formatDemoTime(32), "2s");
+assert.equal(recording.formatDemoTime(32), "0:02");
+assert.equal(recording.formatDemoTime(968), "1:00");
+assert.equal(recording.formatDemoTime(8), "0:00", "matches dashboard half-even rounding");
+assert.equal(recording.formatDemoTime(24), "0:02", "matches dashboard half-even rounding");
 assert.equal(recording.formatDemoTime(0), "-");
 assert.equal(recording.shortId("037883a3-9cda-4bb9-aca0-b7c7a205e69b"), "037883a3");
 assert.equal(recording.shortId("248cc0d0-1783960882373"), "248cc0d0");
 assert.equal(recording.shortId(fallbackRunId), fallbackRunId.split("-", 1)[0]);
 assert.equal(
+  recording.formatRecordTraceId({ source: "user", traceId: null }),
+  "user",
+);
+assert.equal(
+  recording.formatRecordTraceId({ source: "agent", traceId: "037883a3-rest" }),
+  "037883a3",
+);
+assert.equal(recording.formatRecordResult("success"), "✅");
+assert.equal(recording.formatRecordResult("failure"), "❌");
+assert.equal(
+  recording.formatDebugOverlay({
+    currentRecord: {
+      source: "user",
+      result: "success",
+      savedAt: "",
+      demo: { time: 32, action: [0, 39] },
+    },
+    selectedRecordIndex: 0,
+    records: [{}],
+    selectedTraceSummary: null,
+    playbackPhase: "inactive",
+  }),
+  "[1/1] user | - | ✅ | 0:02 | keys 1",
+);
+assert.equal(
   recording.buildPlaybackVideoFileName(
     "23dfc383-aaaa-bbbb-cccc-dddddddddddd",
     new Date("2026-06-12T02:10:48.927Z"),
   ),
-  "run-23dfc383-2026-06-12T02-10-48.webm",
+  "run-23dfc383-2026-06-12T02-10-48.mp4",
 );
 assert.equal(
   recording.buildPlaybackVideoFileName(
     "248cc0d0-1783960882373",
     new Date("2026-06-12T02:10:48.927Z"),
   ),
-  "run-248cc0d0-2026-06-12T02-10-48.webm",
+  "run-248cc0d0-2026-06-12T02-10-48.mp4",
 );
 assert.equal(
   recording.buildPlaybackVideoFileName(
@@ -351,9 +444,16 @@ assert.equal(
 );
 assert.equal(
   recording.choosePlaybackVideoMimeType({
-    isTypeSupported: (mimeType) => mimeType === "video/webm;codecs=vp8,opus",
+    isTypeSupported: (mimeType) => mimeType === "video/mp4;codecs=avc1.42E01E",
   }),
-  "video/webm;codecs=vp8,opus",
+  "video/mp4;codecs=avc1.42E01E",
+);
+assert.equal(
+  recording.choosePlaybackVideoMimeType({
+    isTypeSupported: (mimeType) => mimeType.startsWith("video/webm"),
+  }),
+  "",
+  "WebM-only browsers do not create mislabeled MP4 downloads",
 );
 assert.equal(recording.choosePlaybackVideoMimeType({ isTypeSupported: () => false }), "");
 assert.equal(

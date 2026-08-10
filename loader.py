@@ -27,6 +27,46 @@ def _trace_id_short(value):
     return text.split("-", 1)[0][:8]
 
 
+def _step_event_flags(step: dict) -> dict[str, bool]:
+    validation = step.get("validation", {})
+    loop = step.get("loopMonitor", {})
+    candidates = step.get("candidates", [])
+    requested_id = validation.get("requestedCandidateId") or ""
+    selected_id = step.get("selectedCandidateId", "")
+    candidate_scores = [
+        candidate.get("score")
+        for candidate in candidates
+        if isinstance(candidate.get("score"), (int, float))
+    ]
+    requested_score = next(
+        (
+            candidate.get("score")
+            for candidate in candidates
+            if candidate.get("id") == requested_id
+            and isinstance(candidate.get("score"), (int, float))
+        ),
+        None,
+    )
+    suppressed_ids = [
+        str(item.get("id", ""))
+        for item in (loop.get("suppressedCandidates") or [])
+        if isinstance(item, dict) and item.get("id")
+    ]
+    candidate_replaced = bool(requested_id and requested_id != selected_id)
+    candidate_suppressed = bool(suppressed_ids)
+    return {
+        "lower_score_request": bool(
+            requested_score is not None
+            and candidate_scores
+            and requested_score < max(candidate_scores)
+        ),
+        "warning": candidate_replaced or candidate_suppressed,
+        "loop_active": bool(loop.get("active", False)),
+        "candidate_replaced": candidate_replaced,
+        "candidate_suppressed": candidate_suppressed,
+    }
+
+
 def load_data(folder: str):
     folder_path = Path(folder)
     errors = []
@@ -71,6 +111,17 @@ def _build_dataframes(recordings_raw: dict, traces_raw: dict):
         demo = rec.get("demo", {})
         trace_id = rec.get("traceId")
         trace = trace_runs.get(trace_id, {})
+        trace_steps = trace.get("steps", [])
+        event_flags = [_step_event_flags(step) for step in trace_steps]
+        average_candidate_count = (
+            round(
+                sum(len(step.get("candidates") or []) for step in trace_steps)
+                / len(trace_steps),
+                1,
+            )
+            if trace_steps
+            else None
+        )
 
         saved_at = _parse_ts(rec.get("savedAt"))
         created_at = _parse_ts(trace.get("createdAt"))
@@ -104,6 +155,7 @@ def _build_dataframes(recordings_raw: dict, traces_raw: dict):
                 "traceId_short": _trace_id_short(trace_id),
                 "result": rec.get("result", ""),
                 "source": rec.get("source", ""),
+                "pinned": rec.get("pinned") is True,
                 "level": rec.get("level"),
                 "playData": rec.get("playData"),
                 "savedAt": saved_at,
@@ -113,11 +165,16 @@ def _build_dataframes(recordings_raw: dict, traces_raw: dict):
                 "modelProfile": solver.get("modelProfile")
                 or model_info.get("modelProfile", ""),
                 "failureReason": solver.get("failureReason", ""),
-                "stepCount": trace.get("stepCount", len(trace.get("steps", []))),
+                "stepCount": trace.get("stepCount", len(trace_steps)),
                 "godMode": bool(demo.get("godMode", 0)),
+                "averageCandidateCount": average_candidate_count,
+                "lowerScoreRequestCount": sum(
+                    flag["lower_score_request"] for flag in event_flags
+                ),
+                "warningStepCount": sum(flag["warning"] for flag in event_flags),
+                "activeLoopCount": sum(flag["loop_active"] for flag in event_flags),
                 "demoTime": demo_time,
                 "recordTime": record_time,
-                "show_score": trace.get("config", {}).get("showCandidateScores", False),
             }
         )
 
@@ -127,19 +184,30 @@ def _build_dataframes(recordings_raw: dict, traces_raw: dict):
     for trace_id, trace in trace_runs.items():
         steps = trace.get("steps", [])
         model_info = trace.get("model", {})
+        outcome = trace.get("outcome") or {}
+        final_state = outcome.get("finalState") or {}
         for step_idx, step in enumerate(steps):
             action = step.get("action", {})
-            stall = step.get("stallSupervisor", {})
-            observations = stall.get("observations", {})
+            loop = step.get("loopMonitor", {})
+            suppressed = loop.get("suppressedCandidates", [])
             validation = step.get("validation", {})
             state = step.get("state", {})
             candidates = step.get("candidates", [])
 
             selected_id = step.get("selectedCandidateId", "")
             selected_kind = step.get("selectedCandidateKind", "")
+            event_flags = _step_event_flags(step)
 
             risk = state.get("guardRisk", {})
             runner = state.get("runner", {})
+            after_state = (
+                steps[step_idx + 1].get("state") or {}
+                if step_idx + 1 < len(steps)
+                else final_state
+            )
+            after_runner = after_state.get("runner", {})
+            after_risk = after_state.get("guardRisk", {})
+            is_final_step = step_idx + 1 == len(steps)
 
             step_rows.append(
                 {
@@ -150,44 +218,35 @@ def _build_dataframes(recordings_raw: dict, traces_raw: dict):
                     "action_reason": action.get("reason", ""),
                     "selectedCandidateId": selected_id,
                     "selectedCandidateKind": selected_kind,
+                    "requestedCandidateId": validation.get("requestedCandidateId") or "",
                     "candidateCount": len(candidates),
                     "fallbackUsed": validation.get("fallbackUsed", False),
                     "fallbackReason": validation.get("fallbackReason") or "",
-                    "stall_stalled": bool(stall.get("stalled", False)),
-                    "stall_severity": "stalled" if stall.get("stalled", False) else "none",
-                    "stall_type": stall.get("type") if stall.get("stalled", False) else None,
-                    "stall_retryAttempted": stall.get("retryAttempted", False),
-                    "stall_fallbackAfterRetry": stall.get("fallbackAfterRetry", False),
-                    "stall_blockedKinds": ",".join(
-                        stall.get("blockedCandidateKinds", [])
+                    "event_lowerScoreRequest": event_flags["lower_score_request"],
+                    "event_warning": event_flags["warning"],
+                    "event_candidateReplaced": event_flags["candidate_replaced"],
+                    "event_candidateSuppressed": event_flags["candidate_suppressed"],
+                    "loop_active": event_flags["loop_active"],
+                    "loop_type": loop.get("type") if loop.get("active") else None,
+                    "loop_suppressedIds": ",".join(
+                        str(item.get("id", ""))
+                        for item in suppressed
+                        if isinstance(item, dict)
                     ),
-                    "observation_shortHorizontalOscillation": bool(
-                        observations.get("shortHorizontalOscillation", False)
-                    ),
-                    "observation_repeatedCandidate": bool(
-                        observations.get("repeatedCandidate", False)
-                    ),
-                    "observation_sameCandidateStreak": observations.get(
-                        "sameCandidateStreak", 0
-                    ),
-                    "observation_repeatedCandidateId": observations.get(
-                        "repeatedCandidateId"
-                    ),
-                    "observation_targetProgress": bool(
-                        observations.get("targetProgress", False)
-                    ),
-                    "observation_targetReached": bool(
-                        observations.get("targetReached", False)
-                    ),
-                    "valid_actionValid": validation.get("actionValid", True),
-                    "valid_actionGuardSafe": validation.get("actionGuardSafe", True),
-                    "valid_stallBlocked": validation.get("stallBlocked", False),
-                    "valid_stallSeverity": validation.get("stallSeverity", "none"),
-                    "valid_choiceReason": validation.get("choiceReason", ""),
                     "runner_x": runner.get("x"),
                     "runner_y": runner.get("y"),
                     "risk_level": risk.get("risk", ""),
                     "gold_remaining": state.get("gold", {}).get("remainingCount"),
+                    "game_state": state.get("gameState", ""),
+                    "after_runner_x": after_runner.get("x"),
+                    "after_runner_y": after_runner.get("y"),
+                    "after_risk_level": after_risk.get("risk", ""),
+                    "after_gold_remaining": after_state.get("gold", {}).get(
+                        "remainingCount"
+                    ),
+                    "after_game_state": after_state.get("gameState", ""),
+                    "terminal_result": outcome.get("result", "") if is_final_step else "",
+                    "terminal_reason": outcome.get("reason", "") if is_final_step else "",
                     "model": model_info.get("model", ""),
                     "provider": model_info.get("provider", ""),
                     "candidates_raw": candidates,
@@ -213,11 +272,8 @@ def get_candidates_df(steps_df: pd.DataFrame) -> pd.DataFrame:
                     "candidateId": cand.get("id", ""),
                     "kind": cand.get("kind", ""),
                     "score": cand.get("score", 0),
-                    "stallBlocked": cand.get("stallBlocked", False),
-                    "stallRecovery": cand.get("stallRecovery", False),
                     "selected": cand.get("id") == selected_id,
-                    "goal": cand.get("goal", ""),
-                    "reason": cand.get("reason", ""),
+                    "reason": (cand.get("firstAction") or {}).get("reason", ""),
                 }
             )
 

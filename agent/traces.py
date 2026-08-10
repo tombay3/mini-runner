@@ -49,10 +49,8 @@ def summarize_state(snapshot: dict[str, Any], analysis: dict[str, Any] | None) -
         "primaryProgressTarget": analysis.get("primaryProgressTarget"),
         "guardRisk": {
             "risk": risk.get("risk"),
-            "nearestGuard": risk.get("nearestGuard"),
             "pressureGuard": risk.get("pressureGuard"),
             "nearbyGuards": risk.get("nearbyGuards", []),
-            "nearestSameRowGuard": risk.get("nearestSameRowGuard"),
         },
         "movement": {
             "canMoveLeft": movement.get("canMoveLeft"),
@@ -90,12 +88,8 @@ def summarize_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
         "id": candidate.get("id"),
         "kind": candidate.get("kind"),
         "score": candidate.get("score"),
-        "stallBlocked": candidate.get("stallBlocked", False),
-        "stallRecovery": candidate.get("stallRecovery", False),
         "target": candidate.get("target"),
         "firstAction": candidate.get("firstAction"),
-        "goal": candidate.get("goal"),
-        "reason": candidate.get("reason"),
     }
 
 
@@ -110,12 +104,11 @@ def _dict(value: Any) -> dict[str, Any]:
 def serialize_step_trace(
     *,
     snapshot: dict[str, Any],
-    history: list[dict[str, Any]],
     action: dict[str, Any],
     candidates: list[dict[str, Any]] | None = None,
     selected_candidate: dict[str, Any] | None = None,
     validation: dict[str, Any] | None = None,
-    stall_supervisor: dict[str, Any] | None = None,
+    loop_monitor: dict[str, Any] | None = None,
     analysis: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
@@ -125,7 +118,6 @@ def serialize_step_trace(
         "selectedCandidateId": (selected_candidate or {}).get("id"),
         "selectedCandidateKind": (selected_candidate or {}).get("kind"),
         "validation": coerce_jsonable(validation),
-        "historyTail": coerce_jsonable(history[-8:]),
         "action": coerce_jsonable(action),
-        "stallSupervisor": coerce_jsonable(stall_supervisor),
+        "loopMonitor": coerce_jsonable(loop_monitor),
     }

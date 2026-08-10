@@ -47,8 +47,8 @@ This file is intentionally short and easy to edit. It is read directly into the 
 2. If danger is not immediate, prefer nearby safe gold.
 3. Same-row gold is a high-priority progress target.
 4. Visible ladders on the runner row are strong route options.
-5. If the runner is stalled on one row and is on a ladder, climb instead of repeating horizontal movement.
-6. If the runner is stalled on one row, change the route instead of repeating the same retreat.
+5. If the runner is cycling on one row and is on a ladder, climb instead of repeating horizontal movement.
+6. If the runner is cycling on one row, change the route instead of repeating the same retreat.
 
 ## Classic Level 1 Bias
 
@@ -56,7 +56,7 @@ This file is intentionally short and easy to edit. It is read directly into the 
 - Do not drift along the bottom row without collecting nearby gold.
 - Do not ignore obvious nearby gold on the current row.
 - Do not get trapped into left-edge or right-edge oscillation.
-- If a reachable ladder can break the stall safely, prefer climbing it over another retreat.
+- If a reachable ladder can break the cycle safely, prefer climbing it over another retreat.
 
 ## Output Style
 

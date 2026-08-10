@@ -7,8 +7,6 @@
 
 ## Selection Policy
 
-- Never choose a candidate marked `stallBlocked`.
-- During a stall, prefer `stallRecovery` candidates and follow the recovery hint.
 - Prefer collecting gold, using the correct ladder direction, or opening and following a route-access path over waiting or repeating a retreat.
 - In normal mode, immediate guard danger may outrank progress.
 - `side` says where a guard is relative to the runner; only `motion` says where it is moving.

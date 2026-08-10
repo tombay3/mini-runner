@@ -7,9 +7,9 @@ Current backend layers:
 
 - `candidates`: extracts normalized facts, then generates and scores candidate actions.
 - `reasoning_tools`: deterministic movement, guard, dig, and route helpers.
-- `stall_tools`: deterministic oscillation/loop/stall diagnosis and recovery hints.
-- `prompt`: formats current state summary, candidate list, optional stall report.
-- `service`: orchestrates model call, candidate validation, retry/fallback, and trace assembly.
+- `loop_tools`: deterministic stationary, horizontal, and vertical cycle detection and suppression.
+- `prompt`: formats the current state summary and eligible candidate list, including compact loop status.
+- `service`: orchestrates one model call, generic candidate validation, and trace assembly.
 
 Mutable local stores:
 
@@ -21,10 +21,13 @@ Mutable local stores:
 - `GET /api/recordings`: return the full recording store.
 - `GET /api/recordings/<playData>/<level>`: return the newest matching record or `404`.
 - `GET /api/recordings/<playData>/<level>/records`: return all retained matching records newest-first, each with compact linked trace metadata when available.
-- `PUT /api/recordings/<playData>/<level>`: save a new record and prune to 10 newest records.
+- `PUT /api/recordings/<playData>/<level>`: save a new unpinned record and retain all pinned
+  records plus the 10 newest unpinned records. Updating the same id preserves its stored pin.
 - `DELETE /api/recordings/<playData>/<level>`: delete the newest matching record and linked trace when present.
 - `DELETE /api/recordings/<playData>/<level>?recordId=<recordId>`: delete the selected record and linked trace when present.
 - `DELETE /api/recordings/<playData>/<level>?traceId=<traceId>`: delete the agent record whose id matches the trace id and delete that trace.
+
+Deleting a pinned recording returns `409` and does not delete its linked trace.
 
 Recording store shape:
 
@@ -40,6 +43,7 @@ Recording store shape:
       "savedAt": "2026-05-28T00:00:00.000Z",
       "source": "agent",
       "result": "failure",
+      "pinned": false,
       "traceId": "<traceId>",
       "solver": {},
       "demo": {}
@@ -48,7 +52,11 @@ Recording store shape:
 }
 ```
 
-Agent recordings use `traceId` as `id`. User recordings use `user:<timestamp>`.
+Agent recordings use `traceId` as `id`. User recordings use `user:<timestamp>`. To pin or
+unpin a completed run, edit only its `pinned` field in `recordings.json` while no agent run is
+active. Missing fields are equivalent to `false`. A pinned agent recording also protects its
+linked trace from pruning; pin state is never copied into `agent-traces.json`, and a missing
+linked trace is not recreated.
 The browser normally creates UUID trace IDs. On HTTP contexts where
 `crypto.randomUUID()` is unavailable, it constructs the same UUID format with
 `crypto.getRandomValues()`. If neither Web Crypto method is available, the final fallback
@@ -68,18 +76,16 @@ is `<8hex>-<timestamp>`. Short IDs are always the first eight-character segment.
   },
   "traceId": "...",
   "stepCount": 2,
-  "candidateId": "...",
-  "candidate": {},
-  "candidates": [],
-  "validation": {}
+  "candidateId": "..."
 }
 ```
 
 ## Backend Agent Flow
 - The endpoint supports Classic `playData=1`, `level=1`. Its flow is:
   `snapshot + history -> candidate analysis -> LLM candidate choice -> action validation -> response`.
-- Candidate generation and stall analysis happen deterministically in Python before the LLM call.
-- `agent-traces.json` is the diagnostic store for the V2 Lode Runner candidate agent. It records recent backend planning steps, compact state summaries, generated candidate summaries, the selected candidate, validation, stall supervision, and model metadata.
+- Candidate generation and loop filtering happen deterministically in Python before the LLM call.
+- `agent-traces.json` records compact state summaries, eligible candidates, the selected candidate,
+  generic validation, loop-filter evidence, and model metadata.
 
 ## Trace API And Store
 - `GET /api/agent/traces/<trace_id>`: return one retained trace run.
@@ -89,7 +95,7 @@ The trace store has this shape:
 
 ```json
 {
-  "version": 1,
+  "version": 3,
   "updatedAt": "2026-05-28T00:00:00.000Z",
   "runs": {
     "<traceId>": {
@@ -128,43 +134,27 @@ instead of producing an unlinked recording error.
 
 - `gameState`, `tick`, and `godMode`;
 - compact `runner` and `gold` objects;
-- `primaryProgressTarget` and compact `guardRisk`, including nearby guards on any row
-  and the nearest same-row guard;
+- `primaryProgressTarget` and compact `guardRisk` with the selected pressure guard and nearby guards;
 - movement booleans;
 - dynamic support under adjacent horizontal tiles, including whether movement would enter an open dug hole;
 - open-hole coordinates and legacy refill frame/time exposed by the agent hook for timed floor-wait candidates;
 - ladder detail and a compact route-access summary, including guard-blocked drop entry.
 
 Each step also stores `candidates`, `selectedCandidateId`, `selectedCandidateKind`,
-`validation`, `action`, `stallSupervisor`, and `historyTail`. Full terrain, guard lists,
+`validation`, `action`, and `loopMonitor`. Full terrain, guard lists,
 movement details, dig analysis, and raw model messages are not stored in `step.state`.
-`guardRisk.nearestGuard`, `guardRisk.pressureGuard`, and `guardRisk.nearbyGuards` include horizontal and vertical relation,
-motion, offsets, and carried-gold state. `nearestGuard` is geometric; `pressureGuard` is the
-highest-priority mobile threat after guard-state adjustment (`in_hole` is low immediate pressure).
-The compact `guardRisk.nearestSameRowGuard` uses `side` for relative location,
-`motion` for the guard's current movement action, and `closing` for the derived approach
-state. Step `validation.actionGuardSafe` records the deterministic normal-mode guard
-safety check.
+`guardRisk.pressureGuard` is the highest-priority mobile threat after guard-state adjustment
+(`in_hole` is low immediate pressure). All compact guards use the same `relativeX`, `relativeY`,
+`motion`, and `closing` fields.
 
-`stallSupervisor.severity` is either `none` or `stalled`. Confirmed stalls include a
-stall `type`, blocked candidates, recovery preferences, and retry/fallback outcomes.
-Early signals are retained only for diagnosis under
-`stallSupervisor.observations`:
+`loopMonitor.active` identifies confirmed loops. `type` is one of `stationary_repeat`,
+`horizontal_cycle`, or `vertical_cycle`; `evidence` records recent positions, candidates,
+key codes, and progress facts; and `suppressedCandidates` records choices removed before the
+model call. Patterns below the confirmed-loop threshold are not stored or shown. Confirmed loop
+actions are removed from the eligible candidate list.
 
-```json
-{
-  "shortHorizontalOscillation": false,
-  "repeatedCandidate": false,
-  "sameCandidateStreak": 0,
-  "repeatedCandidateId": null,
-  "targetProgress": false,
-  "targetReached": false
-}
-```
-
-These observations do not affect candidate scores, prompts, validation, retries, or
-fallback. They provide trace context for patterns that have not met the confirmed
-stall threshold.
+Dashboard loading, derived after-state, event markers, and UI behavior are documented in
+[Trace dashboard](./trace-dashboard.md).
 
 The trace store keeps up to 10 newest runs. Run-level `model` records the resolved
 model/profile/provider, and run-level `config` records the planning controls used for the
@@ -234,9 +224,6 @@ Current shape:
     "candidateLimit": 7,
     "maxActionTicks": 20,
     "temperature": 0.5
-  },
-  "prompt": {
-    "showCandidateScores": true
   }
 }
 ```
@@ -246,7 +233,6 @@ Backend fields:
 - `backend.candidateLimit`: number of sorted candidates sent to the model.
 - `backend.maxActionTicks`: maximum ticks in one candidate action. Values above 20 are capped because the legacy hook caps one agent step at 20 ticks.
 - `backend.temperature`: model sampling temperature for candidate selection.
-- `prompt.showCandidateScores`: whether prompt candidate lines include numeric `score=...`. Scores remain in traces either way.
 
 Browser fields:
 
@@ -279,7 +265,7 @@ is configured. Setting `AGENT_DEBUG_LOG=1` directly also enables debug-level app
 Flask's source reloader. Python changes restart the development server automatically
 while the interactive Flask debugger remains disabled.
 Raw prompts and model outputs are written to `__data1/agent-debug.log` with 10-entry
-rotation. Each block includes trace id, model, retry flag, prompt, final message, optional
+rotation. Each block includes trace id, model, prompt, final message, optional
 provider reasoning content, parse error, and selected candidate id. Raw model I/O is never
 written to stdout or `agent-traces.json`.
 
@@ -288,4 +274,4 @@ written to stdout or `agent-traces.json`.
 `scripts/trace-analytics.ipynb` reads the current flat recording and trace stores without
 modifying them. It builds recording, run, step, and candidate data frames; joins recordings
 to traces by `traceId`; and charts outcomes, model usage, run duration, candidate selection,
-stalls, and fallbacks. Notebook dependencies are included in `requirements.txt`.
+loop-filter events, and generic fallbacks. Notebook dependencies are included in `requirements.txt`.

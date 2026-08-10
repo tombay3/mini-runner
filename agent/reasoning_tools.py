@@ -97,6 +97,8 @@ def _nearest_off_row_gold(snapshot: dict[str, Any]) -> dict[str, Any] | None:
 
     candidates = []
     for position in _get_gold_positions(snapshot):
+        if position.get("source") == "guard":
+            continue
         if position["y"] == runner_y:
             continue
         distance = abs(position["x"] - runner_x) + abs(position["y"] - runner_y)
@@ -257,7 +259,9 @@ def find_row_ladders(snapshot: dict[str, Any], limit: int = 6) -> list[dict[str,
     return ladders[: max(1, limit)]
 
 
-def get_ladder_affordance(snapshot: dict[str, Any]) -> dict[str, Any]:
+def get_ladder_affordance(
+    snapshot: dict[str, Any], *, row_ladders: list[dict[str, Any]] | None = None
+) -> dict[str, Any]:
     runner = _get_runner(snapshot)
     runner_x = _to_int(runner.get("x"))
     runner_y = _to_int(runner.get("y"))
@@ -272,7 +276,7 @@ def get_ladder_affordance(snapshot: dict[str, Any]) -> dict[str, Any]:
             "detail": "Runner coordinates are unavailable.",
         }
 
-    row_ladders = find_row_ladders(snapshot, limit=6)
+    row_ladders = row_ladders if row_ladders is not None else find_row_ladders(snapshot, limit=6)
     nearest = row_ladders[0] if row_ladders else None
     current_tile = _terrain_at(rows, runner_x, runner_y)
     gold_complete = _is_gold_complete(snapshot)
@@ -357,6 +361,9 @@ def get_movement_affordance(snapshot: dict[str, Any]) -> dict[str, Any]:
     )
 
     ladder_tiles = _active_ladder_tiles(snapshot)
+    can_finish_ladder_climb = bool(
+        runner_y_offset > 0 and below_tile in ladder_tiles
+    )
     can_move_up = current_tile in ladder_tiles and up_ok
     can_drop_from_rope = current_tile == "-" and below_tile not in {"#", "@", "H", "S", "0", None}
     can_descend_from_ladder = current_tile in ladder_tiles and below_tile not in {"#", "@", None}
@@ -381,6 +388,7 @@ def get_movement_affordance(snapshot: dict[str, Any]) -> dict[str, Any]:
         "canMoveRight": right_ok,
         "canMoveUp": can_move_up,
         "canMoveDown": can_move_down,
+        "canFinishLadderClimb": can_finish_ladder_climb,
         "canFinishExitClimb": bool(
             _is_gold_complete(snapshot)
             and runner_x == 18
@@ -505,7 +513,9 @@ def _nearest_open_hole_state(
     return holes[0] if holes else None
 
 
-def get_dig_affordance(snapshot: dict[str, Any]) -> dict[str, Any]:
+def get_dig_affordance(
+    snapshot: dict[str, Any], *, risk: dict[str, Any] | None = None
+) -> dict[str, Any]:
     runner = _get_runner(snapshot)
     runner_x = _to_int(runner.get("x"))
     runner_y = _to_int(runner.get("y"))
@@ -517,9 +527,16 @@ def get_dig_affordance(snapshot: dict[str, Any]) -> dict[str, Any]:
     active_rows = _get_active_grid(snapshot) or rows
     gold_positions = _visible_gold_set(snapshot)
     guard_positions = _guard_position_set(snapshot)
-    risk = assess_guard_risk(snapshot)
-    nearest_guard = risk.get("nearestSameRowGuard") or {}
+    risk = risk if risk is not None else assess_guard_risk(snapshot)
     pressure_guard = risk.get("pressureGuard") or {}
+    nearest_guard = next(
+        (
+            guard
+            for guard in risk.get("nearbyGuards") or []
+            if guard.get("relativeY") == "same"
+        ),
+        {},
+    )
     if (
         not nearest_guard
         and pressure_guard.get("relativeY") == "above"
@@ -555,7 +572,7 @@ def get_dig_affordance(snapshot: dict[str, Any]) -> dict[str, Any]:
         can_dig = engine_diggable and not bottom_boundary
         guard_could_fall = (
             engine_diggable
-            and (nearest_guard.get("side") or nearest_guard.get("relativeX")) == direction
+            and nearest_guard.get("relativeX") == direction
             and (_to_int(nearest_guard.get("distance")) or 99)
             <= (
                 5
@@ -599,15 +616,29 @@ def get_dig_affordance(snapshot: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def get_route_access_affordance(snapshot: dict[str, Any]) -> dict[str, Any]:
+def get_route_access_affordance(
+    snapshot: dict[str, Any],
+    *,
+    dig: dict[str, Any] | None = None,
+    nearest_gold: list[dict[str, Any]] | None = None,
+    row_ladders: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     runner = _get_runner(snapshot)
     runner_x = _to_int(runner.get("x"))
     runner_y = _to_int(runner.get("y"))
-    dig = get_dig_affordance(snapshot)
-    same_row_gold = [item for item in find_nearest_gold_candidates(snapshot, limit=4) if item["sameRow"]]
-    row_ladders = [
-        item for item in find_row_ladders(snapshot, limit=4) if item["visible"] and item["tile"] == "H"
+    dig = dig if dig is not None else get_dig_affordance(snapshot)
+    nearest_gold = (
+        nearest_gold
+        if nearest_gold is not None
+        else find_nearest_gold_candidates(snapshot, limit=4)
+    )
+    same_row_gold = [
+        item
+        for item in nearest_gold
+        if item["sameRow"] and item.get("source") != "guard"
     ]
+    row_ladders = row_ladders if row_ladders is not None else find_row_ladders(snapshot, limit=4)
+    row_ladders = [item for item in row_ladders if item["visible"] and item["tile"] == "H"]
     off_row_gold = _nearest_off_row_gold(snapshot)
 
     if runner_x is None or runner_y is None:
@@ -900,12 +931,8 @@ def assess_guard_risk(snapshot: dict[str, Any]) -> dict[str, Any]:
     runner_x = _to_int(runner.get("x"))
     runner_y = _to_int(runner.get("y"))
     if runner_x is None or runner_y is None:
-        return {"risk": "unknown", "nearestGuardDistance": None, "sameRowGuards": []}
+        return {"risk": "unknown", "pressureGuard": None, "nearbyGuards": []}
 
-    distances = []
-    same_row = []
-    nearest_same_row = None
-    nearest_guard = None
     nearby_guards = []
     for guard in guards:
         if not isinstance(guard, dict):
@@ -915,7 +942,6 @@ def assess_guard_risk(snapshot: dict[str, Any]) -> dict[str, Any]:
         if guard_x is None or guard_y is None:
             continue
         distance = abs(guard_x - runner_x) + abs(guard_y - runner_y)
-        distances.append(distance)
         motion = str(guard.get("actionName") or "unknown")
         guard_info = {
             "id": guard.get("id"),
@@ -935,27 +961,6 @@ def assess_guard_risk(snapshot: dict[str, Any]) -> dict[str, Any]:
             or (guard_info["relativeX"] == "right" and guard_info["motion"] == "left")
         )
         nearby_guards.append(guard_info)
-        if nearest_guard is None or distance < nearest_guard["distance"]:
-            nearest_guard = guard_info
-        if guard_y == runner_y:
-            side = _direction_label(runner_x, guard_x)
-            same_row_distance = abs(guard_x - runner_x)
-            info = {
-                "x": guard_x,
-                "distance": same_row_distance,
-                "risk": _guard_effective_risk(same_row_distance, motion),
-                "side": side,
-                "motion": motion,
-                "closing": (
-                    (side == "left" and motion == "right")
-                    or (side == "right" and motion == "left")
-                ),
-            }
-            same_row.append(info)
-            if nearest_same_row is None or info["distance"] < nearest_same_row["distance"]:
-                nearest_same_row = info
-
-    nearest = min(distances) if distances else None
     risk_order = {"critical": 4, "high": 3, "medium": 2, "low": 1}
     pressure_guard = min(
         nearby_guards,
@@ -969,12 +974,8 @@ def assess_guard_risk(snapshot: dict[str, Any]) -> dict[str, Any]:
     risk = pressure_guard.get("risk") if pressure_guard else "low"
     return {
         "risk": risk,
-        "nearestGuardDistance": nearest,
-        "nearestGuard": nearest_guard,
         "pressureGuard": pressure_guard,
         "nearbyGuards": sorted(nearby_guards, key=lambda item: item["distance"])[:4],
-        "sameRowGuards": sorted(same_row, key=lambda item: item["distance"])[:4],
-        "nearestSameRowGuard": nearest_same_row,
         "runnerOnEdge": _is_edge(runner_x, width),
     }
 

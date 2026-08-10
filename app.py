@@ -21,7 +21,12 @@ from agent import (
     plan_next_action,
     validate_agent_request,
 )
-from agent.logging_utils import configure_logging, get_logger, log_event, normalize_flask_logger
+from agent.logging_utils import (
+    configure_logging,
+    get_logger,
+    log_event,
+    normalize_flask_logger,
+)
 
 
 if "--debug" in sys.argv:
@@ -38,7 +43,7 @@ normalize_flask_logger(app)
 STORE_PATH = Path(__file__).resolve().parent / "__data1" / "recordings.json"
 TRACE_STORE_PATH = Path(__file__).resolve().parent / "__data1" / "agent-traces.json"
 STORE_VERSION = 1
-TRACE_STORE_VERSION = 1
+TRACE_STORE_VERSION = 3
 TRACE_RUN_LIMIT = 10
 RECORDING_RUN_LIMIT = 10
 _store_lock = Lock()
@@ -55,7 +60,11 @@ log_event(
 
 
 def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    return (
+        datetime.now(timezone.utc)
+        .isoformat(timespec="milliseconds")
+        .replace("+00:00", "Z")
+    )
 
 
 def empty_store() -> dict[str, Any]:
@@ -83,7 +92,9 @@ def load_json_store(path: Path, empty_factory) -> dict[str, Any]:
         with path.open("r", encoding="utf-8") as handle:
             data = json.load(handle)
     except Exception as exc:
-        log_event(LOGGER, logging.ERROR, "json_store_load_failed", path=path.name, error=exc)
+        log_event(
+            LOGGER, logging.ERROR, "json_store_load_failed", path=path.name, error=exc
+        )
         raise
     if not isinstance(data, dict):
         return empty_factory()
@@ -108,7 +119,9 @@ def save_json_store(path: Path, store: dict[str, Any]) -> None:
             os.unlink(tmp_path)
         except FileNotFoundError:
             pass
-        log_event(LOGGER, logging.ERROR, "json_store_save_failed", path=path.name, error=exc)
+        log_event(
+            LOGGER, logging.ERROR, "json_store_save_failed", path=path.name, error=exc
+        )
         raise
 
 
@@ -148,27 +161,73 @@ def prune_recordings(store: dict[str, Any]) -> None:
     if not isinstance(records, dict):
         store["records"] = {}
         return
-    store["records"] = dict(sorted_record_items(records)[:RECORDING_RUN_LIMIT])
+    sorted_items = sorted_record_items(records)
+    pinned_ids = {
+        record_id
+        for record_id, record in sorted_items
+        if record.get("pinned") is True
+    }
+    unpinned_items = [
+        item for item in sorted_items if item[1].get("pinned") is not True
+    ]
+    retained_unpinned_ids = {
+        record_id
+        for record_id, _record in unpinned_items[:RECORDING_RUN_LIMIT]
+    }
+    retained_ids = pinned_ids | retained_unpinned_ids
+    store["records"] = dict(
+        (record_id, record)
+        for record_id, record in sorted_items
+        if record_id in retained_ids
+    )
 
 
-def find_latest_recording(store: dict[str, Any], play_data: str, level: str) -> dict[str, Any] | None:
+def pinned_trace_ids_from_store(store: dict[str, Any]) -> set[str]:
+    records = store.get("records", {})
+    if not isinstance(records, dict):
+        return set()
+    return {
+        trace_id
+        for record in records.values()
+        if isinstance(record, dict)
+        and record.get("pinned") is True
+        and record.get("source") == "agent"
+        for trace_id in [record.get("traceId")]
+        if isinstance(trace_id, str) and trace_id
+    }
+
+
+def load_pinned_trace_ids() -> set[str]:
+    with _store_lock:
+        return pinned_trace_ids_from_store(load_store())
+
+
+def find_latest_recording(
+    store: dict[str, Any], play_data: str, level: str
+) -> dict[str, Any] | None:
     records = store.get("records", {})
     if not isinstance(records, dict):
         return None
     for _record_id, record in sorted_record_items(records):
-        if str(record.get("playData")) == play_data and str(record.get("level")) == level:
+        if (
+            str(record.get("playData")) == play_data
+            and str(record.get("level")) == level
+        ):
             return record
     return None
 
 
-def find_recordings(store: dict[str, Any], play_data: str, level: str) -> list[dict[str, Any]]:
+def find_recordings(
+    store: dict[str, Any], play_data: str, level: str
+) -> list[dict[str, Any]]:
     records = store.get("records", {})
     if not isinstance(records, dict):
         return []
     return [
         record
         for _record_id, record in sorted_record_items(records)
-        if str(record.get("playData")) == play_data and str(record.get("level")) == level
+        if str(record.get("playData")) == play_data
+        and str(record.get("level")) == level
     ]
 
 
@@ -240,11 +299,24 @@ def validate_solver(value: Any) -> dict[str, Any] | None:
         "traceId",
         "failureReason",
     }
-    solver = {key: value[key] for key in allowed_keys if key in value and value[key] is not None}
-    for key in ("modelProfile", "provider", "model", "responseId", "traceId", "failureReason"):
+    solver = {
+        key: value[key]
+        for key in allowed_keys
+        if key in value and value[key] is not None
+    }
+    for key in (
+        "modelProfile",
+        "provider",
+        "model",
+        "responseId",
+        "traceId",
+        "failureReason",
+    ):
         if key in solver and not isinstance(solver[key], str):
             raise ValueError(f"solver.{key} must be a string")
-    if "generatedAt" in solver and not isinstance(solver["generatedAt"], (int, float, str)):
+    if "generatedAt" in solver and not isinstance(
+        solver["generatedAt"], (int, float, str)
+    ):
         raise ValueError("solver.generatedAt must be a number or string")
     return solver or None
 
@@ -288,16 +360,32 @@ def trace_sort_key(run: dict[str, Any]) -> str:
     return str(value)
 
 
-def prune_trace_runs(store: dict[str, Any]) -> None:
+def prune_trace_runs(
+    store: dict[str, Any], pinned_trace_ids: set[str] | None = None
+) -> None:
     runs = store.get("runs", {})
-    if not isinstance(runs, dict) or len(runs) <= TRACE_RUN_LIMIT:
+    if not isinstance(runs, dict):
+        store["runs"] = {}
         return
-    retained = sorted(
+    pinned_trace_ids = pinned_trace_ids or set()
+    sorted_items = sorted(
         runs.items(),
         key=lambda item: trace_sort_key(item[1]) if isinstance(item[1], dict) else "",
         reverse=True,
-    )[:TRACE_RUN_LIMIT]
-    store["runs"] = dict(retained)
+    )
+    unpinned_items = [
+        item for item in sorted_items if item[0] not in pinned_trace_ids
+    ]
+    retained_unpinned_ids = {
+        trace_id
+        for trace_id, _run in unpinned_items[:TRACE_RUN_LIMIT]
+    }
+    retained_ids = pinned_trace_ids | retained_unpinned_ids
+    store["runs"] = dict(
+        (trace_id, run)
+        for trace_id, run in sorted_items
+        if trace_id in retained_ids
+    )
 
 
 def summarize_trace_run(trace_id: str, run: dict[str, Any]) -> dict[str, Any]:
@@ -313,7 +401,9 @@ def summarize_trace_run(trace_id: str, run: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def summarize_record_trace(record: dict[str, Any], trace_store: dict[str, Any]) -> dict[str, Any] | None:
+def summarize_record_trace(
+    record: dict[str, Any], trace_store: dict[str, Any]
+) -> dict[str, Any] | None:
     trace_id = record.get("traceId")
     if not isinstance(trace_id, str) or not trace_id:
         return None
@@ -333,7 +423,9 @@ def summarize_record_trace(record: dict[str, Any], trace_store: dict[str, Any]) 
     }
 
 
-def find_latest_trace_run(store: dict[str, Any], play_data: str, level: str) -> dict[str, Any] | None:
+def find_latest_trace_run(
+    store: dict[str, Any], play_data: str, level: str
+) -> dict[str, Any] | None:
     latest: tuple[str, dict[str, Any]] | None = None
     runs = store.get("runs", {})
     if not isinstance(runs, dict):
@@ -353,6 +445,7 @@ def find_latest_trace_run(store: dict[str, Any], play_data: str, level: str) -> 
 
 def append_trace_step(run_id: str, step_trace: dict[str, Any]) -> dict[str, Any]:
     now = utc_now()
+    pinned_trace_ids = load_pinned_trace_ids()
 
     with _trace_store_lock:
         store = load_trace_store()
@@ -383,7 +476,7 @@ def append_trace_step(run_id: str, step_trace: dict[str, Any]) -> dict[str, Any]
         if run.get("config") is None and step_trace.get("config") is not None:
             run["config"] = step_trace.get("config")
 
-        prune_trace_runs(store)
+        prune_trace_runs(store, pinned_trace_ids)
         store["updatedAt"] = now
         save_trace_store(store)
         return store["runs"][run_id]
@@ -399,6 +492,7 @@ def finalize_trace_run(
     reason: str | None,
     final_snapshot: dict[str, Any] | None,
 ) -> bool:
+    pinned_trace_ids = load_pinned_trace_ids()
     with _trace_store_lock:
         store = load_trace_store()
         run = store["runs"].get(trace_id)
@@ -425,7 +519,7 @@ def finalize_trace_run(
             "finalState": final_snapshot,
         }
         store["updatedAt"] = now
-        prune_trace_runs(store)
+        prune_trace_runs(store, pinned_trace_ids)
         save_trace_store(store)
         return True
 
@@ -520,6 +614,7 @@ def put_recording(play_data: str, level: str):
         "savedAt": now,
         "source": source,
         "result": result,
+        "pinned": False,
         "demo": demo,
     }
     if solver is not None:
@@ -530,6 +625,9 @@ def put_recording(play_data: str, level: str):
     with _store_lock:
         try:
             store = load_store()
+            existing_record = store["records"].get(record_id)
+            if isinstance(existing_record, dict):
+                record["pinned"] = existing_record.get("pinned") is True
             store["version"] = STORE_VERSION
             store["updatedAt"] = now
             store["records"][record_id] = record
@@ -648,9 +746,6 @@ def next_agent_action():
             "traceId": run_id,
             "stepCount": run.get("stepCount"),
             "candidateId": plan.get("candidateId"),
-            "candidate": plan.get("candidate"),
-            "candidates": plan.get("candidates"),
-            "validation": plan.get("validation"),
         }
     )
 
@@ -705,7 +800,7 @@ def delete_recording(play_data: str, level: str):
                 record_key = selected_record_id
                 candidate = records.get(record_key)
                 record = (
-                    records.pop(record_key)
+                    candidate
                     if isinstance(candidate, dict)
                     and str(candidate.get("playData")) == play_data_key
                     and str(candidate.get("level")) == level_key
@@ -714,8 +809,20 @@ def delete_recording(play_data: str, level: str):
             else:
                 record = find_latest_recording(store, play_data_key, level_key)
                 record_key = record.get("id") if isinstance(record, dict) else None
-                if record_key:
-                    record = records.pop(str(record_key), None)
+            if isinstance(record, dict) and record.get("pinned") is True:
+                return (
+                    jsonify(
+                        {
+                            "error": "pinned recording must be unpinned before deletion",
+                            "pinned": True,
+                            "recordId": record.get("id"),
+                            "traceId": record.get("traceId"),
+                        }
+                    ),
+                    409,
+                )
+            if record_key and isinstance(record, dict):
+                record = records.pop(str(record_key), None)
             existed = isinstance(record, dict)
             deleted_trace_id = record.get("traceId") if existed else selected_trace_id
             prune_recordings(store)
