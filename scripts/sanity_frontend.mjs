@@ -418,7 +418,7 @@ assert.equal(
     selectedTraceSummary: null,
     playbackPhase: "inactive",
   }),
-  "[1/1] user | - | ✅ | 0:02 | keys 1",
+  "1/1: user | - | ✅ | 0:02 | keys 1",
 );
 assert.equal(
   recording.buildPlaybackVideoFileName(

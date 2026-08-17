@@ -50,6 +50,10 @@ Confirmed loops remove the exact loop-causing candidate before prompt constructi
 cycle does not suppress `retreat_from_guard`: immediate safety remains authoritative. Conversely,
 a confirmed non-progress route id is eligible for suppression, while any encoded reduction in its
 target distance clears the horizontal loop signal even when safety retreats occurred earlier.
+
+When a vertical-cycle filter suppresses the preferred climb direction, candidate generation also
+offers the opposite ladder direction when it is physically valid and guard-safe. This preserves a
+real recovery choice instead of collapsing the prompt to `emergency_hold`.
 Entering a dig/trap animation wait or bounded emergency hold ends the stale horizontal signal;
 these actions reflect changed environment geometry and must not be removed as the repeated id.
 An in-progress legacy dig is environmental progress, not an idle wait. The hook exposes its
@@ -105,16 +109,29 @@ runner still has a positive ladder `yOffset`, collection first finishes that ver
 In god mode, direct horizontal `god_mode_progress` is a last-resort fallback only. It is not emitted
 when a structured Classic route, same-row collection, ladder alignment, access, or descent candidate
 already exists; chasing an off-row target's x-coordinate must not reverse a valid ladder approach.
+In normal mode, `low_risk_horizontal_progress` provides the same narrowly scoped coverage when no
+structured progress candidate exists, guard risk is below pressure level, and the primary visible
+gold has a physically valid horizontal direction. Its four-tick action is still subject to ordinary
+hole, endpoint, guard-safety, and loop checks.
 Visible row-14 gold uses the reverse fixed descent chain (`x=25` → `x=20` → `x=27`).
 When `(7,12)` remains and the runner is already below it on rows 13–14, the route uses the
 viable `x=27` ladder; `x=4` is a dead end from below. While an explicit Classic route is active,
 conflicting generic ladder-alignment candidates are omitted from model selection.
 The row-6 `x=20` and row-12 `x=27` entries begin on the row below, so they cannot be
 recovered reliably from same-row ladder proximity alone.
+The isolated upper-left gold at `(4,6)` cannot be approached directly from the right side because
+permanent row-6 bricks block the corridor. The Classic route uses the `x=14` ladder upward to row 3,
+crosses to `x=7`, and then descends. Same-row collection candidates are omitted whenever permanent
+terrain blocks the corridor between runner and gold. The `x=14` upward climb and row-3 crossing are
+exclusive over generic descent or ladder realignment so those candidates cannot reverse the detour.
 At the revealed exit, `exit_ladder_route` also bridges a positive `(18,0)` `yOffset` after
 ordinary tile-level upward affordance becomes false.
 
 Scores should not be treated as proof of correctness. If a high-score candidate creates a loop, fix candidate coverage, scoring, or loop filtering rather than assuming the model can infer the correction from text alone.
+
+Candidates with the same normalized first action are deduplicated only when kind and target also
+match. Equivalent duplicates retain merged `intents`, `targets`, and `reasons` metadata; safety,
+progress, or conflicting-target candidates remain separate so semantic choice is not hidden.
 
 ## Necessary And Sufficient Candidates
 The candidate set is not provably complete by inspection. It is an empirical interface that should be validated against Classic level 1 failures.

@@ -10,12 +10,14 @@ const rootDir = path.dirname(scriptsDir);
 const options = parseArgs(process.argv.slice(2));
 const startedServers = [];
 let browser = null;
+let executablePath = null;
+const attempts = [];
 
 try {
   await ensureServer("backend", "http://127.0.0.1:8080/api/health", ["run", "api"]);
   await ensureServer("frontend", options.baseUrl, ["run", "dev", "--", "--host", "127.0.0.1"]);
 
-  const executablePath = resolveBrowserExecutable(options.browserExecutable);
+  executablePath = resolveBrowserExecutable(options.browserExecutable);
   browser = await chromium.launch({
     executablePath,
     headless: !options.headful,
@@ -37,26 +39,39 @@ try {
     process.stdout.write(`${JSON.stringify({ smoke: "ok", runtimeStatus }, null, 2)}\n`);
   }
 
-  const attempts = [];
   for (let index = 0; index < (options.smoke ? 0 : options.runs); index += 1) {
     const startedAt = new Date().toISOString();
     process.stdout.write(`run ${index + 1}/${options.runs} ... `);
-    const result = await page.evaluate(() => window.__lodeRunnerEvaluation.runAttempt());
-    const trace = result.traceId
-      ? await page.evaluate(async (traceId) => {
-          const response = await fetch(`/api/agent/traces/${encodeURIComponent(traceId)}`);
-          if (!response.ok) {
-            throw new Error(`trace request failed: ${response.status}`);
-          }
-          return response.json();
-        }, result.traceId)
-      : null;
+    let result;
+    try {
+      result = await page.evaluate(() => window.__lodeRunnerEvaluation.runAttempt());
+    } catch (error) {
+      // A wrapper reload can destroy Playwright's execution context between
+      // attempts. Reattach to the page and retry that attempt instead of
+      // abandoning the remaining campaign runs.
+      if (!String(error?.message || error).includes("Execution context was destroyed")) {
+        throw error;
+      }
+      await page.goto(url.href, { waitUntil: "domcontentloaded" });
+      await page.waitForFunction(() => window.__lodeRunnerEvaluation?.ready(), null, {
+        timeout: options.startupTimeoutMs,
+      });
+      result = await page.evaluate(() => window.__lodeRunnerEvaluation.runAttempt());
+    }
+    const trace = result.traceId ? await fetchTraceAfterPersistence(page, result.traceId) : null;
     const attempt = summarizeAttempt(index + 1, startedAt, result, trace);
     attempts.push(attempt);
     process.stdout.write(
       `${attempt.result} steps=${attempt.stepCount ?? "-"} ` +
         `time=${attempt.demoTime ?? "-"} reason=${attempt.failureReason ?? "-"}\n`,
     );
+    if (
+      options.target !== null &&
+      attempts.filter((item) => item.result === "success").length >= options.target
+    ) {
+      process.stdout.write(`early stop: reached ${options.target} successful run(s)\n`);
+      break;
+    }
   }
 
   const report = buildReport(options, attempts, executablePath);
@@ -70,11 +85,23 @@ try {
     process.exitCode = 3;
   } else if (report.summary.integrityViolations > 0) {
     process.exitCode = 4;
-  } else if (report.summary.meetsThreshold === false) {
+  } else if (report.summary.meetsTarget === false) {
     process.exitCode = 2;
   }
 } catch (error) {
   console.error(error instanceof Error ? error.stack || error.message : String(error));
+  if (options.output) {
+    const outputPath = path.resolve(rootDir, options.output);
+    const failureReport = {
+      options,
+      executablePath,
+      attempts,
+      error: error instanceof Error ? error.stack || error.message : String(error),
+      completedAt: new Date().toISOString(),
+    };
+    writeFileSync(outputPath, `${JSON.stringify(failureReport, null, 2)}\n`, "utf8");
+    process.stderr.write(`failure report: ${outputPath}\n`);
+  }
   process.exitCode = 1;
 } finally {
   await browser?.close().catch(() => {});
@@ -85,10 +112,25 @@ try {
   }
 }
 
+async function fetchTraceAfterPersistence(page, traceId) {
+  const deadline = Date.now() + 10_000;
+  let lastStatus = "unavailable";
+  while (Date.now() < deadline) {
+    const response = await page.evaluate(async (id) => {
+      const result = await fetch(`/api/agent/traces/${encodeURIComponent(id)}`);
+      return { ok: result.ok, status: result.status, body: result.ok ? await result.json() : null };
+    }, traceId);
+    if (response.ok) return response.body;
+    lastStatus = response.status;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  throw new Error(`trace request failed after persistence wait: ${lastStatus}`);
+}
+
 function parseArgs(args) {
   const result = {
     runs: 10,
-    threshold: null,
+    target: null,
     profile: null,
     baseUrl: "http://127.0.0.1:8283/",
     browserExecutable: process.env.EVAL_BROWSER_EXECUTABLE || null,
@@ -108,7 +150,7 @@ function parseArgs(args) {
       return args[index];
     };
     if (arg === "--runs") result.runs = positiveInteger(next(), "runs", 100);
-    else if (arg === "--threshold") result.threshold = normalizeThreshold(next());
+    else if (arg === "--target") result.target = positiveInteger(next(), "target", 100);
     else if (arg === "--profile") result.profile = nonempty(next(), "profile");
     else if (arg === "--base-url") result.baseUrl = new URL(next()).href;
     else if (arg === "--browser") result.browserExecutable = nonempty(next(), "browser");
@@ -132,15 +174,6 @@ function positiveInteger(value, label, maximum) {
   const number = Number(value);
   if (!Number.isInteger(number) || number < 1 || number > maximum) {
     throw new Error(`${label} must be an integer from 1 to ${maximum}`);
-  }
-  return number;
-}
-
-function normalizeThreshold(value) {
-  let number = Number(value);
-  if (number > 1 && number <= 100) number /= 100;
-  if (!Number.isFinite(number) || number < 0 || number > 1) {
-    throw new Error("threshold must be between 0 and 1, or a percentage from 0 to 100");
   }
   return number;
 }
@@ -300,7 +333,7 @@ function buildReport(config, attempts, executablePath) {
     createdAt: new Date().toISOString(),
     config: {
       runs: config.runs,
-      threshold: config.threshold,
+      target: config.target,
       profile: config.profile,
       baseUrl: config.baseUrl,
       browserExecutable: executablePath,
@@ -310,8 +343,8 @@ function buildReport(config, attempts, executablePath) {
       successes,
       failures,
       successRate,
-      threshold: config.threshold,
-      meetsThreshold: config.threshold === null ? null : successRate >= config.threshold,
+      target: config.target,
+      meetsTarget: config.target === null ? null : successes >= config.target,
       normalModeViolations,
       integrityViolations,
     },
@@ -322,7 +355,7 @@ function buildReport(config, attempts, executablePath) {
 function printHelp() {
   process.stdout.write(`Usage: npm run evaluate -- [options]\n\n`);
   process.stdout.write(`  --runs N                 fresh attempts (default: 10, maximum: 100)\n`);
-  process.stdout.write(`  --threshold RATE         required success rate, e.g. 0.95 or 95\n`);
+  process.stdout.write(`  --target N               stop after N successful runs (maximum 100)\n`);
   process.stdout.write(`  --profile NAME           model profile passed through the browser URL\n`);
   process.stdout.write(`  --browser PATH           Chrome/Chromium executable\n`);
   process.stdout.write(`  --base-url URL           wrapper URL (default: http://127.0.0.1:8283/)\n`);

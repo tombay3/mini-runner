@@ -33,6 +33,14 @@ def build_loop_report(
     repeated_progress = assess_repeated_candidate_progress(recent, repeated_id)
     same_candidate_streak = count_tail_equal(candidate_ids)
     environment_progress = repeated_kind in ENVIRONMENT_PROGRESS_KINDS
+    environment_progress_count = sum(
+        candidate_kind(candidate_id) in ENVIRONMENT_PROGRESS_KINDS
+        for candidate_id in candidate_ids
+    )
+    environment_progress_dominated = bool(
+        environment_progress_count >= 3
+        and environment_progress_count * 2 > len(candidate_ids)
+    )
 
     report = empty_loop_report(
         positions=positions,
@@ -42,6 +50,8 @@ def build_loop_report(
         repeated_progress=repeated_progress,
         same_candidate_streak=same_candidate_streak,
     )
+    if dict_value(analysis.get("activeDig")).get("active"):
+        return report
     if len(positions) < 4:
         return report
 
@@ -54,11 +64,20 @@ def build_loop_report(
     same_tile_streak = count_tail_equal(positions)
     stop_streak = count_tail_equal(key_codes) if key_codes[-1:] == [STOP_KEYCODE] else 0
     recent_horizontal_cycle = detect_recent_horizontal_cycle(positions, key_codes)
+    safety_retreat_count = sum(
+        candidate_kind(candidate_id) == "retreat_from_guard"
+        for candidate_id in candidate_ids
+    )
+    safety_retreat_dominated = bool(
+        safety_retreat_count >= 3
+        and safety_retreat_count * 2 > len(candidate_ids)
+    )
     horizontal_cycle = (
         no_row_change
         and no_gold_change
         and not environment_progress
         and repeated_kind != "retreat_from_guard"
+        and not safety_retreat_dominated
         and not repeated_progress["madeProgress"]
         and not repeated_progress["targetReached"]
         and (
@@ -79,7 +98,10 @@ def build_loop_report(
         and no_row_change
         and repeated_id is not None
         and (
-            not environment_progress
+            (
+                not environment_progress
+                and not environment_progress_dominated
+            )
             or (
                 repeated_kind == "emergency_hold"
                 and same_tile_streak >= 6
@@ -114,6 +136,10 @@ def build_loop_report(
             "xRange": x_range,
             "directionChanges": direction_changes,
             "sameTileStreak": same_tile_streak,
+            "safetyRetreatCount": safety_retreat_count,
+            "safetyRetreatDominated": safety_retreat_dominated,
+            "environmentProgressCount": environment_progress_count,
+            "environmentProgressDominated": environment_progress_dominated,
             "noRowChange": no_row_change,
             "noGoldChange": no_gold_change,
         }
@@ -168,6 +194,24 @@ def candidate_suppression_reason(
     if kind in set(suppress.get("candidateKinds") or []):
         return f"candidate kind {kind} prolongs {loop_report.get('type')}"
     direction = action_direction(candidate)
+    if (
+        loop_report.get("type") == "horizontal_cycle"
+        and kind not in ENVIRONMENT_PROGRESS_KINDS
+        and direction in {"left", "right"}
+    ):
+        target = candidate_target(candidate_id)
+        loop_target = loop_report.get("target") or dict_value(
+            loop_report.get("evidence")
+        ).get("target")
+        if (
+            target is not None
+            and isinstance(loop_target, (list, tuple))
+            and tuple(loop_target) == target
+        ):
+            return (
+                f"same target ({target[0]},{target[1]}) as suppressed "
+                "horizontal_cycle route"
+            )
     if kind == "climb_ladder" and direction in set(suppress.get("directions") or []):
         return f"ladder direction {direction} repeats {loop_report.get('type')}"
     return None
@@ -257,6 +301,9 @@ def detect_vertical_cycle(
         return {"detected": False}
     x_values = {x for x, _y in positions}
     y_values = [y for _x, y in positions]
+    current_y = positions[-1][1]
+    if y_values.count(current_y) < 2:
+        return {"detected": False}
     vertical_actions = [
         (key, candidate_id)
         for key, candidate_id in zip(key_codes, candidate_ids, strict=False)
@@ -284,7 +331,6 @@ def detect_vertical_cycle(
             if candidate_kind(candidate_id) == "climb_ladder"
         }
     )
-    current_y = positions[-1][1]
     target_y = to_int(primary_target.get("y"))
     preferred = "up" if target_y is not None and target_y < current_y else "down" if target_y is not None and target_y > current_y else None
     direction = primary_target.get("direction")
@@ -391,6 +437,8 @@ def candidate_target(candidate_id: str | None) -> tuple[int, int] | None:
         "collect_same_row_gold",
         "descend_route",
         "exit_ladder_route",
+        "god_mode_progress",
+        "low_risk_horizontal_progress",
     }:
         return None
     prefix = f"{kind}_"
@@ -435,6 +483,7 @@ def candidate_kind(candidate_id: str | None) -> str | None:
         "emergency_hold",
         "classic_gold_route",
         "god_mode_progress",
+        "low_risk_horizontal_progress",
     ]
     for kind in known_kinds:
         if candidate_id == kind or candidate_id.startswith(f"{kind}_"):

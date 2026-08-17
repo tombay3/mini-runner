@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import logging
+import time
+from types import SimpleNamespace
 from typing import Any
 
 import aisuite as ai
@@ -34,6 +36,7 @@ LOGGER = get_logger("service")
 class AisuiteAgentClient:
     def __init__(self) -> None:
         self._clients: dict[str, ai.Client] = {}
+        self._openai_clients: dict[str, Any] = {}
 
     def resolve_model_name(self, model: str | None, *, source: str) -> ResolvedAgentModel:
         error_cls = AgentRequestError if source == "request" else AgentConfigError
@@ -79,11 +82,49 @@ class AisuiteAgentClient:
         return resolved
 
     def create_completion(self, model: ResolvedAgentModel, messages: list[dict], **kwargs):
+        if model.profile == "openai":
+            return self._create_openai_reasoning_completion(model, messages)
         client = self._get_client(model.provider_configs)
         return client.chat.completions.create(
             model=model.aisuite_model,
             messages=messages,
             **kwargs,
+        )
+
+    def _create_openai_reasoning_completion(
+        self, model: ResolvedAgentModel, messages: list[dict]
+    ):
+        """Call Responses API so OpenAI reasoning summaries reach debug I/O.
+
+        Chat Completions exposes reasoning token usage for reasoning models, but
+        does not provide a model-written reasoning summary. Responses API does
+        provide optional summaries while keeping the existing candidate parser
+        contract here stable.
+        """
+        import openai
+
+        config = model.provider_configs.get("openai", {})
+        cache_key = json.dumps(config, sort_keys=True)
+        if cache_key not in self._openai_clients:
+            self._openai_clients[cache_key] = openai.OpenAI(**config)
+        response = self._openai_clients[cache_key].responses.create(
+            model=model.model.split(":", 1)[1],
+            input=messages,
+            reasoning={"effort": "low", "summary": "auto"},
+        )
+        reasoning_content = _extract_openai_reasoning_summary(response)
+        if not reasoning_content:
+            reasoning_content = _extract_openai_declared_reasoning(
+                getattr(response, "output_text", "")
+            )
+        message = SimpleNamespace(
+            content=getattr(response, "output_text", "") or "",
+            reasoning_content=reasoning_content,
+        )
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=message)],
+            usage=getattr(response, "usage", None),
+            raw_response=response,
         )
 
     def _get_client(self, provider_configs: dict[str, dict[str, Any]]):
@@ -101,6 +142,36 @@ def get_aisuite_agent_client() -> AisuiteAgentClient:
     if _CLIENT is None:
         _CLIENT = AisuiteAgentClient()
     return _CLIENT
+
+
+def _extract_openai_reasoning_summary(response: Any) -> str:
+    summaries: list[str] = []
+    for item in getattr(response, "output", None) or []:
+        if getattr(item, "type", None) != "reasoning":
+            continue
+        for summary in getattr(item, "summary", None) or []:
+            text = getattr(summary, "text", None)
+            if text:
+                summaries.append(str(text))
+    return "\n".join(summaries)
+
+
+def _extract_openai_declared_reasoning(content: Any) -> str:
+    if not isinstance(content, str) or not content.strip():
+        return ""
+    text = content.strip()
+    if text.startswith("```"):
+        text = text.strip("`")
+        lines = text.splitlines()
+        if lines and lines[0].lower().startswith("json"):
+            lines = lines[1:]
+        text = "\n".join(lines).strip()
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return ""
+    reasoning = payload.get("reasoning") if isinstance(payload, dict) else None
+    return reasoning.strip() if isinstance(reasoning, str) else ""
 
 
 def validate_agent_request(payload: Any) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
@@ -189,6 +260,8 @@ def run_candidate_selection(
     options: dict[str, Any],
     public_config: dict[str, Any],
 ) -> dict[str, Any]:
+    selection_started = time.monotonic()
+    log_event(LOGGER, logging.DEBUG, "candidate_selection_start", run_id=options.get("runId"))
     backend_config = public_config["backend"]
     candidates, analysis = generate_candidates(
         snapshot,
@@ -207,6 +280,13 @@ def run_candidate_selection(
         analysis,
         options,
         public_config,
+    )
+    log_event(
+        LOGGER,
+        logging.DEBUG,
+        "candidate_selection_model_returned",
+        run_id=options.get("runId"),
+        elapsed_ms=round((time.monotonic() - selection_started) * 1000),
     )
     selected, validation = validate_or_fallback_candidate(result, candidates, analysis)
     loop_monitor = build_loop_monitor(analysis)
@@ -246,13 +326,14 @@ def run_model_turn(
         snapshot,
         candidates=candidates,
         analysis=analysis,
+        include_reasoning=model.profile == "openai",
     )
     messages = [
         {
             "role": "system",
             "content": (
                 "You are a Lode Runner strategic selector. The backend supplies legal candidates. "
-                "Choose one candidateId and return JSON only."
+                "Choose one candidateId and return JSON only, including a brief rationale when requested."
             ),
         },
         {
@@ -261,11 +342,20 @@ def run_model_turn(
         },
     ]
 
+    completion_started = time.monotonic()
+    log_event(LOGGER, logging.DEBUG, "aisuite_completion_start", model=model.model)
     try:
         response = client.create_completion(
             model,
             messages,
             temperature=public_config["backend"]["temperature"],
+        )
+        log_event(
+            LOGGER,
+            logging.DEBUG,
+            "aisuite_completion_returned",
+            model=model.model,
+            elapsed_ms=round((time.monotonic() - completion_started) * 1000),
         )
     except ValueError as exc:
         raise AgentConfigError(str(exc)) from exc

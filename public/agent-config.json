@@ -10,6 +10,6 @@
   "backend": {
     "candidateLimit": 7,
     "maxActionTicks": 20,
-    "temperature": 0.5
+    "temperature": 1
   }
 }

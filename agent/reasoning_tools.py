@@ -957,8 +957,11 @@ def assess_guard_risk(snapshot: dict[str, Any]) -> dict[str, Any]:
             "hasGold": _to_int(guard.get("hasGold")) or 0,
         }
         guard_info["closing"] = (
-            (guard_info["relativeX"] == "left" and guard_info["motion"] == "right")
-            or (guard_info["relativeX"] == "right" and guard_info["motion"] == "left")
+            guard_info["relativeY"] == "same"
+            and (
+                (guard_info["relativeX"] == "left" and guard_info["motion"] == "right")
+                or (guard_info["relativeX"] == "right" and guard_info["motion"] == "left")
+            )
         )
         nearby_guards.append(guard_info)
     risk_order = {"critical": 4, "high": 3, "medium": 2, "low": 1}

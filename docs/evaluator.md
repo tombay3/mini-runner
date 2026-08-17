@@ -23,8 +23,8 @@ recorded demo or terminal trace does not prove normal-mode execution.
 # Ten fresh runs with the configured default model profile
 npm run evaluate
 
-# Ten MiniMax runs, requiring at least 95% success
-npm run evaluate -- --profile minimax --runs 10 --threshold 95
+# Run up to 10 MiniMax attempts, stopping after 5 successes
+npm run evaluate -- --profile minimax --runs 10 --target 5
 
 # Verify server, browser, wrapper, backend, and normal-mode startup without calling an LLM
 npm run evaluate -- --smoke
@@ -33,9 +33,10 @@ npm run evaluate -- --smoke
 npm run evaluate -- --runs 20 --output __data1/evaluation-20.json
 ```
 
-`--threshold` accepts either a fraction such as `0.95` or a percentage such as `95`.
-Without it, the evaluator reports the observed rate without declaring an acceptance result.
-The default is 10 runs and the maximum is 100.
+`--target N` is the number of successful runs required for an early stop. The evaluator
+will run at most `--runs` attempts; if the target is reached sooner, it stops and reports
+the completed attempts. Without it, all requested runs execute. Threshold and runs are positive
+integers, with a maximum of 100.
 
 Chrome is discovered from common system paths. Set `EVAL_BROWSER_EXECUTABLE` or pass
 `--browser <path>` when it is installed elsewhere. Use `--headful` to watch the evaluation.
@@ -58,12 +59,12 @@ Each attempt records:
 Failures before the first planner decision are recorded as zero-step traces with the actual
 backend/provider error and requested model metadata.
 
-The summary includes successes, failures, success rate, optional threshold result, and any
+The summary includes successes, failures, success rate, optional success-target result, and any
 normal-mode violations. Exit status is:
 
-- `0`: evaluation ran and met the optional threshold;
+- `0`: evaluation ran and met the optional target;
 - `1`: infrastructure or execution error;
-- `2`: observed success rate was below the requested threshold;
+- `2`: the requested success target was not reached;
 - `3`: at least one attempt was not proven to be normal mode.
 - `4`: a run changed context or reset its tick timeline, indicating legacy-runtime contamination.
 

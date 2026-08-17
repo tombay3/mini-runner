@@ -163,6 +163,8 @@ with st.expander(f"📋 Section 1 — Run Overview{_inspect_label}", expanded=Tr
         ]
         cols_present = [c for c in display_cols if c in overview_runs_df.columns]
         view = overview_runs_df[cols_present].copy()
+        # Display-only row number, kept separate from persisted trace IDs.
+        view.insert(0, "#", range(1, len(view) + 1))
         if "traceId_short" in view.columns and "source" in overview_runs_df.columns:
             view.loc[
                 overview_runs_df["source"].eq("user"), "traceId_short"
@@ -206,6 +208,7 @@ with st.expander(f"📋 Section 1 — Run Overview{_inspect_label}", expanded=Tr
             hide_index=True,
             height=header_h + row_h * len(view),
             column_config={
+                "#": st.column_config.NumberColumn("#", width=30),
                 "▶": st.column_config.CheckboxColumn("▶", width=30),
                 "reason": st.column_config.TextColumn("reason", width=200),
                 "★": st.column_config.CheckboxColumn("★", width=30),
@@ -296,9 +299,11 @@ with st.expander(_s2_label, expanded=False):
                 candidate_replaced = bool(
                     step_row.get("event_candidateReplaced", False)
                 )
-                suppressed = str(
-                    _display_scalar(step_row.get("loop_suppressedIds"), "")
+                suppressed_candidates = step_row.get(
+                    "loop_suppressedCandidates", []
                 )
+                if not isinstance(suppressed_candidates, list):
+                    suppressed_candidates = []
                 candidate_suppressed = bool(
                     step_row.get("event_candidateSuppressed", False)
                 )
@@ -353,8 +358,28 @@ with st.expander(_s2_label, expanded=False):
                             replacement += f" — {fallback_reason}"
                         st.markdown(replacement)
 
-                    if suppressed:
-                        st.markdown(f"**Suppressed:** `{suppressed}`")
+                    suppressed_lines = []
+                    for suppressed_candidate in suppressed_candidates:
+                        if not isinstance(suppressed_candidate, dict):
+                            continue
+                        suppressed_id = str(suppressed_candidate.get("id") or "")
+                        if not suppressed_id:
+                            continue
+                        suppressed_reason = str(
+                            suppressed_candidate.get("reason") or ""
+                        ).strip()
+                        detail = f"`{suppressed_id}`"
+                        if suppressed_reason:
+                            detail += f" — {suppressed_reason}"
+                        suppressed_lines.append(detail)
+
+                    if len(suppressed_lines) == 1:
+                        st.markdown(f"**Suppressed:** {suppressed_lines[0]}")
+                    elif suppressed_lines:
+                        st.markdown(
+                            "**Suppressed:**\n\n"
+                            + "\n".join(f"- {line}" for line in suppressed_lines)
+                        )
 
                     before_pos = f"({rx}, {ry})"
                     after_x = _display_scalar(step_row.get("after_runner_x"), None)

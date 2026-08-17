@@ -151,10 +151,11 @@ Candidate kinds:
 - `route_access_dig`: dig a legal access hole toward lower off-row gold.
 - `route_access_follow`: move into an already opened access route.
 - `wait_for_guard_clearance`: pause briefly when a guard can intercept an opened access drop, then reassess before entering.
-- `wait_for_floor_refill`: advance a required dug brick's legacy refill timer while holding on its safe side; the candidate id includes refill frame/time so timed environmental progress is not mistaken for a stationary repeat. During exit routing, direction comes from the fixed Classic row waypoint rather than a gold target.
+- `wait_for_floor_refill`: advance a required dug brick's legacy refill timer while holding on its safe side; the candidate id includes refill frame/time so timed environmental progress is not mistaken for a stationary repeat. During exit routing, direction comes from the fixed Classic row waypoint rather than a gold target. A guard-clear hole exposed as `route_access_follow` is an intentional entry and does not also emit a refill wait for that same cell.
 - `wait_for_dig_completion`: advance an already-started legacy dig in two-tick increments; its frame-signatured id bridges the animation interval before the target appears in `openHoles`. While `activeDig` is present, this is the exclusive candidate so movement cannot cross a hole that opens mid-action.
 - `wait_for_trap_resolution`: hold when an existing nearby open hole already separates the same-row pressure guard; poll at eight ticks when far, four at medium range, and two during immediate falling geometry so safety remains responsive without exhausting the decision cap. The backend makes this state exclusive so model selection cannot abandon a safe established trap for a route-changing action. A same-row guard beginning `up`/`climb_out` no longer counts as separated, which restores physical escape candidates before contact.
 - `classic_gold_route`: use the fixed upper, lower, or left-side Classic ladder waypoints when nearest-ladder greed is insufficient.
+- The `(4,6)` upper-left gold uses the `x=14` ladder upward to row 3 and crosses to `x=7`; permanent row-6 bricks suppress misleading direct same-row collection from the right compartment.
   On row 1 it also returns to the `x=7` descent entry when the only remaining gold is guard-carried,
   avoiding targetless fallback stops while retaining the rule that carriers are not direct targets.
 
@@ -173,6 +174,7 @@ After `goldComplete`, deterministic `exit_ladder_route` climbs use the legacy 20
 - When one adjacent floor is already an empty open hole and a cross-row guard is not closing, `evade_open_hole` takes a short step onto the solid side instead of digging a second hole and boxing the runner between two traps.
 - That solid-side escape is suppressed when it points toward a nearby guard descending onto the runner's row. If the runner is centered and the landing-side brick is engine-diggable, a proactive `defensive_dig` trap is offered before same-row contact; off-center dig commands are rejected because the legacy engine cannot start them reliably.
 - `god_mode_progress`: last-resort direct horizontal progress in god mode, emitted only when structured Classic, collection, ladder, access, and descent generation produces no candidate.
+- `low_risk_horizontal_progress`: bounded non-god horizontal progress toward the primary visible gold when guard risk is below pressure level and structured Classic, collection, ladder, access, and descent generation produces no candidate.
 - `exit_ladder_route`: route to or climb the revealed `S` exit ladder after `goldComplete=true`.
 - `wait_or_stop`: low-score fallback when no better progress/safety candidate exists.
 - `emergency_hold`: final two-tick completeness fallback used only when every physical action and ordinary wait has been filtered; it prevents a structural empty-candidate failure while the legacy engine resolves contact.
@@ -180,7 +182,7 @@ After `goldComplete`, deterministic `exit_ladder_route` climbs use the legacy 20
 Generation rules:
 
 - `add(...)` normalizes each `firstAction`, clamps ticks to `public/agent-config.json` `backend.maxActionTicks`, rejects physically invalid or guard-unsafe first actions, deduplicates ids, and removes actions identified by the active loop report.
-- In normal mode, candidates toward a same-row medium/high/critical guard are suppressed. Cross-row directional blocking begins at high risk; medium cross-row horizontal progress remains available but is capped at four ticks for quick reassessment. Dig and vertical escape durations are unchanged.
+- In normal mode, candidates toward a same-row medium/high/critical guard are suppressed. Cross-row directional blocking and vertical retreats begin at high risk; medium cross-row progress remains available and horizontal actions are capped at four ticks for quick reassessment. Dig and vertical escape durations are unchanged.
 - An adjacent same-row guard moving `up` or `climb_out` also blocks upward movement: following it into its escape lane can recreate immediate contact on the row above. Continuing down remains eligible when terrain permits.
 - When a pressure guard is vertically aligned on another row, the generator offers short left/right retreats wherever terrain permits. `emergency_hold` is reserved for a genuinely boxed state and keys its id to guard geometry.
 - `pressureGuard` is the highest-priority mobile threat used for candidate safety. Every compact guard uses the same relative-position schema. A guard in `in_hole` state is low immediate pressure until it begins climbing out.
@@ -221,14 +223,56 @@ Required model output:
 
 Prompt sections:
 
-- compact state summary;
-- primary progress target;
-- candidate list;
+- durable gameplay rules in prose;
+- one valid JSON decision context containing compact state and candidates;
 - strict JSON output contract.
 
-The state summary includes context, runner state, remaining gold, the primary target, compact
-guard risk, and loop status. Each eligible choice exposes only id, kind, score, optional target,
-and the backend action reason. Loop-causing actions are removed before prompt construction.
+The JSON state includes context, runner state, remaining gold, the primary target, and loop status.
+It also exposes three compact decision groups: threat risk and guard geometry, readable legal
+directions plus nearby open-hole context, and structured ladder/route-access state. All nearby
+guards are included, but sub-tile guard offsets and hole animation counters remain backend-only.
+Null and empty values are omitted.
+
+Representative decision-context shape:
+
+```json
+{
+  "state": {
+    "game": {"playData": 1, "level": 1, "gameState": "running", "godMode": false},
+    "runner": {"x": 21, "y": 14, "action": "right", "xOffset": 0, "yOffset": 0},
+    "gold": {"complete": false, "remaining": 4, "visible": [{"x": 24, "y": 12}]},
+    "primaryProgressTarget": {"direction": "right", "distance": 5, "sameRow": false},
+    "threat": {"risk": "low", "pressureGuard": {}, "nearbyGuards": []},
+    "movement": {"legalDirections": ["left", "right"], "openHoles": {}},
+    "route": {"ladder": {}, "access": {}},
+    "loop": {"active": false, "suppressedCount": 0}
+  },
+  "candidates": [
+    {
+      "id": "align_ladder_27_14_right",
+      "kind": "align_ladder",
+      "score": 93,
+      "action": {"name": "right", "ticks": 8},
+      "intents": ["align_ladder"],
+      "targets": [{"tile": "H", "x": 27, "y": 14}],
+      "reasons": ["visible ladder is 6 tiles to the right"]
+    }
+  ]
+}
+```
+
+The decision context provides:
+
+- game, runner, gold, and primary-target state;
+- aggregate threat risk, pressure guard, and nearby guard geometry;
+- legal movement directions and nearby open-hole context;
+- ladder and route-access state;
+- loop activity and suppression count;
+- candidate id, kind, score, action, intent, target, and reason metadata.
+
+Each eligible choice exposes id, kind, score, optional target, readable action name and ticks, and
+the merged intents, targets, and concise reasons retained during semantic deduplication. Numeric
+legacy key codes remain backend-only. Loop-causing actions are removed before prompt construction.
 
 The prompt does not ask the model to parse the full board `terrainGrid` or invent raw key events during normal runtime. The board has already been reduced into structured state and candidates.
 
@@ -247,12 +291,21 @@ There are only three loop types:
   suppresses the progress-climb direction that reverses back into the same ladder state, including
   when the remaining gold is guard-carried and no visible primary target exists.
 
+The current runner row must recur in the recent window; a recovery action that exits the oscillation
+onto a new row clears the stale vertical-loop signal on the next decision.
+Likewise, a transition after a window dominated by trap/dig/floor waits is not treated as a new
+stationary loop; those waits are environmental progress.
+
 Repeated macro movement is not a loop while its encoded target distance decreases, and reaching
 the target clears the signal. This progress rule also applies while route movement alternates with
 guard-driven horizontal retreats. A repeated `retreat_from_guard` tail is classified as safety
 movement rather than a hard horizontal loop. Dynamic waits and safety retreats are environment-
 progress kinds; loop filtering may remove a confirmed non-progress route id but never removes a
-safety retreat. Entering a dig/trap animation wait or bounded emergency hold also clears a stale
+safety retreat. A recent window dominated by safety retreats remains safety movement even when its
+last action changes to a route or dig candidate. A horizontal-cycle suppression also removes non-safety route aliases that encode
+the same target and direction under another candidate kind. Direct `god_mode_progress` and
+`low_risk_horizontal_progress` ids expose their encoded target to the same progress measurement.
+Entering a dig/trap animation wait or bounded emergency hold also clears a stale
 horizontal-cycle signal so the filter cannot suppress the only safe action after geometry changes.
 An emergency hold does not clear an already alternating same-tile `wait_or_stop` stall; that pattern
 remains a `stationary_repeat` until real movement or an environment change occurs.
@@ -268,7 +321,7 @@ Trace integration:
 - `step.state` mirrors the prompt's current-state facts for playback/debug alignment.
   - `gameState`, `tick`, `godMode`
   - compact `runner`, `gold`, `primaryProgressTarget`, and `guardRisk`
-  - movement booleans only, not movement target/details
+  - movement booleans and nearby open-hole summaries
   - ladder detail string and route-access summary
 
 - `step.loopMonitor` stores the compact loop report, evidence, and suppressed candidate summaries.

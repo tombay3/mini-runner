@@ -44,6 +44,7 @@ PROSPECTIVE_HORIZONTAL_KINDS = {
     "classic_gold_route",
     "collect_same_row_gold",
     "exit_ladder_route",
+    "low_risk_horizontal_progress",
     "retreat_from_guard",
 }
 
@@ -91,6 +92,15 @@ CLASSIC_LEFT_GOLD_ROW_WAYPOINTS = {
     9: 20,
     10: 20,
     11: 20,
+}
+
+CLASSIC_UPPER_LEFT_GOLD_ROW_WAYPOINTS = {
+    1: 7,
+    2: 7,
+    3: 7,
+    4: 14,
+    5: 14,
+    6: 14,
 }
 
 
@@ -207,14 +217,26 @@ def generate_candidates(
             "score": score,
             "target": target,
             "firstAction": action,
+            "intents": [kind],
+            "targets": [target] if target else [],
+            "reasons": [reason],
         }
         signature = (action["keyCode"], action["ticks"])
         for index, existing in enumerate(candidates):
             existing_action = existing["firstAction"]
             if signature != (existing_action["keyCode"], existing_action["ticks"]):
                 continue
+            if not candidates_semantically_mergeable(existing, next_candidate):
+                continue
+            merged = merge_candidate_metadata(existing, next_candidate)
             if (-score, cid) < (-int(existing["score"]), str(existing["id"])):
-                candidates[index] = next_candidate
+                candidates[index] = {**merged, **next_candidate, **{
+                    "intents": merged["intents"],
+                    "targets": merged["targets"],
+                    "reasons": merged["reasons"],
+                }}
+            else:
+                candidates[index] = merged
             return
         candidates.append(next_candidate)
 
@@ -255,13 +277,44 @@ def generate_candidates(
             target={"x": runner_x, "y": runner_y, "tile": "S" if ladder.get("onExitLadder") else "H"},
             reason=ladder_reason(ladder, direction, target),
         )
+        # A vertical-cycle filter can suppress the preferred climb direction.
+        # Keep one physically valid opposite exit available so filtering does
+        # not collapse an otherwise traversable ladder state to emergency_hold.
+        loop_vertical = loop_report.get("type") == "vertical_cycle"
+        blocked_directions = set(
+            _dict(loop_report.get("suppress")).get("directions") or []
+        )
+        alternate = "down" if direction == "up" else "up"
+        if (
+            loop_vertical
+            and direction in blocked_directions
+            and alternate not in blocked_directions
+            and movement.get("canMoveDown" if alternate == "down" else "canMoveUp")
+        ):
+            add(
+                kind="climb_ladder",
+                key_code=DOWN_KEYCODE if alternate == "down" else UP_KEYCODE,
+                ticks=6,
+                score=112,
+                target={"x": runner_x, "y": runner_y, "tile": "H"},
+                reason=(
+                    f"vertical-cycle recovery: use the opposite ladder direction ({alternate})"
+                ),
+                candidate_id=f"climb_ladder_{runner_x}_{runner_y}_{alternate}",
+            )
+        if classic_upper_left_ladder_detour_active(analysis):
+            candidates.sort(key=lambda item: (-int(item["score"]), item["id"]))
+            return candidates[:limit], analysis
 
     if not gold_complete:
         add_classic_gold_route_candidate(add, analysis)
         classic_route_active = any(
             candidate.get("kind") == "classic_gold_route" for candidate in candidates
         )
-        add_gold_candidates(add, analysis, god_mode)
+        if classic_route_active and classic_upper_left_detour(analysis):
+            candidates.sort(key=lambda item: (-int(item["score"]), item["id"]))
+            return candidates[:limit], analysis
+        add_gold_candidates(add, analysis, god_mode, snapshot)
         if not classic_route_active:
             add_ladder_alignment_candidates(add, analysis, god_mode)
         add_route_access_candidate(add, route_access)
@@ -282,6 +335,85 @@ def generate_candidates(
 
     candidates.sort(key=lambda item: (-int(item["score"]), item["id"]))
     return candidates[:limit], analysis
+
+
+def low_risk_expansion_enabled() -> bool:
+    return os.environ.get("AGENT_CANDIDATE_MODE", "baseline").strip().lower() == "expanded"
+
+
+def _eligible_for_low_risk_expansion(analysis: dict[str, Any]) -> bool:
+    risk = _dict(analysis.get("risk"))
+    loop_report = _dict(analysis.get("loopReport"))
+    return (
+        not analysis.get("godMode")
+        and not analysis.get("goldComplete")
+        and not _dict(analysis.get("activeDig")).get("active")
+        and not loop_report.get("active")
+        and risk.get("risk") not in GUARD_PRESSURE_RISKS
+    )
+
+
+def add_low_risk_progress_alternatives(add, analysis: dict[str, Any], snapshot) -> None:
+    """Offer bounded route alternatives only when ordinary movement is low-risk."""
+    movement = _dict(analysis.get("movement"))
+    seen_targets: set[tuple[int, int, str]] = set()
+    for gold in analysis.get("nearestGold", []):
+        if gold.get("source") == "guard" or not gold.get("sameRow"):
+            continue
+        direction = gold.get("direction")
+        if direction not in {"left", "right"}:
+            continue
+        target = (_to_int(gold.get("x")), _to_int(gold.get("y")), direction)
+        if target in seen_targets or None in target[:2]:
+            continue
+        seen_targets.add(target)
+        if not same_row_terrain_path_clear(snapshot, gold):
+            continue
+        if not movement.get("canMoveLeft" if direction == "left" else "canMoveRight"):
+            continue
+        key_code = LEFT_KEYCODE if direction == "left" else RIGHT_KEYCODE
+        distance = max(1, _to_int(gold.get("distance")) or 1)
+        for ticks in (2, 4, 6):
+            if ticks >= distance * LEGACY_SUBTILE_STEP:
+                continue
+            add(
+                kind="low_risk_progress_option",
+                key_code=key_code,
+                ticks=ticks,
+                score=88 - ticks * 2,
+                target={"x": target[0], "y": target[1], "tile": "$"},
+                reason=(
+                    f"low-risk bounded progress option: move {direction} {ticks} ticks "
+                    f"toward gold at ({target[0]},{target[1]}) and reassess"
+                ),
+                candidate_id=(
+                    f"low_risk_progress_option_{target[0]}_{target[1]}_"
+                    f"{direction}_{ticks}ticks"
+                ),
+            )
+
+
+def candidates_semantically_mergeable(
+    existing: dict[str, Any], incoming: dict[str, Any]
+) -> bool:
+    """Only merge duplicate actions when their model-facing intent is equivalent."""
+    return (
+        existing.get("kind") == incoming.get("kind")
+        and existing.get("target") == incoming.get("target")
+    )
+
+
+def merge_candidate_metadata(
+    existing: dict[str, Any], incoming: dict[str, Any]
+) -> dict[str, Any]:
+    merged = dict(existing)
+    for field in ("intents", "targets", "reasons"):
+        values = list(existing.get(field) or [])
+        for value in incoming.get(field) or []:
+            if value not in values:
+                values.append(value)
+        merged[field] = values
+    return merged
 
 
 def add_exit_candidates(add, analysis: dict[str, Any], movement: dict[str, Any]) -> None:
@@ -410,6 +542,10 @@ def add_classic_gold_route_candidate(add, analysis: dict[str, Any]) -> None:
         waypoint_x = CLASSIC_LEFT_GOLD_ROW_WAYPOINTS.get(runner_y)
         route_reason = "left-side gold at (7,12)"
         score = 132
+    elif target_x == 4 and target_y == 6:
+        waypoint_x = CLASSIC_UPPER_LEFT_GOLD_ROW_WAYPOINTS.get(runner_y)
+        route_reason = "upper-left gold at (4,6)"
+        score = 132
     else:
         return
     if waypoint_x is None or runner_x == waypoint_x:
@@ -425,6 +561,23 @@ def add_classic_gold_route_candidate(add, analysis: dict[str, Any]) -> None:
             f"Classic level-1 {route_reason} is reached through waypoint x={waypoint_x} "
             f"from row {runner_y}"
         ),
+    )
+
+
+def classic_upper_left_detour(analysis: dict[str, Any]) -> bool:
+    target = _dict(analysis.get("primaryProgressTarget"))
+    return _to_int(target.get("x")) == 4 and _to_int(target.get("y")) == 6
+
+
+def classic_upper_left_ladder_detour_active(analysis: dict[str, Any]) -> bool:
+    runner = _dict(analysis.get("runner"))
+    runner_x = _to_int(runner.get("x"))
+    runner_y = _to_int(runner.get("y"))
+    return bool(
+        classic_upper_left_detour(analysis)
+        and runner_x == 14
+        and runner_y is not None
+        and 4 <= runner_y <= 6
     )
 
 
@@ -476,6 +629,12 @@ def add_non_god_escape_candidates(
     guard_x = _to_int(guard.get("x"))
     guard_distance = _to_int(guard.get("distance"))
     guard_motion = str(guard.get("motion") or "unknown")
+    # Horizontal side retreat is only justified when the pressure guard is on
+    # the runner's row.  A high/critical guard above or below may still need
+    # the dedicated hole, vertical, or defensive candidates below, but must
+    # not masquerade as a same-row guard and suppress ordinary progress.
+    side_retreat_pressure = guard.get("relativeY") == "same"
+    vertical_retreat_pressure = side_retreat_pressure
     decisive_defensive_trap = bool(
         guard_risk == "high"
         and closing
@@ -593,7 +752,11 @@ def add_non_god_escape_candidates(
                     target={"x": hole.get("x"), "y": hole.get("y"), "tile": "open_hole"},
                     reason=f"{guard_risk} guard pressure leaves an adjacent open escape hole to the {direction}",
                 )
-    if movement.get("canMoveUp") and not decisive_defensive_trap:
+    if (
+        vertical_retreat_pressure
+        and movement.get("canMoveUp")
+        and not decisive_defensive_trap
+    ):
         add(
             kind="retreat_from_guard",
             key_code=UP_KEYCODE,
@@ -602,7 +765,8 @@ def add_non_god_escape_candidates(
             reason="non-god-mode same-row guard pressure is active and up is valid",
         )
     if (
-        movement.get("canMoveDown")
+        vertical_retreat_pressure
+        and movement.get("canMoveDown")
         and not edge_defensive_trap
         and not decisive_defensive_trap
     ):
@@ -661,7 +825,11 @@ def add_non_god_escape_candidates(
         )
     if decisive_defensive_trap:
         return
-    if side == "left" and movement.get("canMoveRight"):
+    if (
+        side_retreat_pressure
+        and side == "left"
+        and movement.get("canMoveRight")
+    ):
         add(
             kind="retreat_from_guard",
             key_code=RIGHT_KEYCODE,
@@ -669,7 +837,11 @@ def add_non_god_escape_candidates(
             score=108,
             reason=_guard_reposition_reason("left", "right", closing),
         )
-    if side == "right" and movement.get("canMoveLeft"):
+    if (
+        side_retreat_pressure
+        and side == "right"
+        and movement.get("canMoveLeft")
+    ):
         add(
             kind="retreat_from_guard",
             key_code=LEFT_KEYCODE,
@@ -702,7 +874,12 @@ def _guard_reposition_reason(guard_side: str, move_direction: str, closing: bool
     )
 
 
-def add_gold_candidates(add, analysis: dict[str, Any], god_mode: bool) -> None:
+def add_gold_candidates(
+    add,
+    analysis: dict[str, Any],
+    god_mode: bool,
+    snapshot: dict[str, Any],
+) -> None:
     movement = analysis["movement"]
     for gold in analysis["nearestGold"]:
         if gold.get("source") == "guard":
@@ -765,6 +942,8 @@ def add_gold_candidates(add, analysis: dict[str, Any], god_mode: bool) -> None:
             continue
         if direction not in {"left", "right"}:
             continue
+        if not same_row_terrain_path_clear(snapshot, gold):
+            continue
         key_code = LEFT_KEYCODE if direction == "left" else RIGHT_KEYCODE
         if not movement.get("canMoveLeft" if direction == "left" else "canMoveRight"):
             continue
@@ -776,6 +955,31 @@ def add_gold_candidates(add, analysis: dict[str, Any], god_mode: bool) -> None:
             target={"x": gold["x"], "y": gold["y"], "tile": "$"},
             reason=f"same-row gold is {gold['distance']} tiles to the {direction}",
         )
+
+
+def same_row_terrain_path_clear(
+    snapshot: dict[str, Any], target: dict[str, Any]
+) -> bool:
+    runner = _dict(snapshot.get("runner"))
+    runner_x = _to_int(runner.get("x"))
+    runner_y = _to_int(runner.get("y"))
+    target_x = _to_int(target.get("x"))
+    target_y = _to_int(target.get("y"))
+    rows = snapshot.get("terrainGrid")
+    if (
+        runner_x is None
+        or runner_y is None
+        or target_x is None
+        or target_y != runner_y
+        or not isinstance(rows, list)
+        or not (0 <= runner_y < len(rows))
+    ):
+        return True
+    row = rows[runner_y]
+    if not isinstance(row, str):
+        return True
+    start, end = sorted((runner_x, target_x))
+    return all(x < len(row) and row[x] not in {"#", "@"} for x in range(start + 1, end))
 
 
 def add_ladder_alignment_candidates(add, analysis: dict[str, Any], god_mode: bool) -> None:
@@ -982,6 +1186,14 @@ def add_floor_refill_wait_candidate(add, analysis: dict[str, Any]) -> None:
     hole = _dict(detail.get("openHole"))
     if _to_int(hole.get("distance")) != 1 or hole.get("occupiedByTrappedGuard"):
         return
+    route_access = _dict(analysis.get("routeAccess"))
+    opened_access_cell = _dict(route_access.get("openedAccessCell"))
+    if (
+        route_access.get("followAvailable")
+        and _to_int(opened_access_cell.get("x")) == _to_int(hole.get("x"))
+        and _to_int(opened_access_cell.get("y")) == _to_int(hole.get("y"))
+    ):
+        return
     signature = "_".join(
         str(hole.get(field, "x")) for field in ("x", "y", "frameIndex", "frameTime")
     )
@@ -1069,6 +1281,27 @@ def add_god_mode_progress_candidate(add, analysis: dict[str, Any]) -> None:
         return
 
 
+def add_low_risk_horizontal_progress_candidate(add, analysis: dict[str, Any]) -> None:
+    target = _dict(analysis.get("primaryProgressTarget"))
+    direction = target.get("direction")
+    if direction not in {"left", "right"}:
+        return
+    movement = _dict(analysis.get("movement"))
+    if not movement.get("canMoveLeft" if direction == "left" else "canMoveRight"):
+        return
+    add(
+        kind="low_risk_horizontal_progress",
+        key_code=LEFT_KEYCODE if direction == "left" else RIGHT_KEYCODE,
+        ticks=4,
+        score=70,
+        target={"x": target.get("x"), "y": target.get("y"), "tile": target.get("tile", "$")},
+        reason=(
+            f"no structured route is available under low guard risk; move {direction} "
+            "briefly toward the remaining gold and reassess"
+        ),
+    )
+
+
 def add_wait_candidate(add) -> None:
     add(
         kind="wait_or_stop",
@@ -1102,6 +1335,7 @@ def add_emergency_hold_candidate(add, risk: dict[str, Any]) -> None:
 
 
 def choose_ladder_direction(snapshot: dict[str, Any], analysis: dict[str, Any]) -> str:
+    runner_x = _to_int(analysis["runner"].get("x"))
     runner_y = _to_int(analysis["runner"].get("y")) or 0
     if bool(analysis["goldComplete"]):
         return "up"
@@ -1109,11 +1343,20 @@ def choose_ladder_direction(snapshot: dict[str, Any], analysis: dict[str, Any]) 
     if (
         gold.get("carriedByGuards")
         and not gold.get("visiblePositions")
+        and runner_x == 7
         and _dict(analysis.get("movement")).get("canMoveDown")
     ):
         return "down"
     target = _dict(analysis.get("primaryProgressTarget"))
     target_y = _to_int(target.get("y"))
+    if (
+        _to_int(target.get("x")) == 4
+        and target_y == 6
+        and runner_x == 14
+        and 4 <= runner_y <= 6
+        and _dict(analysis.get("movement")).get("canMoveUp")
+    ):
+        return "up"
     if target_y is not None:
         if target_y < runner_y:
             return "up"

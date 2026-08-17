@@ -13,15 +13,23 @@ import app as app_module  # noqa: E402
 from agent import AgentRequestError, validate_agent_request  # noqa: E402
 from agent.candidates import (  # noqa: E402
     apply_prospective_horizontal_endpoint_safety,
+    candidates_semantically_mergeable,
+    choose_ladder_direction,
     generate_candidates,
     is_action_guard_safe,
     ladder_alignment_score,
     limit_horizontal_ticks_under_guard_pressure,
+    merge_candidate_metadata,
 )
-from agent.prompt import format_state_summary  # noqa: E402
+from agent.prompt import format_decision_context, format_state_summary  # noqa: E402
 from agent.reasoning_tools import assess_guard_risk, get_movement_affordance  # noqa: E402
 from agent.service import validate_or_fallback_candidate  # noqa: E402
-from agent.loop_tools import build_loop_report, candidate_suppression_reason  # noqa: E402
+from agent.loop_tools import (  # noqa: E402
+    build_loop_report,
+    candidate_kind,
+    candidate_suppression_reason,
+    candidate_target,
+)
 from loader import _build_dataframes  # noqa: E402
 
 
@@ -109,6 +117,60 @@ def loop_analysis() -> dict[str, Any]:
 
 
 def check_loop_filter_regressions() -> None:
+    low_risk_progress = "low_risk_horizontal_progress_19_6_right"
+    assert_equal(
+        candidate_kind(low_risk_progress),
+        "low_risk_horizontal_progress",
+        "loop metadata recognizes low-risk horizontal progress kind",
+    )
+    assert_equal(
+        candidate_target(low_risk_progress),
+        (19, 6),
+        "loop metadata extracts low-risk horizontal progress target",
+    )
+    assert_equal(
+        candidate_target("god_mode_progress_4_1_left"),
+        (4, 1),
+        "loop metadata extracts god-mode horizontal progress target",
+    )
+    direct_progress_history = movement_history(
+        [low_risk_progress] * 4,
+        [(13, 1), (14, 1), (15, 1), (16, 1)],
+        [39] * 4,
+    )
+    direct_progress_history[0]["before"]["runner"]["x"] = 12
+    direct_progress_report = build_loop_report(loop_analysis(), direct_progress_history)
+    assert_true(
+        not direct_progress_report["active"],
+        "direct horizontal target progress remains outside loop handling",
+    )
+    assert_true(
+        direct_progress_report["evidence"]["targetProgress"],
+        "direct horizontal target progress is measured",
+    )
+
+    carried_gold_ladder_analysis = {
+        "runner": {"x": 2, "y": 8},
+        "goldComplete": False,
+        "gold": {
+            "visiblePositions": [],
+            "carriedByGuards": [{"id": 1, "x": 7, "y": 5, "hasGold": 14}],
+        },
+        "movement": {"canMoveDown": True},
+        "primaryProgressTarget": None,
+    }
+    assert_equal(
+        choose_ladder_direction({}, carried_gold_ladder_analysis),
+        "up",
+        "targetless carried gold does not reverse down an unrelated ladder",
+    )
+    carried_gold_ladder_analysis["runner"] = {"x": 7, "y": 2}
+    assert_equal(
+        choose_ladder_direction({}, carried_gold_ladder_analysis),
+        "down",
+        "Classic x=7 guard-carried recovery still descends",
+    )
+
     right_ladder = "align_ladder_27_14_right"
     left_ladder = "align_ladder_4_14_left"
     progressing = movement_history(
@@ -217,7 +279,19 @@ def check_loop_filter_regressions() -> None:
                             "active": True,
                             "type": "horizontal_cycle",
                             "evidence": {},
-                            "suppressedCandidates": [{"id": "blocked-route"}],
+                            "suppressedCandidates": [
+                                {
+                                    "id": "blocked-route",
+                                    "kind": "classic_gold_route",
+                                    "direction": "right",
+                                    "reason": "repeats horizontal_cycle candidate blocked-route",
+                                },
+                                {
+                                    "id": "wait_or_stop",
+                                    "kind": "wait_or_stop",
+                                    "direction": None,
+                                },
+                            ],
                         },
                     },
                     {
@@ -269,7 +343,30 @@ def check_loop_filter_regressions() -> None:
     assert_equal(first["requestedCandidateId"], "requested", "loader exposes raw model choice")
     assert_equal(first["selectedCandidateId"], "executed", "loader exposes executed choice")
     assert_equal(first["fallbackReason"], "selected action became unsafe", "loader exposes fallback")
-    assert_equal(first["loop_suppressedIds"], "blocked-route", "loader exposes suppression")
+    assert_equal(
+        first["loop_suppressedIds"],
+        "blocked-route,wait_or_stop",
+        "loader exposes suppression ids",
+    )
+    assert_equal(
+        first["loop_suppressedCandidates"],
+        [
+            {
+                "id": "blocked-route",
+                "kind": "classic_gold_route",
+                "direction": "right",
+                "reason": "repeats horizontal_cycle candidate blocked-route",
+            },
+            {
+                "id": "wait_or_stop",
+                "kind": "wait_or_stop",
+                "direction": None,
+                "reason": None,
+            },
+        ],
+        "loader exposes structured suppression metadata in order",
+    )
+    assert_true(first["event_candidateSuppressed"], "loader flags suppressed candidates")
     assert_equal(first["after_runner_x"], 3, "loader derives next-step runner outcome")
     assert_equal(first["after_risk_level"], "medium", "loader derives next-step risk outcome")
     assert_equal(final["after_runner_x"], 3, "loader uses final state for last action")
@@ -287,6 +384,30 @@ def check_loop_filter_regressions() -> None:
     assert_true(
         left_ladder in confirmed_report["suppress"]["candidateIds"],
         "confirmed non-progress route candidate is removed from the next selection",
+    )
+    alias_reason = candidate_suppression_reason(
+        {
+            "id": "classic_gold_route_4_14_left",
+            "kind": "classic_gold_route",
+            "firstAction": {"keyCode": 37, "ticks": 8},
+        },
+        confirmed_report,
+    )
+    assert_true(
+        bool(alias_reason),
+        "horizontal cycle suppresses another intent with the same route target",
+    )
+    different_target_reason = candidate_suppression_reason(
+        {
+            "id": right_ladder,
+            "kind": "align_ladder",
+            "firstAction": {"keyCode": 39, "ticks": 8},
+        },
+        confirmed_report,
+    )
+    assert_true(
+        not different_target_reason,
+        "horizontal cycle preserves progress toward a different route target",
     )
     guard_retreat_reason = candidate_suppression_reason(
         {
@@ -327,6 +448,32 @@ def check_loop_filter_regressions() -> None:
     assert_true(
         not safety_tug_report["active"],
         "a repeated guard-driven retreat is classified as safety movement, not a hard loop",
+    )
+
+    retreat_dominated_route_transition = movement_history(
+        [
+            "retreat_from_guard_same_column_right",
+            "retreat_from_guard_right",
+            "classic_gold_route_7_1_left",
+            "retreat_from_guard_right",
+            "retreat_from_guard_right",
+            "retreat_from_guard_right",
+            "retreat_from_guard_right",
+            "route_access_dig_right",
+        ],
+        [(8, 1), (9, 1), (8, 1), (9, 1), (9, 1), (10, 1), (11, 1), (11, 1)],
+        [39, 39, 37, 39, 39, 39, 39, 88],
+    )
+    retreat_transition_report = build_loop_report(
+        loop_analysis(), retreat_dominated_route_transition
+    )
+    assert_true(
+        retreat_transition_report["evidence"]["safetyRetreatDominated"],
+        "trace-shaped route transition records retreat-dominated safety movement",
+    )
+    assert_true(
+        not retreat_transition_report["active"],
+        "a route transition after mostly safety retreats is not a horizontal hard loop",
     )
 
     post_cycle_dig_wait = movement_history(
@@ -386,6 +533,50 @@ def check_loop_filter_regressions() -> None:
     assert_true(
         bool(vertical_report["suppress"]["directions"]),
         "vertical cycle suppresses at least one reversing ladder direction",
+    )
+
+    vertical_recovery_exit = movement_history(
+        [
+            "emergency_hold_1_23_12_-16_0_left",
+            "climb_ladder_27_13_up",
+            "retreat_from_guard_down",
+            "climb_ladder_27_13_up",
+            "retreat_from_guard_down",
+            "climb_ladder_27_13_up",
+            "retreat_from_guard_down",
+            "climb_ladder_27_13_down",
+        ],
+        [(27, 13), (27, 12), (27, 13), (27, 12), (27, 13), (27, 12), (27, 13), (27, 14)],
+        [32, 38, 40, 38, 40, 38, 40, 40],
+    )
+    recovery_exit_report = build_loop_report(loop_analysis(), vertical_recovery_exit)
+    assert_true(
+        not recovery_exit_report["active"],
+        "vertical cycle clears after recovery exits onto a new non-repeating row",
+    )
+
+    trap_wait_transition = movement_history(
+        [
+            "wait_for_trap_resolution_right_24_15_0_2_0_25_14_8_0_left",
+            "wait_for_trap_resolution_right_24_15_0_4_0_25_14_0_0_left",
+            "wait_for_trap_resolution_right_24_15_0_6_0_25_14_-8_0_left",
+            "wait_for_trap_resolution_right_24_15_0_8_0_25_14_-16_0_left",
+            "wait_for_trap_resolution_right_24_15_0_10_0_24_14_16_0_left",
+            "wait_for_trap_resolution_right_24_15_0_12_0_24_14_8_9_fall",
+            "wait_for_trap_resolution_right_24_15_0_14_0_24_14_0_18_fall",
+            "defensive_dig_dig_left",
+        ],
+        [(23, 14)] * 8,
+        [32, 32, 32, 32, 32, 32, 32, 90],
+    )
+    trap_wait_report = build_loop_report(loop_analysis(), trap_wait_transition)
+    assert_true(
+        trap_wait_report["evidence"]["environmentProgressDominated"],
+        "trap waits are recorded as dominant environment progress",
+    )
+    assert_true(
+        not trap_wait_report["active"],
+        "a defensive transition after dominant trap waits is not a stale stationary loop",
     )
 
     three_row_vertical_loop = movement_history(
@@ -493,7 +684,12 @@ def check_loop_filter_regressions() -> None:
     state_prompt = format_state_summary(
         {"playData": 1, "level": 1, "gameStateName": "running"}, inactive_analysis
     )
-    assert_true("loop={active:False" in state_prompt, "state exposes compact inactive loop status")
+    prompt_state = json.loads(state_prompt.split("\n", 1)[1])
+    assert_equal(
+        prompt_state["loop"],
+        {"active": False, "suppressedCount": 0},
+        "state exposes machine-readable inactive loop status",
+    )
 
     assert_true(
         ladder_alignment_score(5, god_mode=False, fine_align=False, loop_target=False)
@@ -696,20 +892,167 @@ def check_guard_safety_regressions() -> None:
         "god mode retains direct progress toward off-row targets",
     )
 
+    low_risk_floor = [" " * 28 for _ in range(16)]
+    low_risk_floor[2] = "@" * 28
+    low_risk_candidates, _low_risk_analysis = generate_candidates(
+        {
+            "playData": 1,
+            "level": 1,
+            "gameStateName": "running",
+            "godMode": False,
+            "runner": {"x": 12, "y": 1, "xOffset": -8, "yOffset": 0, "actionName": "stop"},
+            "guards": [],
+            "gold": {
+                "complete": False,
+                "remainingCount": 1,
+                "visiblePositions": [{"x": 19, "y": 6}],
+                "carriedByGuards": [],
+            },
+            "terrainGrid": low_risk_floor,
+        },
+        [],
+    )
+    assert_equal(
+        [candidate["kind"] for candidate in low_risk_candidates],
+        ["low_risk_horizontal_progress"],
+        "low-risk off-row dead end retains a horizontal progress action",
+    )
+    assert_equal(
+        low_risk_candidates[0]["firstAction"]["keyCode"],
+        39,
+        "low-risk fallback moves toward the primary target",
+    )
+
+    prompt_risk = {
+        **risk,
+        "nearbyGuards": [
+            *risk["nearbyGuards"],
+            {
+                "id": 2,
+                "x": 18,
+                "y": 10,
+                "xOffset": 8,
+                "yOffset": -4,
+                "distance": 9,
+                "risk": "low",
+                "relativeX": "left",
+                "relativeY": "above",
+                "motion": "right",
+                "closing": False,
+                "hasGold": 5,
+            },
+        ],
+    }
     prompt_analysis = {
         "runner": {"x": 25, "y": 12},
         "gold": {"remainingCount": 4, "visiblePositions": []},
-        "risk": risk,
-        "movement": {},
-        "ladder": {},
-        "routeAccess": {},
+        "risk": prompt_risk,
+        "movement": {
+            "canMoveLeft": True,
+            "canMoveRight": True,
+            "canMoveUp": False,
+            "canMoveDown": False,
+            "details": {
+                "left": {
+                    "openDugHoleDistance": 2,
+                    "openHole": {
+                        "x": 23,
+                        "y": 13,
+                        "distance": 2,
+                        "frameIndex": 1,
+                        "frameTime": 40,
+                        "occupiedByTrappedGuard": False,
+                    },
+                },
+                "right": {},
+            },
+        },
+        "ladder": {
+            "onLadder": False,
+            "onExitLadder": False,
+            "adjacentToLadder": True,
+            "recommendedAction": "left",
+            "nearestRowLadder": {
+                "x": 24,
+                "y": 12,
+                "tile": "H",
+                "distance": 1,
+                "direction": "left",
+            },
+            "detail": "duplicate ladder prose",
+        },
+        "routeAccess": {
+            "available": False,
+            "recommendedAction": None,
+            "followAvailable": True,
+            "followAction": "left",
+            "openedAccessCell": {"x": 24, "y": 13, "tile": "."},
+            "reason": "opened route is guard-clear",
+        },
         "loopReport": {"active": False, "type": None},
     }
-    state_prompt = format_state_summary(
-        {"playData": 1, "level": 1, "gameStateName": "running"}, prompt_analysis
+    decision_prompt = format_decision_context(
+        {"playData": 1, "level": 1, "gameStateName": "running"},
+        [
+            {
+                "id": "align_ladder_24_12_left",
+                "kind": "align_ladder",
+                "score": 104,
+                "target": {"x": 24, "y": 12, "tile": "H"},
+                "firstAction": {"keyCode": 37, "ticks": 4, "reason": "align left"},
+                "intents": ["align_ladder"],
+                "targets": [{"x": 24, "y": 12, "tile": "H"}],
+                "reasons": ["align left", "use the nearest route ladder"],
+            }
+        ],
+        prompt_analysis,
     )
-    assert_true("guardRisk=high" in state_prompt, "prompt exposes compact guard risk")
-    assert_true("pressureGuard" not in state_prompt, "prompt omits backend guard geometry")
+    decision = json.loads(decision_prompt.split("\n", 1)[1])
+    prompt_state = decision["state"]
+    assert_equal(prompt_state["threat"]["risk"], "high", "prompt exposes aggregate risk")
+    assert_equal(
+        len(prompt_state["threat"]["nearbyGuards"]),
+        2,
+        "prompt exposes all nearby guards",
+    )
+    assert_true(
+        "xOffset" not in prompt_state["threat"]["pressureGuard"],
+        "prompt omits guard sub-tile runtime offsets",
+    )
+    assert_equal(
+        prompt_state["threat"]["nearbyGuards"][1]["id"],
+        2,
+        "prompt retains a gold carrier id",
+    )
+    assert_equal(
+        prompt_state["movement"]["legalDirections"],
+        ["left", "right"],
+        "prompt exposes readable legal directions",
+    )
+    left_hole = prompt_state["movement"]["openHoles"]["left"]["hole"]
+    assert_true("frameIndex" not in left_hole, "prompt omits hole animation internals")
+    assert_equal(
+        prompt_state["route"]["ladder"]["nearest"]["direction"],
+        "left",
+        "prompt exposes structured ladder state",
+    )
+    assert_equal(
+        prompt_state["route"]["access"]["followAction"],
+        "left",
+        "prompt exposes route-access follow state",
+    )
+    prompt_candidate = decision["candidates"][0]
+    assert_equal(
+        prompt_candidate["action"],
+        {"name": "left", "ticks": 4},
+        "prompt exposes readable normalized action data",
+    )
+    assert_equal(
+        prompt_candidate["reasons"],
+        ["align left", "use the nearest route ladder"],
+        "prompt exposes merged candidate semantics",
+    )
+    assert_true("keyCode" not in decision_prompt, "prompt omits numeric key codes")
 
     ladder_terrain = [" " * 28 for _ in range(16)]
     ladder_terrain[5] = "       H" + " " * 20
@@ -840,6 +1183,89 @@ def check_guard_safety_regressions() -> None:
         "terrainGrid": terrain,
     }
 
+    cross_row_route_snapshot = {
+        **pressure_snapshot,
+        "runner": {"x": 22, "y": 12, "xOffset": 8, "yOffset": 0, "actionName": "left"},
+        "guards": [
+            {
+                "id": 2,
+                "x": 20,
+                "y": 14,
+                "xOffset": 0,
+                "yOffset": 0,
+                "actionName": "right",
+            }
+        ],
+        "gold": {
+            "complete": False,
+            "remainingCount": 2,
+            "visiblePositions": [{"x": 23, "y": 3}],
+            "carriedByGuards": [],
+        },
+        "goldCount": 2,
+    }
+    cross_row_route_candidates, cross_row_route_analysis = generate_candidates(
+        cross_row_route_snapshot, []
+    )
+    cross_row_route_ids = {
+        candidate["id"] for candidate in cross_row_route_candidates
+    }
+    assert_equal(
+        cross_row_route_analysis["risk"]["pressureGuard"]["relativeY"],
+        "below",
+        "cross-row route regression keeps the guard below the runner",
+    )
+    assert_true(
+        not cross_row_route_analysis["risk"]["pressureGuard"]["closing"],
+        "horizontal guard motion on another row is not classified as closing",
+    )
+    assert_true(
+        "classic_gold_route_20_12_left" in cross_row_route_ids,
+        "cross-row route regression retains progress toward the waypoint",
+    )
+    assert_true(
+        "retreat_from_guard_right" not in cross_row_route_ids,
+        "medium cross-row pressure does not emit an ordinary side retreat",
+    )
+
+    cross_row_ladder_snapshot = {
+        **cross_row_route_snapshot,
+        "runner": {"x": 20, "y": 9, "xOffset": 0, "yOffset": 0, "actionName": "up"},
+        "guards": [
+            {
+                "id": 0,
+                "x": 18,
+                "y": 6,
+                "xOffset": 0,
+                "yOffset": 0,
+                "actionName": "right",
+            }
+        ],
+    }
+    cross_row_ladder_candidates, cross_row_ladder_analysis = generate_candidates(
+        cross_row_ladder_snapshot, []
+    )
+    assert_equal(
+        cross_row_ladder_analysis["risk"]["risk"],
+        "medium",
+        "ladder regression preserves medium cross-row pressure",
+    )
+    assert_true(
+        any(
+            candidate["kind"] != "retreat_from_guard"
+            for candidate in cross_row_ladder_candidates
+        ),
+        "medium cross-row pressure preserves a non-retreat progress candidate",
+    )
+    assert_true(
+        not any(
+            candidate["kind"] == "retreat_from_guard"
+            and candidate["firstAction"]["keyCode"] == 40
+            for candidate in cross_row_ladder_candidates
+        ),
+        "medium cross-row pressure does not emit a downward vertical retreat",
+    )
+
     god_route_cycle_history = movement_history(
         ["god_mode_progress_4_1_left", "align_ladder_7_6_right"] * 4,
         [(4, 6), (5, 6)] * 4,
@@ -878,10 +1304,20 @@ def check_guard_safety_regressions() -> None:
     candidates, _analysis = generate_candidates(pressure_snapshot, [])
     assert_true(
         all(
-            set(candidate) == {"id", "kind", "score", "target", "firstAction"}
+            {
+                "id",
+                "kind",
+                "score",
+                "target",
+                "firstAction",
+                "intents",
+                "targets",
+                "reasons",
+            }
+            == set(candidate)
             for candidate in candidates
         ),
-        "candidate schema stays minimal",
+        "candidate schema includes merged semantic metadata",
     )
     signatures = [
         (candidate["firstAction"]["keyCode"], candidate["firstAction"]["ticks"])
@@ -911,6 +1347,44 @@ def check_guard_safety_regressions() -> None:
         "retreat is framed as a short reposition followed by reassessment",
     )
 
+    same_action_left = {
+        "kind": "align_ladder",
+        "target": {"x": 20, "y": 12, "tile": "H"},
+        "firstAction": {"keyCode": 39, "ticks": 4},
+        "intents": ["align_ladder"],
+        "targets": [{"x": 20, "y": 12, "tile": "H"}],
+        "reasons": ["align with the ladder"],
+    }
+    same_action_duplicate = {
+        **same_action_left,
+        "intents": ["route_access_follow"],
+        "targets": [{"x": 20, "y": 12, "tile": "H"}],
+        "reasons": ["follow the opened route"],
+    }
+    different_target = {
+        **same_action_left,
+        "target": {"x": 27, "y": 12, "tile": "H"},
+    }
+    assert_true(
+        candidates_semantically_mergeable(same_action_left, same_action_duplicate),
+        "same-action candidates with matching kind and target can merge",
+    )
+    merged = merge_candidate_metadata(same_action_left, same_action_duplicate)
+    assert_equal(
+        merged["intents"],
+        ["align_ladder", "route_access_follow"],
+        "same-action merge preserves unique intents",
+    )
+    assert_equal(
+        merged["reasons"],
+        ["align with the ladder", "follow the opened route"],
+        "same-action merge preserves unique reasons",
+    )
+    assert_true(
+        not candidates_semantically_mergeable(same_action_left, different_target),
+        "same-action candidates with different targets remain separate",
+    )
+
     edge_endpoint_snapshot = {
         **pressure_snapshot,
         "runner": {"x": 26, "y": 12, "xOffset": 8, "yOffset": 0, "actionName": "left"},
@@ -933,19 +1407,14 @@ def check_guard_safety_regressions() -> None:
         "high",
         "right-edge endpoint fixture preserves the death trace pressure class",
     )
-    edge_endpoint_retreat = next(
-        candidate
-        for candidate in edge_endpoint_candidates
-        if candidate["id"] == "retreat_from_guard_right"
-    )
-    assert_equal(
-        edge_endpoint_retreat["firstAction"]["ticks"],
-        4,
-        "retreat remains eligible when the projected edge tile has a ladder escape",
+    assert_true(
+        "retreat_from_guard_right"
+        not in {candidate["id"] for candidate in edge_endpoint_candidates},
+        "cross-row pressure does not masquerade as horizontal side retreat",
     )
     assert_true(
-        "emergency_hold" not in {candidate["kind"] for candidate in edge_endpoint_candidates},
-        "usable right-edge ladder escape is preferred over holding in the approach column",
+        edge_endpoint_candidates,
+        "cross-row pressure still produces a safety candidate at the edge",
     )
 
     bottom_hole_grid = terrain.copy()
@@ -1330,10 +1799,12 @@ def check_guard_safety_regressions() -> None:
         "active dig completion is exclusive until the future hole becomes observable",
     )
     assert_true(
-        dig_wait["id"] not in {
-            item["id"] for item in active_dig_analysis["loopReport"]["suppressedCandidates"]
-        },
-        "active dig completion remains eligible during a horizontal cycle",
+        not active_dig_analysis["loopReport"]["active"],
+        "active dig progress clears the stale horizontal cycle signal",
+    )
+    assert_true(
+        build_loop_report(loop_analysis(), active_dig_loop_history)["active"],
+        "horizontal cycle detection resumes after active dig state clears",
     )
 
     separated_trap_grid = terrain.copy()
@@ -1492,6 +1963,57 @@ def check_guard_safety_regressions() -> None:
     assert_true(
         "wait_or_stop" not in {candidate["kind"] for candidate in post_top_gold_candidates},
         "post-top-gold state has a progress candidate",
+    )
+
+    upper_left_gold_snapshot = {
+        **upper_gold_route_snapshot,
+        "godMode": True,
+        "runner": {"x": 16, "y": 6, "xOffset": -16, "yOffset": 0, "actionName": "right"},
+        "gold": {
+            "complete": False,
+            "remainingCount": 1,
+            "visiblePositions": [{"x": 4, "y": 6}],
+            "carriedByGuards": [],
+        },
+        "goldCount": 1,
+    }
+    upper_left_candidates, _upper_left_analysis = generate_candidates(
+        upper_left_gold_snapshot, []
+    )
+    upper_left_ids = {candidate["id"] for candidate in upper_left_candidates}
+    assert_true(
+        "classic_gold_route_14_6_left" in upper_left_ids,
+        "blocked upper-left gold routes first to the x=14 ladder",
+    )
+    assert_true(
+        "collect_same_row_gold_4_6_left" not in upper_left_ids,
+        "permanent row bricks suppress unreachable direct collection",
+    )
+
+    upper_left_ladder_snapshot = {
+        **upper_left_gold_snapshot,
+        "runner": {"x": 14, "y": 5, "xOffset": 0, "yOffset": -10, "actionName": "up"},
+    }
+    upper_left_ladder_candidates, _upper_left_ladder_analysis = generate_candidates(
+        upper_left_ladder_snapshot, []
+    )
+    assert_equal(
+        [candidate["id"] for candidate in upper_left_ladder_candidates],
+        ["climb_ladder_14_5_up"],
+        "x=14 ladder detour exclusively continues upward instead of reversing or realigning",
+    )
+
+    upper_left_crossing_snapshot = {
+        **upper_left_gold_snapshot,
+        "runner": {"x": 14, "y": 3, "xOffset": 0, "yOffset": 0, "actionName": "stop"},
+    }
+    upper_left_crossing_candidates, _upper_left_crossing_analysis = generate_candidates(
+        upper_left_crossing_snapshot, []
+    )
+    assert_equal(
+        [candidate["id"] for candidate in upper_left_crossing_candidates],
+        ["classic_gold_route_7_3_left"],
+        "row-three upper-left detour crosses exclusively to the x=7 ladder",
     )
 
     carried_only_row_one_snapshot = {
@@ -2490,6 +3012,11 @@ def check_guard_safety_regressions() -> None:
     assert_true(
         "route_access_follow" in {candidate["kind"] for candidate in clear_candidates},
         "clear opened drop exposes a follow candidate",
+    )
+    assert_true(
+        "wait_for_floor_refill"
+        not in {candidate["kind"] for candidate in clear_candidates},
+        "guard-clear access entry does not also wait for the same hole to refill",
     )
 
     safer_side_snapshot = {

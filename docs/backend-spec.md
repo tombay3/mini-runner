@@ -223,7 +223,7 @@ Current shape:
   "backend": {
     "candidateLimit": 7,
     "maxActionTicks": 20,
-    "temperature": 0.5
+    "temperature": 1
   }
 }
 ```
@@ -266,7 +266,11 @@ Flask's source reloader. Python changes restart the development server automatic
 while the interactive Flask debugger remains disabled.
 Raw prompts and model outputs are written to `__data1/agent-debug.log` with 10-entry
 rotation. Each block includes trace id, model, prompt, final message, optional
-provider reasoning content, parse error, and selected candidate id. Raw model I/O is never
+provider reasoning content or OpenAI Responses API reasoning summary, parse error,
+and selected candidate id. OpenAI-profile calls use the Responses API with a low
+reasoning effort and request an explicit brief decision rationale; that declared
+rationale is used when the provider does not return a reasoning summary. This is
+observable model output, not hidden chain-of-thought. Raw model I/O is never
 written to stdout or `agent-traces.json`.
 
 ## Offline Analytics

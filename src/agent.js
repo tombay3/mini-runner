@@ -145,6 +145,8 @@ async function runAgent(state, deps) {
         break;
       }
 
+      const requestStarted = performance.now();
+      console.debug("agent_api_request_start", { tick: before.tick, step: stepCount });
       const response = await deps.apiFetch(AGENT_API, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -157,6 +159,11 @@ async function runAgent(state, deps) {
           ...state.agentRequestOptions,
         }),
         signal: state.agentAbort.signal,
+      });
+      console.debug("agent_api_request_end", {
+        tick: before.tick,
+        step: stepCount,
+        elapsedMs: Math.round(performance.now() - requestStarted),
       });
       const action = normalizeAgentAction(response.action, config);
       state.agentPlanner = response.planner ?? null;

@@ -107,7 +107,7 @@ def _build_dataframes(recordings_raw: dict, traces_raw: dict):
 
     run_rows = []
     for rec_id, rec in records.items():
-        solver = rec.get("solver", {})
+        solver = rec.get("solver") or {}
         demo = rec.get("demo", {})
         trace_id = rec.get("traceId")
         trace = trace_runs.get(trace_id, {})
@@ -146,7 +146,7 @@ def _build_dataframes(recordings_raw: dict, traces_raw: dict):
             demo_time_s = None
         demo_time = _fmt_mm_ss(demo_time_s)
 
-        model_info = trace.get("model", {})
+        model_info = trace.get("model") or {}
 
         run_rows.append(
             {
@@ -190,6 +190,16 @@ def _build_dataframes(recordings_raw: dict, traces_raw: dict):
             action = step.get("action", {})
             loop = step.get("loopMonitor", {})
             suppressed = loop.get("suppressedCandidates", [])
+            suppressed_candidates = [
+                {
+                    "id": str(item.get("id")),
+                    "kind": item.get("kind"),
+                    "direction": item.get("direction"),
+                    "reason": item.get("reason"),
+                }
+                for item in suppressed
+                if isinstance(item, dict) and item.get("id")
+            ]
             validation = step.get("validation", {})
             state = step.get("state", {})
             candidates = step.get("candidates", [])
@@ -229,10 +239,9 @@ def _build_dataframes(recordings_raw: dict, traces_raw: dict):
                     "loop_active": event_flags["loop_active"],
                     "loop_type": loop.get("type") if loop.get("active") else None,
                     "loop_suppressedIds": ",".join(
-                        str(item.get("id", ""))
-                        for item in suppressed
-                        if isinstance(item, dict)
+                        item["id"] for item in suppressed_candidates
                     ),
+                    "loop_suppressedCandidates": suppressed_candidates,
                     "runner_x": runner.get("x"),
                     "runner_y": runner.get("y"),
                     "risk_level": risk.get("risk", ""),

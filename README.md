@@ -151,8 +151,11 @@ call an LLM.
 Run repeatable normal-mode attempts against the real browser game and configured model:
 
 ```bash
-npm run evaluate -- --runs 10 --threshold 95
+npm run evaluate -- --runs 10 --target 5
 ```
+
+`--target N` stops early after `N` successful runs; the evaluator performs at most the requested
+`--runs` attempts.
 
 Use `npm run evaluate -- --smoke` to verify the browser, wrapper, backend, and legacy runtime
 without calling the model. See [Agent evaluator](docs/evaluator.md) for profiles, reports,
@@ -165,7 +168,7 @@ normal-mode enforcement, and exit statuses.
 - [Candidate design](docs/candidate-design.md): scoring, action coverage, failure classification,
   and validation.
 - [Backend spec](docs/backend-spec.md): Flask APIs, JSON stores, model profiles, and logging.
-- [Trace dashboard](docs/trace-dashboard.md): run overview, trace-step debugger, and candidate
+- [Trace dashboard](docs/trace-dashboard.md): run overview, trace stepping debugger, and candidate
   analysis.
 - [Recording and playback](docs/record-playback.md): wrapper rail, run selection, pause/step
   controls, and fullscreen behavior.

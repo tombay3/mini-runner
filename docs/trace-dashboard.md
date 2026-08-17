@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`dash.py` and `loader.py` provide a read-only Streamlit and pandas debugger for retained
+`dash.py` and `loader.py` provide a read-only Streamlit-pandas run-steps debugging for
 recordings and agent traces. They are isolated from the legacy runtime, Vite wrapper, Flask
 backend, and solver. The dashboard reads the flat JSON stores without modifying them.
 
@@ -70,7 +70,9 @@ Step-title markers are:
 Inside an expanded step:
 
 - **Validation** appears only when the requested and executed candidates differ or a fallback ran;
-- **Suppressed** lists only non-empty loop-suppression results;
+- **Suppressed** appears only for non-empty loop-suppression results. One suppressed candidate
+  is shown inline as ``candidate-id — reason``; multiple candidates are shown as a bullet list.
+  Candidates without a reason show only their ID;
 - **Outcome** compares pre-action state with the derived after-state for position, gold, risk,
   game-state changes, and terminal result;
 

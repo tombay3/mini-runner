@@ -1750,7 +1750,7 @@ function syncDebugBar(state) {
 function formatDebugOverlay(state) {
   const record = state.currentRecord;
   return (
-    `[${state.selectedRecordIndex + 1}/${Math.max(state.records.length, 1)}] ` +
+    `${state.selectedRecordIndex + 1}/${Math.max(state.records.length, 1)}: ` +
     [
       formatRecordTraceId(record),
       `${formatSavedAt(record.savedAt)}`,
