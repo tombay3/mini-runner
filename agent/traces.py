@@ -87,6 +87,7 @@ def summarize_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": candidate.get("id"),
         "kind": candidate.get("kind"),
+        "lane": candidate.get("lane"),
         "score": candidate.get("score"),
         "target": candidate.get("target"),
         "firstAction": candidate.get("firstAction"),
@@ -110,6 +111,7 @@ def serialize_step_trace(
     validation: dict[str, Any] | None = None,
     loop_monitor: dict[str, Any] | None = None,
     analysis: dict[str, Any] | None = None,
+    model_selection: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "createdAt": utc_now(),
@@ -120,4 +122,6 @@ def serialize_step_trace(
         "validation": coerce_jsonable(validation),
         "action": coerce_jsonable(action),
         "loopMonitor": coerce_jsonable(loop_monitor),
+        "modelSelection": coerce_jsonable(model_selection),
+        "candidateAudit": coerce_jsonable((analysis or {}).get("candidateAudit", [])),
     }

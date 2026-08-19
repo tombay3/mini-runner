@@ -47,7 +47,14 @@ def build_agent_prompt(
     return "\n\n".join(
         [item for item in [
             "You are choosing one backend-generated candidate for the next short Lode Runner input burst.",
-            "The backend has already checked legality and safety. Choose the candidate that best advances Classic level 1.",
+            (
+                "The backend has generated executable candidates and assigned scores, targets, "
+                "and safety intents. Candidates may represent different tactical tradeoffs; "
+                "apply execution gates and the risk policy before comparing progress. Candidate "
+                "targets, scores, and reasons are backend-derived. Do not reject a candidate "
+                "because its first short action appears indirect, and do not invent unsupported "
+                "route interpretations."
+            ),
             f"Return JSON only: {response_format}.",
             rationale_instruction,
             "Agent rules:\n" + read_agent_rules(),

@@ -304,6 +304,7 @@ def run_candidate_selection(
         validation=validation,
         loop_monitor=loop_monitor,
         analysis=analysis,
+        model_selection=build_model_selection_trace(result),
     )
     return {
         "action": action,
@@ -470,7 +471,29 @@ def parse_candidate_response(response: Any) -> tuple[dict[str, Any] | None, str 
     candidate_id = payload.get("candidateId")
     if not isinstance(candidate_id, str) or not candidate_id.strip():
         return None, "candidateId must be a non-empty string"
-    return {"candidateId": candidate_id.strip()}, None
+    choice = {"candidateId": candidate_id.strip()}
+    reasoning = payload.get("reasoning")
+    if isinstance(reasoning, str) and reasoning.strip():
+        choice["reasoning"] = reasoning.strip()[:1000]
+    return choice, None
+
+
+def build_model_selection_trace(result: dict[str, Any]) -> dict[str, Any]:
+    choice = result.get("choice") or {}
+    response = result.get("response")
+    message = None
+    choices = getattr(response, "choices", None)
+    if choices:
+        message = getattr(choices[0], "message", None)
+    reasoning_content = getattr(message, "reasoning_content", None)
+    if not isinstance(reasoning_content, str):
+        reasoning_content = ""
+    return {
+        "requestedCandidateId": choice.get("candidateId"),
+        "declaredRationale": choice.get("reasoning", ""),
+        "reasoningContent": reasoning_content[:2000],
+        "parseError": result.get("parseError"),
+    }
 
 
 def build_planner(

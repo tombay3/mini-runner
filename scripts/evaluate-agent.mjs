@@ -5,6 +5,14 @@ import { fileURLToPath } from "node:url";
 
 import { chromium } from "playwright-core";
 
+import {
+  candidateLane,
+  candidateLaneSet,
+  classifySingletonStep,
+  decisionClass,
+  isProgressOnlyLowRiskStep,
+} from "./candidate-lanes.mjs";
+
 const scriptsDir = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.dirname(scriptsDir);
 const options = parseArgs(process.argv.slice(2));
@@ -28,6 +36,12 @@ try {
   const url = new URL(options.baseUrl);
   if (options.profile) {
     url.searchParams.set("profile", options.profile);
+  }
+  if (process.env.AGENT_CANDIDATE_MODE) {
+    url.searchParams.set("candidateMode", process.env.AGENT_CANDIDATE_MODE);
+  }
+  if (process.env.AGENT_CANDIDATE_LIMIT) {
+    url.searchParams.set("candidateLimit", process.env.AGENT_CANDIDATE_LIMIT);
   }
   await page.goto(url.href, { waitUntil: "domcontentloaded" });
   await page.waitForFunction(() => window.__lodeRunnerEvaluation?.ready(), null, {
@@ -104,10 +118,10 @@ try {
   }
   process.exitCode = 1;
 } finally {
-  await browser?.close().catch(() => {});
+  await closeBrowser(browser);
   if (!options.keepServers) {
     for (const server of startedServers.reverse()) {
-      stopServer(server);
+      await stopServer(server);
     }
   }
 }
@@ -232,17 +246,36 @@ async function isReady(url) {
   }
 }
 
-function stopServer(server) {
+async function stopServer(server) {
   if (server.child.exitCode !== null) return;
   if (process.platform === "win32") {
     spawnSync("taskkill", ["/pid", String(server.child.pid), "/T", "/F"], { stdio: "ignore" });
-  } else {
-    try {
-      process.kill(-server.child.pid, "SIGTERM");
-    } catch (_error) {
-      server.child.kill("SIGTERM");
-    }
+    return;
   }
+  signalServerGroup(server.child, "SIGTERM");
+  const exited = await Promise.race([
+    new Promise((resolve) => server.child.once("exit", () => resolve(true))),
+    new Promise((resolve) => setTimeout(() => resolve(false), 5_000)),
+  ]);
+  if (!exited && server.child.exitCode === null) {
+    signalServerGroup(server.child, "SIGKILL");
+  }
+}
+
+function signalServerGroup(child, signal) {
+  try {
+    process.kill(-child.pid, signal);
+  } catch (_error) {
+    child.kill(signal);
+  }
+}
+
+async function closeBrowser(activeBrowser) {
+  if (!activeBrowser) return;
+  await Promise.race([
+    activeBrowser.close().catch(() => {}),
+    new Promise((resolve) => setTimeout(resolve, 5_000)),
+  ]);
 }
 
 function resolveBrowserExecutable(explicitPath) {
@@ -272,10 +305,22 @@ function resolveBrowserExecutable(explicitPath) {
 function summarizeAttempt(number, startedAt, result, trace) {
   const steps = Array.isArray(trace?.steps) ? trace.steps : [];
   const kinds = {};
+  const candidatePoolKinds = {};
+  const candidatePoolLanes = {};
+  const decisionClasses = {};
+  const singletonClassifications = {};
+  const candidateAuditDispositions = {};
+  const candidateGapClassifications = {};
+  let maxCandidatePool = 0;
+  let progressOnlyLowRiskSteps = 0;
+  let progressOnlyLowRiskSingleChoiceSteps = 0;
+  let progressOnlyLowRiskMultiChoiceSteps = 0;
+  const stepCorrelations = [];
+  const notableCorrelations = [];
   let fallbacks = 0;
   let confirmedLoops = 0;
   let suppressedCandidates = 0;
-  for (const step of steps) {
+  for (const [stepIndex, step] of steps.entries()) {
     const kind = step?.selectedCandidateKind || "unknown";
     kinds[kind] = (kinds[kind] || 0) + 1;
     if (step?.validation?.fallbackUsed) fallbacks += 1;
@@ -283,6 +328,102 @@ function summarizeAttempt(number, startedAt, result, trace) {
     suppressedCandidates += Array.isArray(step?.loopMonitor?.suppressedCandidates)
       ? step.loopMonitor.suppressedCandidates.length
       : 0;
+    maxCandidatePool = Math.max(maxCandidatePool, Array.isArray(step?.candidates) ? step.candidates.length : 0);
+    for (const candidate of step?.candidates || []) {
+      const candidateKind = candidate?.kind || "unknown";
+      candidatePoolKinds[candidateKind] = (candidatePoolKinds[candidateKind] || 0) + 1;
+      const lane = candidateLane(candidate);
+      candidatePoolLanes[lane] = (candidatePoolLanes[lane] || 0) + 1;
+    }
+    const modelSelection = step?.modelSelection || {};
+    const candidates = Array.isArray(step?.candidates) ? step.candidates : [];
+    const selectedKind = step?.selectedCandidateKind || "unknown";
+    const selectedLane = candidateLane(selectedKind);
+    const stepDecisionClass = decisionClass(step);
+    const singleton = classifySingletonStep(step);
+    decisionClasses[stepDecisionClass] = (decisionClasses[stepDecisionClass] || 0) + 1;
+    if (singleton) {
+      singletonClassifications[singleton.classification] =
+        (singletonClassifications[singleton.classification] || 0) + 1;
+    }
+    if (isProgressOnlyLowRiskStep(step)) {
+      progressOnlyLowRiskSteps += 1;
+      if (candidates.length === 1) progressOnlyLowRiskSingleChoiceSteps += 1;
+      else progressOnlyLowRiskMultiChoiceSteps += 1;
+    }
+    const candidateAudit = Array.isArray(step?.candidateAudit) ? step.candidateAudit : [];
+    for (const item of candidateAudit) {
+      const disposition = item?.disposition || "unknown";
+      candidateAuditDispositions[disposition] =
+        (candidateAuditDispositions[disposition] || 0) + 1;
+      const gapClass = auditGapClassification(disposition);
+      if (gapClass) {
+        candidateGapClassifications[gapClass] =
+          (candidateGapClassifications[gapClass] || 0) + 1;
+      }
+    }
+    if (singleton?.classification?.startsWith("suspicious_") && !candidateAudit.length) {
+      candidateGapClassifications.missing_proposal =
+        (candidateGapClassifications.missing_proposal || 0) + 1;
+    }
+    if (candidates.length > 1) {
+      const unselectedProgress = candidates.filter(
+        (candidate) => candidateLane(candidate) === "progress" && candidate?.id !== step?.selectedCandidateId,
+      ).length;
+      if (unselectedProgress) {
+        candidateGapClassifications.exposed_not_selected =
+          (candidateGapClassifications.exposed_not_selected || 0) + unselectedProgress;
+      }
+    }
+    const nextStep = steps[stepIndex + 1];
+    const selectedNoProgress =
+      selectedLane === "progress" && nextStep && !stepMadeProgress(step, nextStep);
+    if (selectedNoProgress) {
+      candidateGapClassifications.selected_no_progress =
+        (candidateGapClassifications.selected_no_progress || 0) + 1;
+    }
+    let classification = "no_gap";
+    if (!candidates.length) classification = "no_generated_candidates";
+    else if (step?.validation?.fallbackUsed) classification = "model_selection_fallback";
+    else if (stepDecisionClass === "progress_only_low_risk" && selectedLane !== "progress") {
+      classification = "progress_only_selection_gap";
+    }
+    const correlation = {
+      stepIndex,
+      tick: step?.state?.tick,
+      requestedCandidateId: modelSelection.requestedCandidateId,
+      selectedCandidateId: step?.selectedCandidateId,
+      selectedCandidateKind: selectedKind,
+      selectedCandidateLane: selectedLane,
+      selectedScore: candidates.find((candidate) => candidate?.id === step?.selectedCandidateId)?.score ?? null,
+      candidateLanes: candidateLaneSet(candidates),
+      decisionClass: stepDecisionClass,
+      singletonClassification: singleton?.classification || null,
+      singletonEvidence: singleton?.evidence || [],
+      reasoningContent: modelSelection.reasoningContent || "",
+      declaredRationale: modelSelection.declaredRationale || "",
+      parseError: modelSelection.parseError || null,
+      candidates: candidates.map((candidate) => ({
+        id: candidate?.id,
+        kind: candidate?.kind,
+        lane: candidateLane(candidate),
+        score: candidate?.score,
+        target: candidate?.target,
+        firstAction: candidate?.firstAction,
+      })),
+      candidateAudit,
+      selectedNoProgress: Boolean(selectedNoProgress),
+      classification,
+    };
+    stepCorrelations.push(correlation);
+    if (classification !== "no_gap" || !correlation.reasoningContent) {
+      notableCorrelations.push({
+        stepIndex,
+        classification,
+        selectedCandidateId: correlation.selectedCandidateId,
+        reasoningPresent: Boolean(correlation.reasoningContent),
+      });
+    }
   }
   const terminalGodMode = trace?.outcome?.finalState?.godMode;
   const recordedGodMode = Number(result.godMode);
@@ -317,7 +458,45 @@ function summarizeAttempt(number, startedAt, result, trace) {
     confirmedLoops,
     suppressedCandidates,
     selectedCandidateKinds: kinds,
+    candidatePoolKinds,
+    candidatePoolLanes,
+    decisionClasses,
+    singletonClassifications,
+    candidateAuditDispositions,
+    candidateGapClassifications,
+    maxCandidatePool,
+    progressOnlyLowRiskSteps,
+    progressOnlyLowRiskSingleChoiceSteps,
+    progressOnlyLowRiskMultiChoiceSteps,
+    stepCorrelations,
+    notableCorrelations,
   };
+}
+
+function auditGapClassification(disposition) {
+  return {
+    physical_rejection: "physical_rejection",
+    safety_rejection: "safety_rejection",
+    loop_suppressed: "loop_suppressed",
+    deduplicated: "deduplicated",
+    limit_truncated: "limit_truncated",
+    validated: "validated_not_exposed",
+  }[disposition] || null;
+}
+
+function stepMadeProgress(step, nextStep) {
+  const before = step?.state || {};
+  const after = nextStep?.state || {};
+  const beforeRunner = before.runner || {};
+  const afterRunner = after.runner || {};
+  const beforeGold = Number(before?.gold?.remainingCount);
+  const afterGold = Number(after?.gold?.remainingCount);
+  if (Number.isFinite(beforeGold) && Number.isFinite(afterGold) && afterGold < beforeGold) {
+    return true;
+  }
+  return ["x", "y", "xOffset", "yOffset"].some(
+    (field) => Number(beforeRunner[field]) !== Number(afterRunner[field]),
+  );
 }
 
 function buildReport(config, attempts, executablePath) {

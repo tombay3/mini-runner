@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -12,10 +13,14 @@ sys.path.insert(0, str(ROOT))
 import app as app_module  # noqa: E402
 from agent import AgentRequestError, validate_agent_request  # noqa: E402
 from agent.candidates import (  # noqa: E402
+    _eligible_for_low_risk_expansion,
+    add_distinct_low_risk_progress_alternatives,
     apply_prospective_horizontal_endpoint_safety,
+    candidate_lane,
     candidates_semantically_mergeable,
     choose_ladder_direction,
     generate_candidates,
+    experimental_progress_score,
     is_action_guard_safe,
     ladder_alignment_score,
     limit_horizontal_ticks_under_guard_pressure,
@@ -918,6 +923,108 @@ def check_guard_safety_regressions() -> None:
         "low-risk off-row dead end retains a horizontal progress action",
     )
     assert_equal(
+        low_risk_candidates[0]["lane"],
+        "progress",
+        "generated candidates expose their model-facing lane",
+    )
+    assert_equal(candidate_lane("retreat_from_guard"), "safety", "retreat lane")
+    assert_equal(candidate_lane("wait_for_dig_completion"), "environment", "dig wait lane")
+    assert_equal(candidate_lane("wait_or_stop"), "fallback", "wait fallback lane")
+    assert_equal(candidate_lane("unrecognized_kind"), "fallback", "unknown candidate lane")
+    expansion_analysis = {
+        "godMode": False,
+        "goldComplete": False,
+        "activeDig": {},
+        "loopReport": {"active": False},
+        "risk": {"risk": "low"},
+    }
+    assert_true(
+        _eligible_for_low_risk_expansion(expansion_analysis, low_risk_candidates),
+        "low-risk singleton progress is eligible for treatment expansion",
+    )
+    assert_true(
+        not _eligible_for_low_risk_expansion(
+            expansion_analysis, [*low_risk_candidates, {**low_risk_candidates[0], "id": "second"}]
+        ),
+        "existing multi-choice progress pools are not expanded",
+    )
+    assert_true(
+        not _eligible_for_low_risk_expansion(
+            expansion_analysis, [{**low_risk_candidates[0], "kind": "retreat_from_guard"}]
+        ),
+        "safety singletons are not expanded",
+    )
+
+    previous_candidate_mode = os.environ.get("AGENT_CANDIDATE_MODE")
+    os.environ["AGENT_CANDIDATE_MODE"] = "alternatives"
+    try:
+        expanded_low_risk_candidates, _expanded_analysis = generate_candidates(
+            {
+                "playData": 1,
+                "level": 1,
+                "gameStateName": "running",
+                "godMode": False,
+                "runner": {
+                    "x": 12,
+                    "y": 1,
+                    "xOffset": -8,
+                    "yOffset": 0,
+                    "actionName": "stop",
+                },
+                "guards": [],
+                "gold": {
+                    "complete": False,
+                    "remainingCount": 1,
+                    "visiblePositions": [{"x": 19, "y": 6}],
+                    "carriedByGuards": [],
+                },
+                "terrainGrid": low_risk_floor,
+            },
+            [],
+        )
+    finally:
+        if previous_candidate_mode is None:
+            os.environ.pop("AGENT_CANDIDATE_MODE", None)
+        else:
+            os.environ["AGENT_CANDIDATE_MODE"] = previous_candidate_mode
+    assert_equal(
+        expanded_low_risk_candidates,
+        low_risk_candidates,
+        "treatment does not manufacture same-route timing variants",
+    )
+    distinct_calls = []
+    add_distinct_low_risk_progress_alternatives(
+        lambda **kwargs: distinct_calls.append(kwargs),
+        {
+            "movement": {"canMoveLeft": True, "canMoveRight": True},
+            "nearestGold": [
+                {"x": 4, "y": 1, "sameRow": True, "direction": "left", "source": "visible"},
+                {"x": 19, "y": 1, "sameRow": True, "direction": "right", "source": "visible"},
+            ],
+            "rowLadders": [],
+        },
+        {"runner": {"x": 12, "y": 1}},
+        {
+            "id": "forced_right",
+            "kind": "classic_gold_route",
+            "target": {"x": 19, "y": 1, "tile": "$"},
+            "firstAction": {"keyCode": 39, "ticks": 8},
+        },
+    )
+    assert_equal(len(distinct_calls), 1, "one distinct-direction route is exposed")
+    assert_equal(distinct_calls[0]["key_code"], 37, "distinct route changes direction")
+    assert_equal(distinct_calls[0]["target"]["x"], 4, "distinct route changes target")
+    assert_equal(
+        experimental_progress_score(88, "promoted"),
+        106,
+        "promoted arm raises only the experimental score",
+    )
+    assert_equal(
+        experimental_progress_score(88, "guided"),
+        88,
+        "guided arm preserves the exposure score",
+    )
+    assert_equal(
         low_risk_candidates[0]["firstAction"]["keyCode"],
         39,
         "low-risk fallback moves toward the primary target",
@@ -1266,6 +1373,42 @@ def check_guard_safety_regressions() -> None:
         "medium cross-row pressure does not emit a downward vertical retreat",
     )
 
+    critical_below_ladder_snapshot = {
+        **pressure_snapshot,
+        "runner": {"x": 14, "y": 5, "xOffset": 0, "yOffset": 0, "actionName": "stop"},
+        "gold": {
+            "complete": False,
+            "remainingCount": 1,
+            "visiblePositions": [{"x": 7, "y": 12}],
+            "carriedByGuards": [],
+        },
+        "guards": [
+            {
+                "id": 0,
+                "x": 14,
+                "y": 6,
+                "xOffset": 8,
+                "yOffset": 0,
+                "actionName": "up",
+            }
+        ],
+    }
+    critical_below_ladder_candidates, critical_below_ladder_analysis = generate_candidates(
+        critical_below_ladder_snapshot, []
+    )
+    assert_true(
+        critical_below_ladder_analysis["movement"]["canMoveUp"],
+        "critical below-ladder fixture exposes an upward escape",
+    )
+    assert_true(
+        any(
+            candidate["kind"] == "retreat_from_guard"
+            and candidate["firstAction"]["keyCode"] == 38
+            for candidate in critical_below_ladder_candidates
+        ),
+        "critical cross-row guard pressure exposes upward ladder retreat",
+    )
+
     god_route_cycle_history = movement_history(
         ["god_mode_progress_4_1_left", "align_ladder_7_6_right"] * 4,
         [(4, 6), (5, 6)] * 4,
@@ -1307,6 +1450,7 @@ def check_guard_safety_regressions() -> None:
             {
                 "id",
                 "kind",
+                "lane",
                 "score",
                 "target",
                 "firstAction",
@@ -3326,18 +3470,44 @@ def run() -> None:
                 "missing pinned trace is not recreated",
             )
 
-            validate_agent_request(
+            _, _, experiment_options = validate_agent_request(
                 {
                     "playData": 1,
                     "level": 1,
                     "snapshot": {"playData": 1, "level": 1},
                     "history": [],
+                    "candidateMode": "alternatives",
+                    "candidateLimit": 10,
                 }
+            )
+            assert_equal(
+                experiment_options["candidateMode"],
+                "alternatives",
+                "request-scoped candidate mode survives backend reuse",
+            )
+            assert_equal(
+                experiment_options["candidateLimit"],
+                10,
+                "request-scoped candidate limit survives backend reuse",
             )
             for payload in (
                 {"playData": 1, "level": 2, "snapshot": {}, "history": []},
                 {"playData": 1, "level": 1, "snapshot": [], "history": []},
                 {"playData": 1, "level": 1, "snapshot": {}, "history": {}},
+                {
+                    "playData": 1,
+                    "level": 1,
+                    "snapshot": {},
+                    "history": [],
+                    "candidateMode": "unbounded",
+                },
+                {
+                    "playData": 1,
+                    "level": 1,
+                    "snapshot": {},
+                    "history": [],
+                    "candidateLimit": 21,
+                },
             ):
                 try:
                     validate_agent_request(payload)

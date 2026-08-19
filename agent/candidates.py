@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+import os
+from pathlib import Path
 from typing import Any
 
 from .config import AGENT_MAX_TICKS
@@ -36,6 +39,14 @@ ACTION_NAMES = {
     DIG_LEFT_KEYCODE: "dig_left",
     DIG_RIGHT_KEYCODE: "dig_right",
 }
+
+CANDIDATE_LANES = json.loads(
+    Path(__file__).with_name("candidate_lanes.json").read_text(encoding="utf-8")
+)
+
+
+def candidate_lane(kind: str | None) -> str:
+    return CANDIDATE_LANES.get(kind or "", "fallback")
 
 GUARD_PRESSURE_RISKS = {"medium", "high", "critical"}
 
@@ -156,7 +167,9 @@ def generate_candidates(
     *,
     limit: int = 7,
     max_action_ticks: int = AGENT_MAX_TICKS,
+    mode: str | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    mode = candidate_mode(mode)
     analysis = analyze_state(snapshot, history)
     movement = analysis["movement"]
     dig = analysis["dig"]
@@ -173,6 +186,8 @@ def generate_candidates(
 
     candidates: list[dict[str, Any]] = []
     seen: set[str] = set()
+    candidate_audit: list[dict[str, Any]] = []
+    analysis["candidateAudit"] = candidate_audit
 
     def add(
         *,
@@ -184,6 +199,20 @@ def generate_candidates(
         reason: str,
         candidate_id: str | None = None,
     ) -> None:
+        audit = {
+            "kind": kind,
+            "candidateId": candidate_id or make_candidate_id(
+                kind, target, ACTION_NAMES[key_code]
+            ),
+            "lane": candidate_lane(kind),
+            "target": target,
+            "proposedAction": {
+                "keyCode": key_code,
+                "ticks": ticks,
+            },
+            "disposition": "proposed",
+        }
+        candidate_audit.append(audit)
         action = _normalize_action(key_code, ticks, reason, max_ticks=max_action_ticks)
         action = limit_horizontal_ticks_under_guard_pressure(action, analysis)
         action = limit_horizontal_ticks_before_open_hole(action, movement, kind)
@@ -191,6 +220,8 @@ def generate_candidates(
             action, analysis, kind, snapshot=snapshot
         )
         if action is None:
+            audit["disposition"] = "safety_rejection"
+            audit["detail"] = "prospective endpoint safety rejected the action"
             return
         if not is_action_physically_valid(
             action,
@@ -199,21 +230,30 @@ def generate_candidates(
             candidate_kind=kind,
             runner_x_offset=_to_int(_dict(analysis.get("runner")).get("xOffset")),
         ):
+            audit["disposition"] = "physical_rejection"
             return
         if not is_action_guard_safe(action, analysis, candidate_kind=kind):
+            audit["disposition"] = "safety_rejection"
             return
         cid = candidate_id or make_candidate_id(kind, target, ACTION_NAMES[key_code])
+        audit["candidateId"] = cid
+        audit["validatedAction"] = action
         if cid in seen:
+            audit["disposition"] = "deduplicated"
+            audit["detail"] = "candidate id already proposed"
             return
         seen.add(cid)
         candidate = {"id": cid, "kind": kind, "firstAction": action}
         suppression_reason = candidate_suppression_reason(candidate, loop_report)
         if suppression_reason:
             record_suppressed_candidate(loop_report, candidate, suppression_reason)
+            audit["disposition"] = "loop_suppressed"
+            audit["detail"] = suppression_reason
             return
         next_candidate = {
             "id": cid,
             "kind": kind,
+            "lane": candidate_lane(kind),
             "score": score,
             "target": target,
             "firstAction": action,
@@ -237,17 +277,31 @@ def generate_candidates(
                 }}
             else:
                 candidates[index] = merged
+            audit["disposition"] = "deduplicated"
+            audit["detail"] = f"merged into {candidates[index]['id']}"
             return
         candidates.append(next_candidate)
+        audit["disposition"] = "validated"
+
+    def finalize() -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        candidates.sort(key=lambda item: (-int(item["score"]), item["id"]))
+        exposed = candidates[:limit]
+        exposed_ids = {str(item.get("id")) for item in exposed}
+        for audit in candidate_audit:
+            if audit.get("disposition") != "validated":
+                continue
+            if str(audit.get("candidateId")) in exposed_ids:
+                audit["disposition"] = "exposed"
+            else:
+                audit["disposition"] = "limit_truncated"
+        return exposed, analysis
 
     add_dig_completion_wait_candidate(add, analysis)
     if _dict(analysis.get("activeDig")).get("active"):
-        candidates.sort(key=lambda item: (-int(item["score"]), item["id"]))
-        return candidates[:limit], analysis
+        return finalize()
     add_floor_refill_wait_candidate(add, analysis)
     if add_trap_resolution_wait_candidate(add, movement, risk):
-        candidates.sort(key=lambda item: (-int(item["score"]), item["id"]))
-        return candidates[:limit], analysis
+        return finalize()
 
     if gold_complete:
         add_exit_candidates(add, analysis, movement)
@@ -303,8 +357,13 @@ def generate_candidates(
                 candidate_id=f"climb_ladder_{runner_x}_{runner_y}_{alternate}",
             )
         if classic_upper_left_ladder_detour_active(analysis):
-            candidates.sort(key=lambda item: (-int(item["score"]), item["id"]))
-            return candidates[:limit], analysis
+            if low_risk_expansion_enabled(mode) and _eligible_for_low_risk_expansion(
+                analysis, candidates
+            ):
+                add_distinct_low_risk_progress_alternatives(
+                    add, analysis, snapshot, candidates[0], mode=mode
+                )
+            return finalize()
 
     if not gold_complete:
         add_classic_gold_route_candidate(add, analysis)
@@ -312,8 +371,13 @@ def generate_candidates(
             candidate.get("kind") == "classic_gold_route" for candidate in candidates
         )
         if classic_route_active and classic_upper_left_detour(analysis):
-            candidates.sort(key=lambda item: (-int(item["score"]), item["id"]))
-            return candidates[:limit], analysis
+            if low_risk_expansion_enabled(mode) and _eligible_for_low_risk_expansion(
+                analysis, candidates
+            ):
+                add_distinct_low_risk_progress_alternatives(
+                    add, analysis, snapshot, candidates[0], mode=mode
+                )
+            return finalize()
         add_gold_candidates(add, analysis, god_mode, snapshot)
         if not classic_route_active:
             add_ladder_alignment_candidates(add, analysis, god_mode)
@@ -327,25 +391,58 @@ def generate_candidates(
     if god_mode and not gold_complete and not candidates:
         add_god_mode_progress_candidate(add, analysis)
 
+    # Preserve a bounded horizontal progress option for low-risk off-row
+    # states when structured routes produced nothing. Without this, a legal
+    # movement toward remaining gold collapses to wait_or_stop.
+    if (
+        not candidates
+        and not guard_pressure
+        and not loop_report.get("active")
+        and not gold_complete
+    ):
+        add_low_risk_horizontal_progress_candidate(add, analysis)
+
+    if low_risk_expansion_enabled(mode) and _eligible_for_low_risk_expansion(
+        analysis, candidates
+    ):
+        singleton = candidates[0]
+        add_distinct_low_risk_progress_alternatives(
+            add, analysis, snapshot, singleton, mode=mode
+        )
+
     if not candidates and not (guard_pressure or loop_report.get("active")):
         add_wait_candidate(add)
 
     if not candidates:
         add_emergency_hold_candidate(add, risk)
 
-    candidates.sort(key=lambda item: (-int(item["score"]), item["id"]))
-    return candidates[:limit], analysis
+    return finalize()
 
 
-def low_risk_expansion_enabled() -> bool:
-    return os.environ.get("AGENT_CANDIDATE_MODE", "baseline").strip().lower() == "expanded"
+def low_risk_expansion_enabled(mode: str | None = None) -> bool:
+    return candidate_mode(mode) in {"alternatives", "guided", "promoted"}
 
 
-def _eligible_for_low_risk_expansion(analysis: dict[str, Any]) -> bool:
+def candidate_mode(override: str | None = None) -> str:
+    return str(
+        override if override is not None else os.environ.get("AGENT_CANDIDATE_MODE", "baseline")
+    ).strip().lower()
+
+
+def experimental_progress_score(base: int, mode: str | None = None) -> int:
+    """Raise only experimental progress scores in the promoted arm."""
+    return base + 18 if candidate_mode(mode) == "promoted" else base
+
+
+def _eligible_for_low_risk_expansion(
+    analysis: dict[str, Any], candidates: list[dict[str, Any]]
+) -> bool:
     risk = _dict(analysis.get("risk"))
     loop_report = _dict(analysis.get("loopReport"))
     return (
-        not analysis.get("godMode")
+        len(candidates) == 1
+        and candidate_lane(candidates[0].get("kind")) == "progress"
+        and not analysis.get("godMode")
         and not analysis.get("goldComplete")
         and not _dict(analysis.get("activeDig")).get("active")
         and not loop_report.get("active")
@@ -353,9 +450,20 @@ def _eligible_for_low_risk_expansion(analysis: dict[str, Any]) -> bool:
     )
 
 
-def add_low_risk_progress_alternatives(add, analysis: dict[str, Any], snapshot) -> None:
-    """Offer bounded route alternatives only when ordinary movement is low-risk."""
+def add_distinct_low_risk_progress_alternatives(
+    add,
+    analysis: dict[str, Any],
+    snapshot: dict[str, Any],
+    singleton: dict[str, Any],
+    *,
+    mode: str | None = None,
+) -> None:
+    """Expose only legal progress choices with a distinct direction and target."""
     movement = _dict(analysis.get("movement"))
+    singleton_action = _dict(singleton.get("firstAction"))
+    singleton_key_code = _to_int(singleton_action.get("keyCode"))
+    singleton_target = singleton.get("target")
+    runner_y = _to_int(_dict(analysis.get("runner")).get("y"))
     seen_targets: set[tuple[int, int, str]] = set()
     for gold in analysis.get("nearestGold", []):
         if gold.get("source") == "guard" or not gold.get("sameRow"):
@@ -372,23 +480,93 @@ def add_low_risk_progress_alternatives(add, analysis: dict[str, Any], snapshot) 
         if not movement.get("canMoveLeft" if direction == "left" else "canMoveRight"):
             continue
         key_code = LEFT_KEYCODE if direction == "left" else RIGHT_KEYCODE
-        distance = max(1, _to_int(gold.get("distance")) or 1)
-        for ticks in (2, 4, 6):
-            if ticks >= distance * LEGACY_SUBTILE_STEP:
+        candidate_target = {"x": target[0], "y": target[1], "tile": "$"}
+        if key_code == singleton_key_code or candidate_target == singleton_target:
+            continue
+        add(
+            kind="low_risk_progress_option",
+            key_code=key_code,
+            ticks=6,
+            score=experimental_progress_score(88, mode),
+            target=candidate_target,
+            reason=(
+                f"distinct low-risk route: move {direction} toward gold at "
+                f"({target[0]},{target[1]})"
+            ),
+            candidate_id=(
+                f"low_risk_progress_option_{target[0]}_{target[1]}_{direction}"
+            ),
+        )
+
+    for ladder in analysis.get("rowLadders", []):
+        direction = ladder.get("direction")
+        if ladder.get("tile") != "H" or direction not in {"left", "right"}:
+            continue
+        key_code = LEFT_KEYCODE if direction == "left" else RIGHT_KEYCODE
+        candidate_target = {"x": ladder.get("x"), "y": ladder.get("y"), "tile": "H"}
+        if key_code == singleton_key_code or candidate_target == singleton_target:
+            continue
+        if not movement.get("canMoveLeft" if direction == "left" else "canMoveRight"):
+            continue
+        add(
+            kind="low_risk_progress_option",
+            key_code=key_code,
+            ticks=6,
+            score=experimental_progress_score(86, mode),
+            target=candidate_target,
+            reason=(
+                f"distinct low-risk route: move {direction} toward ladder at "
+                f"({ladder.get('x')},{ladder.get('y')})"
+            ),
+            candidate_id=(
+                f"low_risk_progress_option_ladder_{ladder.get('x')}_"
+                f"{ladder.get('y')}_{direction}"
+            ),
+        )
+
+    if _dict(analysis.get("ladder")).get("onLadder") and runner_y is not None:
+        for direction, key_code, movement_key in (
+            ("up", UP_KEYCODE, "canMoveUp"),
+            ("down", DOWN_KEYCODE, "canMoveDown"),
+        ):
+            if key_code == singleton_key_code or not movement.get(movement_key):
+                continue
+            target_gold = next(
+                (
+                    gold
+                    for gold in analysis.get("nearestGold", [])
+                    if gold.get("source") != "guard"
+                    and _to_int(gold.get("y")) is not None
+                    and (
+                        int(gold["y"]) < runner_y
+                        if direction == "up"
+                        else int(gold["y"]) > runner_y
+                    )
+                ),
+                None,
+            )
+            if not target_gold:
+                continue
+            candidate_target = {
+                "x": target_gold.get("x"),
+                "y": target_gold.get("y"),
+                "tile": "$",
+            }
+            if candidate_target == singleton_target:
                 continue
             add(
                 kind="low_risk_progress_option",
                 key_code=key_code,
-                ticks=ticks,
-                score=88 - ticks * 2,
-                target={"x": target[0], "y": target[1], "tile": "$"},
+                ticks=6,
+                score=experimental_progress_score(87, mode),
+                target=candidate_target,
                 reason=(
-                    f"low-risk bounded progress option: move {direction} {ticks} ticks "
-                    f"toward gold at ({target[0]},{target[1]}) and reassess"
+                    f"distinct low-risk ladder route: climb {direction} toward gold at "
+                    f"({target_gold.get('x')},{target_gold.get('y')})"
                 ),
                 candidate_id=(
-                    f"low_risk_progress_option_{target[0]}_{target[1]}_"
-                    f"{direction}_{ticks}ticks"
+                    f"low_risk_progress_option_ladder_{direction}_gold_"
+                    f"{target_gold.get('x')}_{target_gold.get('y')}"
                 ),
             )
 
@@ -634,7 +812,20 @@ def add_non_god_escape_candidates(
     # the dedicated hole, vertical, or defensive candidates below, but must
     # not masquerade as a same-row guard and suppress ordinary progress.
     side_retreat_pressure = guard.get("relativeY") == "same"
-    vertical_retreat_pressure = side_retreat_pressure
+    # A high/critical guard directly below or above can be escaped by taking
+    # the opposite valid ladder direction. Treat that as vertical retreat
+    # pressure too; otherwise a runner on a ladder can collapse to
+    # emergency_hold even though a row-changing escape is available.
+    cross_row_up_pressure = (
+        guard_risk in {"high", "critical"}
+        and guard.get("relativeY") == "below"
+        and movement.get("canMoveUp")
+    )
+    cross_row_down_pressure = (
+        guard_risk in {"high", "critical"}
+        and guard.get("relativeY") == "above"
+        and movement.get("canMoveDown")
+    )
     decisive_defensive_trap = bool(
         guard_risk == "high"
         and closing
@@ -686,7 +877,9 @@ def add_non_god_escape_candidates(
             ),
             candidate_id=f"evade_edge_ladder_{edge_escape_direction}",
         )
-        return
+        # Keep evaluating vertical escape options as well. The horizontal
+        # edge move can be rejected later by same-row guard safety, while an
+        # available ladder retreat remains a valid way out of the pressure.
     left_open_hole = _dict(_dict(_dict(movement.get("details")).get("left")).get("openHole"))
     right_open_hole = _dict(_dict(_dict(movement.get("details")).get("right")).get("openHole"))
     hole_escape_direction = None
@@ -753,7 +946,7 @@ def add_non_god_escape_candidates(
                     reason=f"{guard_risk} guard pressure leaves an adjacent open escape hole to the {direction}",
                 )
     if (
-        vertical_retreat_pressure
+        (side_retreat_pressure or cross_row_up_pressure)
         and movement.get("canMoveUp")
         and not decisive_defensive_trap
     ):
@@ -765,7 +958,7 @@ def add_non_god_escape_candidates(
             reason="non-god-mode same-row guard pressure is active and up is valid",
         )
     if (
-        vertical_retreat_pressure
+        (side_retreat_pressure or cross_row_down_pressure)
         and movement.get("canMoveDown")
         and not edge_defensive_trap
         and not decisive_defensive_trap
@@ -777,7 +970,7 @@ def add_non_god_escape_candidates(
             score=118,
             reason="non-god-mode same-row guard pressure is active and down is valid",
         )
-    if side == "left" and left_dig_available and left_trap_ready:
+    if side == "left" and left_dig_available and left_trap_ready and not edge_escape_direction:
         imminent_landing_trap = imminent_landing_side == "left"
         add(
             kind="defensive_dig",
@@ -800,7 +993,7 @@ def add_non_god_escape_candidates(
                 else "guard pressure from left and dig_left is legal"
             ),
         )
-    if side == "right" and right_dig_available and right_trap_ready:
+    if side == "right" and right_dig_available and right_trap_ready and not edge_escape_direction:
         imminent_landing_trap = imminent_landing_side == "right"
         add(
             kind="defensive_dig",
