@@ -44,11 +44,11 @@ outputType = "console"
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = ".venv/bin/python app.py"
-waitForPort = 8080
+waitForPort = 8485
 
 [[ports]]
-localPort = 8080
-externalPort = 8080
+localPort = 8485
+externalPort = 8485
 exposeLocalhost = true
 
 [[ports]]

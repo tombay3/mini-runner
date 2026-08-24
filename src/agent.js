@@ -72,8 +72,8 @@ function deriveAgentButtonState(state, supported) {
   return {
     disabled: !supported || unrelatedBusy,
     title: supported
-      ? "Solve Classic level 1 with AI agent"
-      : "AI agent supports Classic level 1 only",
+      ? "Solve this game with the AI agent"
+      : "AI agent does not support this game context",
   };
 }
 
@@ -94,7 +94,7 @@ async function runAgent(state, deps) {
   const playData = config.agent.playData;
   const level = config.agent.level;
   if (!hooks?.isSupportedContext?.(playData, level)) {
-    state.agentLastError = "agent supports Classic level 1 only";
+    state.agentLastError = "agent does not support this game context";
     deps.finishUiAction(state, { error: true });
     return;
   }

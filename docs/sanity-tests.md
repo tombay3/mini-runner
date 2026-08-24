@@ -1,10 +1,9 @@
 # Sanity Tests
 
 ## Summary
-`npm test` runs lightweight direct-function sanity tests for the wrapper frontend and Flask
-backend. These tests are intended as a fast regression check after wrapper/API refactors.
-They do not execute the legacy game engine, run browser UI automation, or call the LLM
-planning endpoint.
+`npm test` is the fast regression check for wrapper and Flask changes. It exercises direct
+functions and the Flask test client; it does not run the legacy game, browser automation, or an
+LLM call.
 
 Use `npm run evaluate -- --smoke` for the separate real-browser boot check, or
 `npm run evaluate` for actual model-driven normal-mode trials. See

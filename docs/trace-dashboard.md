@@ -2,9 +2,8 @@
 
 ## Purpose
 
-`dash.py` and `loader.py` provide a read-only Streamlit-pandas run-steps debugging for
-recordings and agent traces. They are isolated from the legacy runtime, Vite wrapper, Flask
-backend, and solver. The dashboard reads the flat JSON stores without modifying them.
+`dash.py` and `loader.py` provide a read-only Streamlit dashboard for recordings and agent
+traces. It reads the flat JSON stores without modifying the game, backend, or stores.
 
 Run it from the repository root:
 
@@ -18,7 +17,7 @@ from the repository root. Streamlit caches each loaded folder until **Reload dat
 
 ## Data Model
 
-`loader.py` builds three pandas views:
+`loader.py` builds three views used by the dashboard:
 
 - `runs_df`: recording rows joined to trace metadata by `traceId`;
 - `steps_df`: flattened trace steps with action, validation, loop, state, outcome, and candidate data;
@@ -90,10 +89,9 @@ For the selected trace, the candidate breakdown groups eligible candidates by ki
 
 ## Retention And Missing Links
 
-`recordings.json` is the pin authority. It retains every pinned recording plus the newest 10
-unpinned recordings. `agent-traces.json` retains traces linked by pinned recordings plus the
-newest 10 other traces, without storing pin fields itself. A recording whose linked trace is
-already missing remains visible in Section 1 but does not recreate that trace and has no
-inspectable steps. Trace-only runs are not selectable while the run overview is
-recording-driven. Manual recordings have no linked trace and therefore no Section 2 or Section
-3 data.
+`recordings.json` is the pin authority; `agent-traces.json` does not store pin fields. Both retain
+pinned runs plus the newest unpinned runs. See [Trace API and store](./backend-spec.md#trace-api-and-store)
+for the exact retention rule.
+
+A recording with a missing trace remains visible but has no inspectable steps. Trace-only runs are
+not selectable because the overview starts from recordings. Manual recordings have no trace data.

@@ -391,10 +391,8 @@ def get_movement_affordance(snapshot: dict[str, Any]) -> dict[str, Any]:
         "canFinishLadderClimb": can_finish_ladder_climb,
         "canFinishExitClimb": bool(
             _is_gold_complete(snapshot)
-            and runner_x == 18
-            and runner_y == 0
             and runner_y_offset > 0
-            and current_tile in ladder_tiles
+            and current_tile == "S"
         ),
         "verticalAffordance": vertical_affordance,
         "details": {

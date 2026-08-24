@@ -61,7 +61,7 @@ Create `.env.local` with one model profile. For example:
 
 ```bash
 AGENT_MODEL_PROFILE=openai
-OPENAI_MODEL=gpt-4.1-mini
+OPENAI_MODEL=gpt-5-nano
 OPENAI_API_KEY=your_openai_api_key
 ```
 
@@ -91,8 +91,8 @@ run. Use `Play`, `Prev`, `Next`, and `Delete` to inspect retained recordings.
 
 ## Trace Dashboard
 
-The trace dashboard is the primary agent-trace stepping and debugging tool. It reads the
-retained recording and trace stores without changing them, then connects each agent action to
+The trace dashboard is the primary agent-trace stepping and debugging tool. It lets you
+inspect retained recording and the decisions within them, connecting each run action to
 the state that produced it, the candidates the model could see, the requested choice, backend
 validation, the executed action, and the observed outcome. Existing stores can be inspected
 without running the game frontend or backend.
@@ -103,35 +103,21 @@ Start it in another terminal with the Python environment activated:
 streamlit run dash.py --server.port 5100
 ```
 
-Open [http://localhost:5100](http://localhost:5100). The dashboard reads `__data1` by default.
-Use `AGENT_DATA_DIR` or the sidebar path field to inspect another compatible folder. Results
-are cached by folder; press **Reload data** after the underlying JSON files change.
-
-The dashboard has three sections:
-
-1. **Run Overview** lists recordings newest first and selects the trace used below. It shows
-   outcome, demo time, step count, failure reason, model, god mode (`★`), lower-score requests
-   (`✨`), validation or suppression warnings (`⚠️`), and confirmed loop events (`🔁`).
-2. **Trace Inspector** exposes every stored decision as an expandable step. A step combines
-   its pre-action state, action and duration, requested and executed candidates, conditional
-   validation details, loop suppression, derived after-state, and compact candidate table.
-3. **Candidate Score Breakdown** aggregates appearances, selections, average score, and
-   selection rate by candidate kind for the selected trace.
-
-See [Trace dashboard](docs/trace-dashboard.md) for field definitions, event-marker semantics,
-derived outcomes, data retention, and missing-link behavior.
+Open [http://localhost:5100](http://localhost:5100). It reads `__data1` by default; use
+`AGENT_DATA_DIR` or the sidebar path to choose another folder. Press **Reload data** after the
+JSON changes. See [Trace dashboard](docs/trace-dashboard.md) for its views, fields, and retention.
 
 ## Observability And Local Data
 
 The wrapper stores replayable demos in `__data1/recordings.json`. Agent recordings link to
-decision traces in `__data1/agent-traces.json` through `traceId`. Each store retains pinned runs plus its newest 10 other runs.
+decision traces in `__data1/agent-traces.json` through `traceId`. See
+[Trace API and store](docs/backend-spec.md#trace-api-and-store) for stored data and retention.
 
 Set `AGENT_DEBUG_LOG=1` to write the latest 10 raw model I/O turns to
 `__data1/agent-debug.log`. Raw prompts and model responses are excluded from normal traces.
 
-For aggregate offline analysis, `scripts/trace-analytics.ipynb` provides read-only
-pandas/matplotlib views of recordings, runs, steps, candidates, outcomes, loop-filter events,
-and fallbacks.
+For aggregate offline analysis, `scripts/trace-analytics.ipynb` reads recordings, runs, steps,
+candidates, outcomes, loop events, and fallbacks without changing them.
 
 ## Testing And Evaluation
 
@@ -143,8 +129,8 @@ Run the lightweight backend and frontend checks with:
 npm test
 ```
 
-These checks use direct helpers and the Flask test client. They do not run the legacy game or
-call an LLM.
+These checks use direct helpers and the Flask test client. They do not run the legacy game or call
+an LLM. See [Sanity tests](docs/sanity-tests.md) for coverage and when to run them.
 
 ### Agent evaluator
 

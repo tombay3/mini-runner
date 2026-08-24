@@ -78,8 +78,6 @@ def build_loop_report(
         and not environment_progress
         and repeated_kind != "retreat_from_guard"
         and not safety_retreat_dominated
-        and not repeated_progress["madeProgress"]
-        and not repeated_progress["targetReached"]
         and (
             (len(positions) >= 6 and x_range <= 4 and direction_changes >= 4)
             or recent_horizontal_cycle
@@ -176,7 +174,7 @@ def build_loop_report(
         "ladderX": vertical_cycle.get("ladderX"),
         "preferredDirection": vertical_cycle.get("preferredDirection"),
         "exitDirection": vertical_cycle.get("exitDirection"),
-        "climbDirections": vertical_cycle.get("climbDirections", []),
+        "verticalDirections": vertical_cycle.get("verticalDirections", []),
     }
     return report
 
@@ -189,6 +187,11 @@ def candidate_suppression_reason(
     suppress = dict_value(loop_report.get("suppress"))
     candidate_id = candidate.get("id")
     kind = candidate.get("kind")
+    # A loop must not remove the last bounded safety action.  Emergency hold
+    # is the generator's final escape hatch when ordinary actions are unsafe;
+    # suppressing it can turn a recoverable wait into an empty candidate set.
+    if kind == "emergency_hold":
+        return None
     if candidate_id in set(suppress.get("candidateIds") or []):
         return f"repeats {loop_report.get('type')} candidate {candidate_id}"
     if kind in set(suppress.get("candidateKinds") or []):
@@ -212,8 +215,12 @@ def candidate_suppression_reason(
                 f"same target ({target[0]},{target[1]}) as suppressed "
                 "horizontal_cycle route"
             )
-    if kind == "climb_ladder" and direction in set(suppress.get("directions") or []):
-        return f"ladder direction {direction} repeats {loop_report.get('type')}"
+    if (
+        loop_report.get("type") == "vertical_cycle"
+        and kind in {"climb_ladder", "descend_route"}
+        and direction in set(suppress.get("directions") or [])
+    ):
+        return f"vertical direction {direction} repeats {loop_report.get('type')}"
     return None
 
 
@@ -267,7 +274,7 @@ def empty_loop_report(
             "ladderX": None,
             "preferredDirection": None,
             "exitDirection": None,
-            "climbDirections": [],
+            "verticalDirections": [],
         },
     }
 
@@ -324,11 +331,11 @@ def detect_vertical_cycle(
     )
     if not alternating_runs or not ladder_actions:
         return {"detected": False}
-    climb_directions = sorted(
+    vertical_directions = sorted(
         {
             "up" if key == UP_KEYCODE else "down"
             for key, candidate_id in vertical_actions[-6:]
-            if candidate_kind(candidate_id) == "climb_ladder"
+            if candidate_kind(candidate_id) in {"climb_ladder", "descend_route"}
         }
     )
     target_y = to_int(primary_target.get("y"))
@@ -345,18 +352,18 @@ def detect_vertical_cycle(
         "ladderX": next(iter(x_values)),
         "preferredDirection": preferred,
         "exitDirection": exit_direction,
-        "climbDirections": climb_directions,
+        "verticalDirections": vertical_directions,
     }
 
 
 def blocked_vertical_directions(vertical: dict[str, Any]) -> list[str]:
-    climb_directions = [
+    vertical_directions = [
         direction
-        for direction in vertical.get("climbDirections") or []
+        for direction in vertical.get("verticalDirections") or []
         if direction in {"down", "up"}
     ]
-    if climb_directions:
-        return climb_directions
+    if vertical_directions:
+        return vertical_directions
     if vertical.get("exitDirection"):
         return ["down", "up"]
     preferred = vertical.get("preferredDirection")
@@ -432,7 +439,6 @@ def candidate_target(candidate_id: str | None) -> tuple[int, int] | None:
     kind = candidate_kind(candidate_id)
     if kind not in {
         "align_ladder",
-        "classic_gold_route",
         "collect_current_tile_gold",
         "collect_same_row_gold",
         "descend_route",
@@ -481,7 +487,6 @@ def candidate_kind(candidate_id: str | None) -> str | None:
         "wait_for_dig_completion",
         "wait_for_trap_resolution",
         "emergency_hold",
-        "classic_gold_route",
         "god_mode_progress",
         "low_risk_horizontal_progress",
     ]

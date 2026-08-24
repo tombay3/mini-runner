@@ -238,7 +238,7 @@ function createOverlay(state) {
       data-action="agent"
       data-icon="✨"
       aria-label="Solve with AI agent"
-      title="Solve Classic level 1 with AI agent"
+      title="Solve this game with the AI agent"
     ></button>
     <button
       type="button"

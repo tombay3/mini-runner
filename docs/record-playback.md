@@ -1,16 +1,17 @@
 # Recording And Playback
 
 ## Summary
-The wrapper adds stored recording selection and playback around the legacy demo engine. The legacy game still records and replays demos; the wrapper persists records, selects retained runs, and provides debugging controls.
+The wrapper adds stored-run selection and playback around the legacy demo engine. The legacy game
+still records and replays demos; the wrapper persists records and provides debug controls.
 
 ## Icon Rail
 `src/recording.js` owns the left wrapper rail:
 
-- `AI`: start or cancel the Classic level 1 agent.
-- `Play`: play, pause, or resume the selected stored recording.
-- `Ctrl`/`Command` + `Play`: play the selected stored recording and record the browser tab.
-- `Prev` / `Next`: cycle through retained records for the current level.
-- `Delete`: confirm, then delete the selected recording and its linked trace when present.
+- `AI`: start or cancel the game agent.
+- `Play`: play, pause, or resume the recording.
+- `Ctrl`/`Command` + `Play`: play the recording and record as video.
+- `Prev` / `Next`: cycle through the records for the current level.
+- `Delete`: delete the recording.
 - `Star`: toggle legacy god mode.
 - `Fullscreen`: enter or exit fullscreen and restart the legacy game.
 
@@ -78,4 +79,6 @@ Keyboard shortcuts (hotkeys) control the selected stored recording:
 Trace stepping is aligned by trace step tick, which can cross zero, one, or many recorded demo action segments because trace steps and demo key events are different timelines.
 
 ## Fullscreen Restart
-The legacy game computes canvas and icon geometry during `init()`. Entering or exiting fullscreen restarts from the welcome flow so the legacy sizing code reruns against the new viewport.  Before calling `window.init()`, the wrapper removes stale legacy-created canvas overlays while preserving the root `#canvas` and wrapper rail.
+The legacy game computes canvas and icon geometry during `init()`. Entering or leaving fullscreen
+restarts from the welcome flow so that sizing runs for the new viewport. Before `window.init()`, the
+wrapper removes stale legacy canvas overlays but keeps the root `#canvas` and wrapper rail.

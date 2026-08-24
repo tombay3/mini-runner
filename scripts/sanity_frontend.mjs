@@ -187,7 +187,7 @@ const overlayFacts = (overrides = {}) => ({
   playbackPhase: "inactive",
   videoRecording: false,
   agentRunning: false,
-  agentButtonState: { disabled: false, title: "Solve Classic level 1 with AI agent" },
+  agentButtonState: { disabled: false, title: "Solve this game with the AI agent" },
   godModeActive: false,
   godModeSupported: true,
   fullscreenActive: false,

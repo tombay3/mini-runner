@@ -1,4 +1,4 @@
-# Classic Level 1 LLM Game Rules
+# Lode Runner Agent Rules
 
 ## Objective
 

@@ -223,7 +223,7 @@ with st.expander(f"📋 Section 1 — Run Overview{_inspect_label}", expanded=Tr
             key="run_overview_table",
         )
         st.caption(
-            "🎯 average candidates/step · ✨ lower-score request · "
+            "🎯 average candidates/step · ✨ lower-score selection · "
             "⚠️ replacement/suppression · 🔁 active loop"
         )
 

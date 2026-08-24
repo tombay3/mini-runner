@@ -28,10 +28,10 @@ _DOTENV_ORIGINAL_ENV: dict[str, str | None] = {}
 AGENT_PLAY_DATA = 1
 AGENT_LEVEL = 1
 AGENT_MAX_TICKS = 20
+MAX_CANDIDATE_LIMIT = 20
 AGENT_TEMPERATURE = 0.5
 AGENT_MODEL_PROFILES = {"openai", "minimax", "gemini"}
 GEMINI_DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
-
 PUBLIC_AGENT_CONFIG_DEFAULTS: dict[str, Any] = {
     "agent": {
         "playData": AGENT_PLAY_DATA,
@@ -120,7 +120,7 @@ def load_public_agent_config() -> dict[str, Any]:
             "candidateLimit": _positive_int(
                 backend.get("candidateLimit"),
                 defaults["backend"]["candidateLimit"],
-                maximum=20,
+                maximum=MAX_CANDIDATE_LIMIT,
             ),
             "maxActionTicks": _positive_int(
                 backend.get("maxActionTicks"),

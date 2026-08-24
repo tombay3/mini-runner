@@ -22,7 +22,7 @@ def read_agent_rules() -> str:
         return LLM_GAME_RULES_PATH.read_text(encoding="utf-8")[:3000]
     except FileNotFoundError:
         return (
-            "Classic level 1 focus: collect all gold, use ladders and route digs to change rows, "
+            "Collect all gold, use ladders and route digs to change rows, "
             "and avoid non-progress loops. In god mode, guard contact is non-lethal."
         )
 
@@ -168,6 +168,7 @@ def format_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
         {
             "id": candidate.get("id"),
             "kind": candidate.get("kind"),
+            "lane": candidate.get("lane", "fallback"),
             "score": candidate.get("score"),
             "target": candidate.get("target"),
             "action": {

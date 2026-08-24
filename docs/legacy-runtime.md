@@ -1,9 +1,9 @@
 # Legacy Runtime Assessment
 
-This document assesses the original
+This document describes the original
 [`SimonHung/LodeRunner_TotalRecall`](https://github.com/SimonHung/LodeRunner_TotalRecall)
-codebase preserved under `public/game/`. It intentionally focuses on the legacy game before
-the Vite wrapper, Flask backend, and LLM agent were introduced.
+codebase under `public/game/`. It covers the legacy game itself, not the wrapper, backend, or
+agent.
 
 - Standalone browser-based platform game written in vanilla JavaScript
 - Open-source HTML5 Total Recall remake of the classic 1983 game **Lode Runner**
@@ -85,7 +85,5 @@ movement. The fixed 28x16 `map[x][y]` grid has two layers:
 
 ## Legacy Assessment
 
-The runtime is mature, feature-rich, and self-contained. Its global, load-order-dependent
-architecture makes isolated changes difficult, but it faithfully centralizes gameplay rules
-and demo behavior. For the current Mini Runner integration, it should remain the authority
+The legacy runtime is mature, feature-rich, and self-contained. It remains the authority
 for physics, guard AI, terminal states, rendering, recording, and playback.

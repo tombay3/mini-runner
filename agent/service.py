@@ -183,7 +183,7 @@ def validate_agent_request(payload: Any) -> tuple[dict[str, Any], list[dict[str,
     except (TypeError, ValueError) as exc:
         raise AgentRequestError("playData and level must be integers") from exc
     if play_data != AGENT_PLAY_DATA or level != AGENT_LEVEL:
-        raise AgentRequestError("only Classic level 1 is supported")
+        raise AgentRequestError("unsupported game context")
 
     snapshot = payload.get("snapshot")
     if not isinstance(snapshot, dict):

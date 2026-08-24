@@ -844,7 +844,7 @@ def delete_recording(play_data: str, level: str):
 if __name__ == "__main__":
     app.run(
         host="localhost",
-        port=8080,
+        port=8485,
         use_reloader=True,
         use_debugger=False,
     )

@@ -1,6 +1,5 @@
 {
   "align_ladder": "progress",
-  "classic_gold_route": "progress",
   "climb_ladder": "progress",
   "collect_current_tile_gold": "progress",
   "collect_same_row_gold": "progress",
@@ -13,7 +12,6 @@
   "exit_ladder_route": "progress",
   "god_mode_progress": "progress",
   "low_risk_horizontal_progress": "progress",
-  "low_risk_progress_option": "progress",
   "retreat_from_guard": "safety",
   "route_access_dig": "progress",
   "route_access_follow": "progress",

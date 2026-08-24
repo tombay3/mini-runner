@@ -1,9 +1,10 @@
-# Backend Spec
+# Backend Specification
 
 ## Summary
-`app.py` provides local Flask APIs for recording persistence, agent planning, trace retrieval, model configuration, logging, and raw model I/O debugging.
+`app.py` is the local Flask API for recordings, agent planning, traces, model configuration, and
+debug logging. Use this document for endpoint contracts, configuration, and stored run data.
 
-Current backend layers:
+Backend layers:
 
 - `candidates`: extracts normalized facts, then generates and scores candidate actions.
 - `reasoning_tools`: deterministic movement, guard, dig, and route helpers.
@@ -11,10 +12,10 @@ Current backend layers:
 - `prompt`: formats the current state summary and eligible candidate list, including compact loop status.
 - `service`: orchestrates one model call, generic candidate validation, and trace assembly.
 
-Mutable local stores:
+Local data stores:
 
 - `__data1/recordings.json` replayable user and agent demos.  Agent recordings reference traces with `traceId`.
-- `__data1/agent-traces.json` agent traces of latest runs.
+- `__data1/agent-traces.json` retained agent traces.
 - `__data1/agent-debug.log` when debug logging is enabled.
 
 ## Recording API
@@ -71,7 +72,7 @@ is `<8hex>-<timestamp>`. Short IDs are always the first eight-character segment.
   "planner": {
     "modelProfile": "openai",
     "provider": "openai",
-    "model": "openai:gpt-4.1-mini",
+    "model": "openai:gpt-5-nano",
     "mode": "candidate-selection"
   },
   "traceId": "...",
@@ -81,8 +82,7 @@ is `<8hex>-<timestamp>`. Short IDs are always the first eight-character segment.
 ```
 
 ## Backend Agent Flow
-- The endpoint supports Classic `playData=1`, `level=1`. Its flow is:
-  `snapshot + history -> candidate analysis -> LLM candidate choice -> action validation -> response`.
+- `snapshot + history -> candidate analysis -> LLM candidate choice -> action validation -> response`.
 - Candidate generation and loop filtering happen deterministically in Python before the LLM call.
 - `agent-traces.json` records compact state summaries, eligible candidates, the selected candidate,
   generic validation, loop-filter evidence, and model metadata.
@@ -119,46 +119,38 @@ The trace store has this shape:
 }
 ```
 
-When an agent recording is saved, the linked trace run is finalized with `outcome`.
-`outcome.finalState` is a compact post-action terminal snapshot containing the runner,
-all guards (including offsets, motion, and carried gold), gold state, tick, game state, and
-god-mode state. This preserves the evidence needed to classify a fatal or successful final
-action without storing the full terrain grid again.
+Run data with outcome:
 
-The browser-generated run ID is also used as the trace ID when planning fails before the
-first model response. In that case the backend creates a zero-step trace containing model
-metadata and the terminal failure outcome, so provider/configuration failures are retained
-instead of producing an unlinked recording error.
+- Each run stores `model`, `config`, `stepCount`, `latestAction`, and `outcome`.
+- `outcome.finalState` stores the terminal runner, guard, gold, tick, game-state, and god-mode
+  data needed to classify success or failure.
 
-`step.state` is a prompt-parity summary rather than a full snapshot. It contains:
+Step data:
 
-- `gameState`, `tick`, and `godMode`;
-- compact `runner` and `gold` objects;
-- `primaryProgressTarget` and compact `guardRisk` with the selected pressure guard and nearby guards;
-- movement booleans;
-- dynamic support under adjacent horizontal tiles, including whether movement would enter an open dug hole;
-- open-hole coordinates and legacy refill frame/time exposed by the agent hook for timed floor-wait candidates;
-- ladder detail and a compact route-access summary, including guard-blocked drop entry.
+- `step.state` is a compact prompt-parity summary of game state, runner, gold, movement, ladder,
+  progress target, guard risk, open holes, and route access.
+- `candidates` contains the legal backend choices, including each candidate's ID, kind, lane,
+  score, target, and first action.
+- The step also records the selected candidate, validation, action, and loop status. Raw model
+  messages and the full terrain grid are not stored.
+- `guardRisk` identifies the highest-priority mobile threat as `pressureGuard` and summarizes
+  nearby guards with `relativeX`, `relativeY`, `motion`, and `closing`. Guard pressure is adjusted
+  before candidate generation; `in_hole` has low immediate pressure.
 
-Each step also stores `candidates`, `selectedCandidateId`, `selectedCandidateKind`,
-`validation`, `action`, and `loopMonitor`. Full terrain, guard lists,
-movement details, dig analysis, and raw model messages are not stored in `step.state`.
-`guardRisk.pressureGuard` is the highest-priority mobile threat after guard-state adjustment
-(`in_hole` is low immediate pressure). All compact guards use the same `relativeX`, `relativeY`,
-`motion`, and `closing` fields.
+Loop data:
 
-`loopMonitor.active` identifies confirmed loops. `type` is one of `stationary_repeat`,
-`horizontal_cycle`, or `vertical_cycle`; `evidence` records recent positions, candidates,
-key codes, and progress facts; and `suppressedCandidates` records choices removed before the
-model call. Patterns below the confirmed-loop threshold are not stored or shown. Confirmed loop
-actions are removed from the eligible candidate list.
+- `loopMonitor` stores confirmed loop status, type, evidence, and `suppressedCandidates`.
+- Loop-filter behavior is defined in [candidate design](./candidate-design.md#loop-handling).
 
 Dashboard loading, derived after-state, event markers, and UI behavior are documented in
 [Trace dashboard](./trace-dashboard.md).
 
-The trace store keeps up to 10 newest runs. Run-level `model` records the resolved
-model/profile/provider, and run-level `config` records the planning controls used for the
-run. Model and config are not duplicated on every step.
+Retention and run metadata:
+
+- The trace store keeps up to 10 newest runs.
+- Run-level `model` and `config` are stored once, not repeated on every step.
+- See [retention and missing links](./trace-dashboard.md#retention-and-missing-links) for
+  retention behavior.
 
 
 ## Model Profiles
@@ -188,7 +180,7 @@ Examples:
 
 ```sh
 AGENT_MODEL_PROFILE=openai
-OPENAI_MODEL=gpt-4.1-mini
+OPENAI_MODEL=gpt-5-nano
 OPENAI_API_KEY=...
 
 AGENT_MODEL_PROFILE=minimax
@@ -201,14 +193,15 @@ GEMINI_MODEL=gemini-flash-lite-latest
 GEMINI_API_KEY=...
 
 # No profile: explicit provider prefix is required.
-AGENT_DEFAULT_MODEL=openai:gpt-4.1-mini
+AGENT_DEFAULT_MODEL=openai:gpt-5-nano
 OPENAI_API_KEY=...
 ```
 
 ## Public Agent Config
-`public/agent-config.json` is a non-secret local experiment file read by both the browser wrapper and Flask backend. It is served publicly, so it must never contain API keys, secret-bearing base URLs, or credentials.
+`public/agent-config.json` is a non-secret runtime file read by the browser wrapper and Flask
+backend. Because it is public, it must not contain API keys, secret-bearing URLs, or credentials.
 
-Current shape:
+Example configuration:
 
 ```json
 {
@@ -236,9 +229,9 @@ Backend fields:
 
 Browser fields:
 
-- `agent.playData` and `agent.level`: requested runtime context. The current backend still accepts only Classic `1:1`.
+- `agent.playData` and `agent.level`: requested runtime context, validated by the backend.
 - `agent.maxPlaybackTimeSeconds`: AI run limit in legacy game-time seconds.
-- `agent.maxSteps`: emergency backend-decision step cap. Classic level 1 defaults to 300 so guard-heavy normal-mode runs can finish while still remaining bounded.
+- `agent.maxSteps`: emergency backend-decision step cap, keeping guard-heavy normal-mode runs bounded.
 - `agent.historyLimit`: recent browser history entries sent to the backend.
 - `agent.modelProfile`: optional non-secret profile name. URL `?profile=...` and `window.__lodeRunnerAgentOptions.modelProfile` override it.
 
@@ -259,23 +252,30 @@ Environment-only settings:
 - Werkzeug access logs: `WARNING`
 - format: single-line `key=value`
 
-`python app.py --debug` sets `APP_LOG_LEVEL=DEBUG` and `AGENT_DEBUG_LOG=1` before logging
-is configured. Setting `AGENT_DEBUG_LOG=1` directly also enables debug-level app logging.
-`npm run api` selects the project `.venv` Python on macOS/Linux or Windows and enables
-Flask's source reloader. Python changes restart the development server automatically
-while the interactive Flask debugger remains disabled.
-Raw prompts and model outputs are written to `__data1/agent-debug.log` with 10-entry
-rotation. Each block includes trace id, model, prompt, final message, optional
-provider reasoning content or OpenAI Responses API reasoning summary, parse error,
-and selected candidate id. OpenAI-profile calls use the Responses API with a low
-reasoning effort and request an explicit brief decision rationale; that declared
-rationale is used when the provider does not return a reasoning summary. This is
-observable model output, not hidden chain-of-thought. Raw model I/O is never
-written to stdout or `agent-traces.json`.
+- `python app.py --debug` enables debug logging and model-I/O diagnostics.
+- `AGENT_DEBUG_LOG=1` enables the diagnostics without Flask debug mode.
+- `npm run api` uses the project virtual environment and Flask source reloading; the interactive
+  Flask debugger remains disabled.
+- Debug model I/O is written to `__data1/agent-debug.log` with 10-entry rotation. Entries include
+  the trace ID, model, prompt, final message, reasoning summary when available, parse errors, and
+  selected candidate ID.
+- OpenAI calls request a brief observable rationale. Raw model I/O is never written to stdout or
+  `agent-traces.json`.
 
 ## Offline Analytics
 
-`scripts/trace-analytics.ipynb` reads the current flat recording and trace stores without
+`scripts/trace-analytics.ipynb` reads the flat recording and trace stores without
 modifying them. It builds recording, run, step, and candidate data frames; joins recordings
 to traces by `traceId`; and charts outcomes, model usage, run duration, candidate selection,
 loop-filter events, and generic fallbacks. Notebook dependencies are included in `requirements.txt`.
+
+## Related References
+
+- [Candidate contract and lanes](./candidate-design.md#candidate-contract)
+- [Candidate classification matrix](./candidate-design.md#candidate-classification-matrix)
+- [Backend planner and candidate generation](./llm-agent.md#backend-planner-and-candidate-generation)
+- [Prompt and model output](./llm-agent.md#prompt-and-model-output)
+- [Safety, loops, and god mode](./llm-agent.md#safety-loops-and-god-mode)
+- [Loop handling](./candidate-design.md#loop-handling)
+- [Trace dashboard and retention](./trace-dashboard.md#retention-and-missing-links)
+- [Evaluator reports](./evaluator.md#reports-and-retention)

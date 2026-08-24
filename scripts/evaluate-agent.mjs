@@ -1,28 +1,41 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { chromium } from "playwright-core";
 
-import {
-  candidateLane,
-  candidateLaneSet,
-  classifySingletonStep,
-  decisionClass,
-  isProgressOnlyLowRiskStep,
-} from "./candidate-lanes.mjs";
-
 const scriptsDir = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.dirname(scriptsDir);
+const candidateLanes = Object.freeze(
+  JSON.parse(readFileSync(path.join(rootDir, "agent", "candidate_lanes.json"), "utf8")),
+);
 const options = parseArgs(process.argv.slice(2));
 const startedServers = [];
 let browser = null;
 let executablePath = null;
 const attempts = [];
 
+function candidateLane(candidateOrKind) {
+  const kind = typeof candidateOrKind === "string" ? candidateOrKind : candidateOrKind?.kind;
+  return candidateLanes[kind] || "fallback";
+}
+
+function candidateLaneSet(candidates) {
+  return [...new Set((candidates || []).map(candidateLane))].sort();
+}
+
+function decisionClass(step) {
+  const candidates = Array.isArray(step?.candidates) ? step.candidates : [];
+  if (!candidates.length) return "no_candidates";
+  const lanes = candidateLaneSet(candidates);
+  if (lanes.length === 1) return `${lanes[0]}_only`;
+  return `mixed_${lanes.join("_")}`;
+}
+
 try {
-  await ensureServer("backend", "http://127.0.0.1:8080/api/health", ["run", "api"]);
+  await ensureServer("backend", "http://127.0.0.1:8485/api/health", ["run", "api"]);
   await ensureServer("frontend", options.baseUrl, ["run", "dev", "--", "--host", "127.0.0.1"]);
 
   executablePath = resolveBrowserExecutable(options.browserExecutable);
@@ -36,12 +49,6 @@ try {
   const url = new URL(options.baseUrl);
   if (options.profile) {
     url.searchParams.set("profile", options.profile);
-  }
-  if (process.env.AGENT_CANDIDATE_MODE) {
-    url.searchParams.set("candidateMode", process.env.AGENT_CANDIDATE_MODE);
-  }
-  if (process.env.AGENT_CANDIDATE_LIMIT) {
-    url.searchParams.set("candidateLimit", process.env.AGENT_CANDIDATE_LIMIT);
   }
   await page.goto(url.href, { waitUntil: "domcontentloaded" });
   await page.waitForFunction(() => window.__lodeRunnerEvaluation?.ready(), null, {
@@ -62,7 +69,7 @@ try {
     } catch (error) {
       // A wrapper reload can destroy Playwright's execution context between
       // attempts. Reattach to the page and retry that attempt instead of
-      // abandoning the remaining campaign runs.
+      // abandoning the remaining evaluation runs.
       if (!String(error?.message || error).includes("Execution context was destroyed")) {
         throw error;
       }
@@ -304,17 +311,16 @@ function resolveBrowserExecutable(explicitPath) {
 
 function summarizeAttempt(number, startedAt, result, trace) {
   const steps = Array.isArray(trace?.steps) ? trace.steps : [];
+  const decisionSequenceFingerprint = createHash("sha256")
+    .update(steps.map((step) => step?.selectedCandidateId || "unknown").join("\n"))
+    .digest("hex");
   const kinds = {};
   const candidatePoolKinds = {};
   const candidatePoolLanes = {};
   const decisionClasses = {};
-  const singletonClassifications = {};
   const candidateAuditDispositions = {};
   const candidateGapClassifications = {};
   let maxCandidatePool = 0;
-  let progressOnlyLowRiskSteps = 0;
-  let progressOnlyLowRiskSingleChoiceSteps = 0;
-  let progressOnlyLowRiskMultiChoiceSteps = 0;
   const stepCorrelations = [];
   const notableCorrelations = [];
   let fallbacks = 0;
@@ -340,17 +346,7 @@ function summarizeAttempt(number, startedAt, result, trace) {
     const selectedKind = step?.selectedCandidateKind || "unknown";
     const selectedLane = candidateLane(selectedKind);
     const stepDecisionClass = decisionClass(step);
-    const singleton = classifySingletonStep(step);
     decisionClasses[stepDecisionClass] = (decisionClasses[stepDecisionClass] || 0) + 1;
-    if (singleton) {
-      singletonClassifications[singleton.classification] =
-        (singletonClassifications[singleton.classification] || 0) + 1;
-    }
-    if (isProgressOnlyLowRiskStep(step)) {
-      progressOnlyLowRiskSteps += 1;
-      if (candidates.length === 1) progressOnlyLowRiskSingleChoiceSteps += 1;
-      else progressOnlyLowRiskMultiChoiceSteps += 1;
-    }
     const candidateAudit = Array.isArray(step?.candidateAudit) ? step.candidateAudit : [];
     for (const item of candidateAudit) {
       const disposition = item?.disposition || "unknown";
@@ -361,10 +357,6 @@ function summarizeAttempt(number, startedAt, result, trace) {
         candidateGapClassifications[gapClass] =
           (candidateGapClassifications[gapClass] || 0) + 1;
       }
-    }
-    if (singleton?.classification?.startsWith("suspicious_") && !candidateAudit.length) {
-      candidateGapClassifications.missing_proposal =
-        (candidateGapClassifications.missing_proposal || 0) + 1;
     }
     if (candidates.length > 1) {
       const unselectedProgress = candidates.filter(
@@ -385,9 +377,6 @@ function summarizeAttempt(number, startedAt, result, trace) {
     let classification = "no_gap";
     if (!candidates.length) classification = "no_generated_candidates";
     else if (step?.validation?.fallbackUsed) classification = "model_selection_fallback";
-    else if (stepDecisionClass === "progress_only_low_risk" && selectedLane !== "progress") {
-      classification = "progress_only_selection_gap";
-    }
     const correlation = {
       stepIndex,
       tick: step?.state?.tick,
@@ -398,8 +387,6 @@ function summarizeAttempt(number, startedAt, result, trace) {
       selectedScore: candidates.find((candidate) => candidate?.id === step?.selectedCandidateId)?.score ?? null,
       candidateLanes: candidateLaneSet(candidates),
       decisionClass: stepDecisionClass,
-      singletonClassification: singleton?.classification || null,
-      singletonEvidence: singleton?.evidence || [],
       reasoningContent: modelSelection.reasoningContent || "",
       declaredRationale: modelSelection.declaredRationale || "",
       parseError: modelSelection.parseError || null,
@@ -449,6 +436,7 @@ function summarizeAttempt(number, startedAt, result, trace) {
     failureReason: result.failureReason,
     demoTime: result.demoTime,
     stepCount: trace?.stepCount ?? steps.length,
+    decisionSequenceFingerprint,
     model: trace?.model ?? null,
     normalMode: recordedGodMode === 0 && terminalGodMode === false,
     contextValid,
@@ -461,13 +449,9 @@ function summarizeAttempt(number, startedAt, result, trace) {
     candidatePoolKinds,
     candidatePoolLanes,
     decisionClasses,
-    singletonClassifications,
     candidateAuditDispositions,
     candidateGapClassifications,
     maxCandidatePool,
-    progressOnlyLowRiskSteps,
-    progressOnlyLowRiskSingleChoiceSteps,
-    progressOnlyLowRiskMultiChoiceSteps,
     stepCorrelations,
     notableCorrelations,
   };
