@@ -14,6 +14,7 @@ package.__path__ = [str(ROOT / "agent")]
 sys.modules[package.__name__] = package
 from _scoring_agent.candidates import generate_candidates
 from _scoring_agent.traces import serialize_step_trace
+from _scoring_agent.prompt import build_agent_prompt
 
 
 def snapshot(*, guarded=False, exit_state=False):
@@ -31,6 +32,47 @@ def snapshot(*, guarded=False, exit_state=False):
 
 
 class CandidateSmokeTests(unittest.TestCase):
+    def test_guard_isolation_and_v4_observations(self):
+        from unittest.mock import patch
+        for observed_risk in ("low", "high", "critical"):
+            state = snapshot(guarded=True)
+            state["godMode"] = True
+            original = copy.deepcopy(state)
+            observed = {"risk": observed_risk, "pressureGuard": {"id": 0, "x": 5, "y": 1},
+                        "nearbyGuards": [{"id": 0, "x": 5, "y": 1}], "runnerNearEdge": False}
+            with patch("_scoring_agent.candidates.assess_guard_risk", return_value=observed):
+                pool, analysis = generate_candidates(state, [])
+            self.assertEqual(analysis["risk"]["risk"], "low")
+            self.assertIsNone(analysis["risk"]["pressureGuard"])
+            self.assertEqual(analysis["risk"]["nearbyGuards"], [])
+            history = [{"candidateId": pool[0]["id"], "keyCode": 39, "ticks": 8,
+                        "before": {"runner": state["runner"], "goldCount": 1},
+                        "after": {"runner": state["runner"], "goldCount": 1}}]
+            prompt = build_agent_prompt(state, candidates=pool, analysis=analysis, history=history)
+            self.assertNotIn("guard", prompt.lower())
+            self.assertNotIn("godmode", prompt.lower())
+            trace = serialize_step_trace(snapshot=state, action=pool[0]["firstAction"], analysis=analysis)
+            self.assertEqual(trace["state"]["risk"], observed_risk)
+            self.assertEqual(trace["state"]["threat"]["pressureGuard"]["x"], 5)
+            self.assertEqual(trace["state"]["guards"][0]["id"], 0)
+            self.assertEqual(len(trace["state"]["guards"]), 1)
+            self.assertTrue(trace["state"]["guardThreatIgnored"])
+            self.assertEqual(state, original)
+            normal = build_agent_prompt({**state, "godMode": False}, candidates=pool,
+                                        analysis={**analysis, "risk": observed}, history=history)
+            self.assertIn("guard", normal.lower())
+
+    def test_guard_free_progress_modes_match(self):
+        for grid in (["       ", " H   H ", "#######"], ["       ", "       ", "#######"]):
+            state = snapshot()
+            state["terrainGrid"] = state["grid"] = grid
+            results = []
+            for mode in (False, True):
+                pool, _ = generate_candidates({**state, "godMode": mode}, [])
+                results.append([(c["id"], c["score"], c["firstAction"]["keyCode"],
+                                 c["firstAction"]["ticks"]) for c in pool])
+            self.assertEqual(*results)
+
     def test_candidate_output(self):
         for name, options in (("progress", {}), ("guarded", {"guarded": True}),
                               ("exit", {"exit_state": True})):
