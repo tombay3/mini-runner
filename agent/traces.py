@@ -37,11 +37,13 @@ def summarize_state(snapshot: dict[str, Any], analysis: dict[str, Any] | None = 
             "action": guard.get("actionName", guard.get("action")),
             "carryingGold": bool(guard.get("hasGold", False)),
         })
-    context = build_state_context(snapshot, analysis)
+    observed_analysis = {**analysis, "risk": analysis.get("observedGuardRisk", analysis.get("risk", {}))}
+    context = build_state_context({**snapshot, "godMode": False}, observed_analysis)
     return {
         "tick": snapshot.get("tick"),
         "gameState": analysis.get("gameState", snapshot.get("gameStateName", snapshot.get("gameState"))),
         "godMode": bool(analysis.get("godMode", snapshot.get("godMode", False))),
+        "guardThreatIgnored": bool(analysis.get("godMode", snapshot.get("godMode", False))),
         "runner": {
             **{key: runner.get(key) for key in ("x", "y", "xOffset", "yOffset")},
             "action": runner.get("actionName", runner.get("action")),
@@ -54,7 +56,7 @@ def summarize_state(snapshot: dict[str, Any], analysis: dict[str, Any] | None = 
                                 [{"x": item.get("x"), "y": item.get("y")}
                                  for item in gold.get("visiblePositions", []) if isinstance(item, dict)],
         },
-        "risk": _dict(analysis.get("risk")).get("risk", "unknown"),
+        "risk": _dict(observed_analysis.get("risk")).get("risk", "unknown"),
         **({key: context.get(key, {}) for key in
             ("primaryProgressTarget", "threat", "movement", "route")}
            if analysis else {}),

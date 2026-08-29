@@ -80,10 +80,11 @@ function prepare(){
   assert.equal(run.steps[prefix.length]?.state.tick,tick,'Fork must be a recorded decision boundary');
   const controlRevision=git('rev-parse','--verify',`${options.controlRef}^{commit}`).toString().trim();
   const fixRevision=options.fixRef?git('rev-parse','--verify',`${options.fixRef}^{commit}`).toString().trim():null;
-  const refFiles=ref=>git('ls-tree','-r','--name-only',ref,'app.py','agent','public/agent-config.json','public/LLM_GAME_RULES.md').toString().trim().split('\n').filter(n=>/\.(py|json|md)$/.test(n));
+  const refFiles=ref=>git('ls-tree','-r','--name-only',ref,'app.py','agent','public/agent-config.json','public/LLM_GAME_RULES.md','public/LLM_GAME_RULES_NEUTRAL.md').toString().trim().split('\n').filter(n=>/\.(py|json|md)$/.test(n));
   const controlFiles=refFiles(controlRevision);
   const files=['app.py','public/agent-config.json','public/LLM_GAME_RULES.md',
-    ...fs.readdirSync(path.join(root,'agent')).filter(n=>/\.(py|json)$/.test(n)).map(n=>'agent/'+n)];
+    ...fs.readdirSync(path.join(root,'agent')).filter(n=>/\.(py|json)$/.test(n)).map(n=>'agent/'+n),
+    ...(fs.existsSync(path.join(root,'public/LLM_GAME_RULES_NEUTRAL.md'))?['public/LLM_GAME_RULES_NEUTRAL.md']:[])];
   const manifest={traceId:id,forkTick:tick,historicalProvenance:catalog.traces[id],
     currentSource:{revision:git('rev-parse','HEAD').toString().trim(),
       dirtyFingerprint:hash(git('diff','HEAD','--binary')),sourceHashes:hashes(files)},
@@ -98,6 +99,7 @@ function prepare(){
     fs.mkdirSync(path.join(dir,'agent'),{recursive:true});fs.mkdirSync(path.join(dir,'__data1'),{recursive:true});
     const revision=arm==='control'?controlRevision:fixRevision;
     const armFiles=revision?refFiles(revision):files;
+    if(godMode)assert(armFiles.includes('public/LLM_GAME_RULES_NEUTRAL.md'),'Isolation rules missing');
     for(const name of armFiles){
       const bytes=revision?git('show',`${revision}:${name}`):fs.readFileSync(path.join(root,name));
       fs.writeFileSync(path.join(dir,name),bytes,{flag:'wx'});
@@ -271,6 +273,7 @@ async function trial(arm,pair,fake=false){
     assert(trace.steps.every(s=>s.state.godMode===manifest.godMode),'Continuation mode mismatch');
     assert.equal(trace.outcome.finalState.godMode,manifest.godMode,'Terminal mode mismatch');
     assert.equal(Boolean(result.record.demo.godMode),manifest.godMode,'Saved recording mode mismatch');
+    if(manifest.godMode)assert(trace.steps.every(s=>s.state.guardThreatIgnored===true),'Isolation evidence missing');
     assert.equal(trace.steps.length,result.observations);assert.equal(trace.steps[0].state.tick,tick);
     assert(trace.steps[0].candidates.some(c=>c.id===trace.steps[0].decision.selectedId),'First selection must be exposed');
     assert.equal(trace.outcome.finalState.tick,result.snapshot.tick);
