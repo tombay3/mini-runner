@@ -105,16 +105,13 @@ function installEvaluationApi(state) {
       };
     },
 
-    async runAttempt() {
-      if (Number(window.godMode) === 1) {
-        if (typeof window.toggleGodMode !== "function") {
-          throw new Error("cannot disable god mode for evaluation");
-        }
-        window.toggleGodMode();
-      }
-      if (Number(window.godMode) !== 0) {
-        throw new Error("evaluation requires god mode off");
-      }
+    prepare(options = {}) {
+      ensureEvaluationGodMode(Boolean(options.godMode));
+      return this.status();
+    },
+
+    async runAttempt(options = {}) {
+      ensureEvaluationGodMode(Boolean(options.godMode));
       const record = await agentController.runEvaluationAttempt(state);
       if (!record || record.source !== "agent") {
         throw new Error("agent evaluator produced no recording");
@@ -132,6 +129,19 @@ function installEvaluationApi(state) {
       };
     },
   });
+}
+
+function ensureEvaluationGodMode(requestedGodMode) {
+  const enabled = Number(window.godMode) === 1;
+  if (enabled !== requestedGodMode) {
+    if (typeof window.toggleGodMode !== "function") {
+      throw new Error(`cannot ${requestedGodMode ? "enable" : "disable"} god mode for evaluation`);
+    }
+    window.toggleGodMode();
+  }
+  if ((Number(window.godMode) === 1) !== requestedGodMode) {
+    throw new Error(`evaluation requires god mode ${requestedGodMode ? "on" : "off"}`);
+  }
 }
 
 function patchRecordingSave(state) {
@@ -1932,6 +1942,7 @@ export const _test = {
   getNextTraceStepTargetTick,
   getTracePlaybackProgress,
   getTraceStepTick,
+  ensureEvaluationGodMode,
   normalizeDemo,
   shouldSaveUserCompletion,
   shortId,

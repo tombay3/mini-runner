@@ -16,6 +16,9 @@ the evaluation goal.
 # One or more normal evaluator attempts
 npm run evaluate -- --runs 5
 
+# Run and validate god-mode attempts
+npm run evaluate -- --profile openai --runs 1 --god-mode
+
 # Stop early after a requested number of successful attempts
 npm run evaluate -- --runs 10 --target 5
 
@@ -36,12 +39,16 @@ substantial provider time and quota.
 `--target N` stops after `N` successes or when `--runs` is exhausted. Runs and target values are
 positive integers with a maximum of 100.
 
+Normal mode remains the default. `--god-mode` enables god mode through the existing runtime toggle
+before smoke validation and before every attempt. Reports record the requested mode plus recording
+step, and terminal evidence; a mismatch is an evaluation failure.
+
 ## Reports and retention
 
 Each attempt records:
 
 - outcome, decision count, game time, and trace/recording IDs;
-- model metadata and normal-mode evidence;
+- model metadata and requested-mode evidence;
 - candidates, scores, selections, fallbacks, and audits; and
 - loop evidence, rationale correlation, and a decision-sequence fingerprint.
 
@@ -49,7 +56,7 @@ Failures before the first planner decision remain useful: they are recorded as z
 with the backend or provider error and requested model metadata.
 
 Exit status is `0` for a completed evaluation that meets an optional target, `1` for
-infrastructure/execution failure, `2` for an unmet requested target, `3` for missing normal-mode
+infrastructure/execution failure, `2` for an unmet requested target, `3` for missing requested-mode
 evidence, and `4` for a context or tick-timeline violation.
 
 Trace and recording stores retain pinned entries plus the newest unpinned runs. Use `--output` for

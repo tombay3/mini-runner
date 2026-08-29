@@ -250,7 +250,6 @@ Environment-only settings:
 - app logger namespace: `loderunner.agent`
 - root logger level: `WARNING`
 - Werkzeug access logs: `WARNING`
-- format: single-line `key=value`
 
 - `python app.py --debug` enables debug logging and model-I/O diagnostics.
 - `AGENT_DEBUG_LOG=1` enables the diagnostics without Flask debug mode.
@@ -264,7 +263,7 @@ Environment-only settings:
 
 ## Offline Analytics
 
-`scripts/trace-analytics.ipynb` reads the flat recording and trace stores without
+Juypter notebook `trace-analytics.ipynb` reads the flat recording and trace stores without
 modifying them. It builds recording, run, step, and candidate data frames; joins recordings
 to traces by `traceId`; and charts outcomes, model usage, run duration, candidate selection,
 loop-filter events, and generic fallbacks. Notebook dependencies are included in `requirements.txt`.

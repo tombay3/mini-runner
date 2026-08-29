@@ -663,6 +663,7 @@ def put_recording(play_data: str, level: str):
             play_data=play_data_key,
             level=level_key,
             result=result,
+            reason=(solver or {}).get("failureReason"),
             trace_id=trace_id,
             model=(solver or {}).get("model"),
         )
@@ -733,8 +734,6 @@ def next_agent_action():
         level=step_trace["level"],
         model=plan["planner"].get("model"),
         model_profile=plan["planner"].get("modelProfile"),
-        key_code=plan["action"].get("keyCode"),
-        ticks=plan["action"].get("ticks"),
         candidate_id=plan.get("candidateId"),
         step_count=run.get("stepCount"),
     )

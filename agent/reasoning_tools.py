@@ -242,7 +242,14 @@ def find_row_ladders(snapshot: dict[str, Any], limit: int = 6) -> list[dict[str,
     ladders = []
     ladder_tiles = _active_ladder_tiles(snapshot)
     for x, char in enumerate(rows[runner_y]):
-        if char not in ladder_tiles:
+        below = _terrain_at(rows, x, runner_y + 1)
+        is_row_ladder = char in ladder_tiles
+        is_down_entry = (
+            not is_row_ladder
+            and below in ladder_tiles
+            and char not in BLOCKING_TILES
+        )
+        if not is_row_ladder and not is_down_entry:
             continue
         ladders.append(
             {
@@ -251,7 +258,9 @@ def find_row_ladders(snapshot: dict[str, Any], limit: int = 6) -> list[dict[str,
                 "distance": abs(x - runner_x),
                 "direction": _direction_label(runner_x, x),
                 "visible": True,
-                "tile": char,
+                "tile": char if is_row_ladder else below,
+                "entryDirection": "down" if is_down_entry else None,
+                "ladderY": runner_y + 1 if is_down_entry else runner_y,
             }
         )
 
@@ -284,9 +293,16 @@ def get_ladder_affordance(
     on_ladder = current_tile in ladder_tiles
     on_exit_ladder = gold_complete and current_tile == "S"
     adjacent = bool(nearest and nearest["distance"] == 1)
+    on_down_entry = bool(
+        nearest
+        and nearest.get("distance") == 0
+        and nearest.get("entryDirection") == "down"
+    )
     recommended_action = None
     if on_ladder:
         recommended_action = "up" if runner_y > 0 else "down"
+    elif on_down_entry:
+        recommended_action = "down"
     elif adjacent and nearest:
         recommended_action = nearest["direction"]
 
@@ -300,14 +316,30 @@ def get_ladder_affordance(
             f"Runner is standing on a visible ladder `{current_tile}` at ({runner_x},{runner_y}); "
             f"use {recommended_action} to change row instead of moving horizontally."
         )
-    elif adjacent and nearest:
+    elif on_down_entry and nearest:
         detail = (
-            f"Runner is adjacent to a visible ladder `{nearest['tile']}` at ({nearest['x']},{nearest['y']}); "
-            f"move {nearest['direction']} to line up, then climb."
+            f"Runner is standing above a visible ladder `{nearest['tile']}` at "
+            f"({nearest['x']},{nearest['ladderY']}); use down to enter it."
+        )
+    elif adjacent and nearest:
+        destination = (
+            f"entry above ({nearest['x']},{nearest['ladderY']})"
+            if nearest.get("entryDirection") == "down"
+            else f"({nearest['x']},{nearest['y']})"
+        )
+        detail = (
+            f"Runner is adjacent to a visible ladder `{nearest['tile']}` {destination}; "
+            f"move {nearest['direction']} to line up, then "
+            f"{'descend' if nearest.get('entryDirection') == 'down' else 'climb'}."
         )
     elif nearest:
+        destination = (
+            f"entry above ({nearest['x']},{nearest['ladderY']})"
+            if nearest.get("entryDirection") == "down"
+            else f"({nearest['x']},{nearest['y']})"
+        )
         detail = (
-            f"Nearest visible ladder `{nearest['tile']}` on runner row is ({nearest['x']},{nearest['y']}), "
+            f"Nearest visible ladder `{nearest['tile']}` route is {destination}, "
             f"{nearest['distance']} tiles to the {nearest['direction']}."
         )
     else:
@@ -315,6 +347,7 @@ def get_ladder_affordance(
 
     return {
         "onLadder": on_ladder,
+        "onDownEntry": on_down_entry,
         "onExitLadder": on_exit_ladder,
         "adjacentToLadder": adjacent,
         "nearestRowLadder": nearest,

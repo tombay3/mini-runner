@@ -24,7 +24,9 @@ from .reasoning_tools import (
 )
 from .loop_tools import (
     build_loop_report,
+    candidate_target,
     candidate_suppression_reason,
+    predicted_horizontal_return_target,
     record_suppressed_candidate,
 )
 
@@ -190,6 +192,48 @@ class CandidateBuilder:
         audit["disposition"] = "validated"
 
     def finalize(self) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        predicted_target = predicted_horizontal_return_target(
+            self.analysis["loopReport"]
+        )
+        predicted_candidates = [
+            candidate
+            for candidate in self.candidates
+            if candidate_target(str(candidate.get("id"))) == predicted_target
+            and _to_int(_dict(candidate.get("firstAction")).get("keyCode"))
+            in {LEFT_KEYCODE, RIGHT_KEYCODE}
+        ]
+        alternatives = [
+            candidate
+            for candidate in self.candidates
+            if candidate not in predicted_candidates
+            and candidate.get("lane") != "fallback"
+        ]
+        if predicted_target is not None and predicted_candidates and alternatives:
+            predicted_ids = {
+                str(candidate.get("id")) for candidate in predicted_candidates
+            }
+            self.candidates = [
+                candidate
+                for candidate in self.candidates
+                if str(candidate.get("id")) not in predicted_ids
+            ]
+            for candidate in predicted_candidates:
+                reason = (
+                    "predicted return to "
+                    f"({predicted_target[0]},{predicted_target[1]}) after alternating "
+                    "horizontal_cycle targets"
+                )
+                record_suppressed_candidate(
+                    self.analysis["loopReport"], candidate, reason
+                )
+                for audit in self.audit:
+                    if (
+                        audit.get("candidateId") == candidate.get("id")
+                        and audit.get("disposition") == "validated"
+                    ):
+                        audit["disposition"] = "loop_suppressed"
+                        audit["detail"] = reason
+                        break
         self.candidates.sort(key=lambda item: (-int(item["score"]), item["id"]))
         exposed = self.candidates[: self.limit]
         exposed_ids = {str(item.get("id")) for item in exposed}
@@ -233,6 +277,7 @@ def analyze_state(snapshot: dict[str, Any], history: list[dict[str, Any]]) -> di
         },
         "nearestGold": nearest_gold,
         "rowLadders": row_ladders,
+        "primaryProgressTarget": primary_progress_target,
         "risk": risk,
         "movement": movement,
         "dig": dig,
@@ -341,13 +386,13 @@ def generate_candidates(
             )
     if not gold_complete:
         add_gold_candidates(add, analysis, god_mode, snapshot)
-        add_ladder_alignment_candidates(add, analysis, god_mode)
+        add_ladder_alignment_candidates(add, analysis, god_mode, history)
         add_route_access_candidate(add, route_access)
         add_route_access_follow_candidate(add, analysis, route_access)
         add_guard_clearance_wait_candidate(add, route_access)
-        add_descent_candidates(add, analysis, movement)
+        add_descent_candidates(add, analysis, movement, history)
     else:
-        add_ladder_alignment_candidates(add, analysis, god_mode)
+        add_ladder_alignment_candidates(add, analysis, god_mode, history)
 
     if god_mode and not gold_complete and not candidates:
         add_god_mode_progress_candidate(add, analysis)
@@ -867,11 +912,31 @@ def same_row_terrain_path_clear(
     return all(x < len(row) and row[x] not in {"#", "@"} for x in range(start + 1, end))
 
 
-def add_ladder_alignment_candidates(add, analysis: dict[str, Any], god_mode: bool) -> None:
+def add_ladder_alignment_candidates(
+    add,
+    analysis: dict[str, Any],
+    god_mode: bool,
+    history: list[dict[str, Any]],
+) -> None:
     movement = analysis["movement"]
     loop_report = analysis["loopReport"]
+    runner_y = _to_int(_dict(analysis.get("runner")).get("y"))
+    target_y = _to_int(_dict(analysis.get("primaryProgressTarget")).get("y"))
+    departed_ladder = post_ascent_departed_ladder(analysis, history)
     for ladder in analysis["rowLadders"]:
         if ladder.get("tile") != "H" or ladder.get("distance") == 0:
+            continue
+        if (
+            ladder.get("entryDirection") == "down"
+            and runner_y is not None
+            and target_y is not None
+            and target_y <= runner_y
+        ):
+            continue
+        if departed_ladder == {
+            "x": _to_int(ladder.get("x")),
+            "y": _to_int(ladder.get("y")),
+        }:
             continue
         direction = ladder.get("direction")
         if direction not in {"left", "right"}:
@@ -899,6 +964,87 @@ def add_ladder_alignment_candidates(add, analysis: dict[str, Any], god_mode: boo
             target={"x": ladder["x"], "y": ladder["y"], "tile": "H"},
             reason=f"visible ladder is {ladder['distance']} tiles to the {direction}",
         )
+
+
+def post_ascent_departed_ladder(
+    analysis: dict[str, Any], history: list[dict[str, Any]]
+) -> dict[str, int] | None:
+    if _dict(analysis.get("risk")).get("risk") != "low" or len(history) < 2:
+        return None
+    climb = _dict(history[-2])
+    alignment = _dict(history[-1])
+    alignment_parts = str(alignment.get("candidateId") or "").split("_")
+    alignment_key = _to_int(alignment.get("keyCode"))
+    direction = {LEFT_KEYCODE: "left", RIGHT_KEYCODE: "right"}.get(alignment_key)
+    if (
+        not str(climb.get("candidateId") or "").startswith("climb_ladder_")
+        or _to_int(climb.get("keyCode")) != UP_KEYCODE
+        or len(alignment_parts) != 5
+        or alignment_parts[:2] != ["align", "ladder"]
+        or alignment_parts[4] != direction
+    ):
+        return None
+    target = (_to_int(alignment_parts[2]), _to_int(alignment_parts[3]))
+    climb_before = history_runner_position(climb, "before")
+    climb_after = history_runner_position(climb, "after")
+    align_before = history_runner_position(alignment, "before")
+    align_after = history_runner_position(alignment, "after")
+    runner = _dict(analysis.get("runner"))
+    current = (_to_int(runner.get("x")), _to_int(runner.get("y")))
+    gold_before = _to_int(_dict(alignment.get("before")).get("goldCount"))
+    gold_after = _to_int(_dict(alignment.get("after")).get("goldCount"))
+    if (
+        any(
+            None in point
+            for point in (
+                target,
+                climb_before,
+                climb_after,
+                align_before,
+                align_after,
+                current,
+            )
+        )
+        or gold_before is None
+        or gold_before != gold_after
+    ):
+        return None
+    if (
+        climb_before != (climb_after[0], climb_after[1] + 1)
+        or climb_after != align_before
+        or align_before[1] != align_after[1]
+        or align_after != current
+    ):
+        return None
+
+    target_remains_ahead = (
+        alignment_key == LEFT_KEYCODE and target[0] < align_after[0]
+    ) or (
+        alignment_key == RIGHT_KEYCODE and target[0] > align_after[0]
+    )
+    target_is_available = any(
+        ladder.get("tile") == "H"
+        and (_to_int(ladder.get("x")), _to_int(ladder.get("y"))) == target
+        and ladder.get("direction") == direction
+        for ladder in analysis["rowLadders"]
+    )
+    if (
+        not target_is_available
+        or not target_remains_ahead
+        or not analysis["movement"].get(
+            "canMoveLeft" if alignment_key == LEFT_KEYCODE else "canMoveRight"
+        )
+        or abs(align_after[0] - target[0]) >= abs(align_before[0] - target[0])
+    ):
+        return None
+    return {"x": climb_after[0], "y": climb_after[1]}
+
+
+def history_runner_position(
+    item: dict[str, Any], moment: str
+) -> tuple[int | None, int | None]:
+    runner = _dict(_dict(item.get(moment)).get("runner"))
+    return _to_int(runner.get("x")), _to_int(runner.get("y"))
 
 
 def ladder_alignment_score(
@@ -1092,9 +1238,38 @@ def add_floor_refill_wait_candidate(add, analysis: dict[str, Any]) -> None:
     )
 
 
-def add_descent_candidates(add, analysis: dict[str, Any], movement: dict[str, Any]) -> None:
+def add_descent_candidates(
+    add,
+    analysis: dict[str, Any],
+    movement: dict[str, Any],
+    history: list[dict[str, Any]],
+) -> None:
     runner = analysis["runner"]
     runner_y = _to_int(runner.get("y"))
+    ladder = _dict(analysis.get("ladder"))
+    entry = _dict(ladder.get("nearestRowLadder"))
+    entry_x = _to_int(entry.get("x"))
+    entry_y = _to_int(entry.get("ladderY"))
+    target_y = _to_int(_dict(analysis.get("primaryProgressTarget")).get("y"))
+    target_does_not_require_descent = (
+        runner_y is not None and target_y is not None and target_y <= runner_y
+    )
+    if (
+        ladder.get("onDownEntry")
+        and movement.get("canMoveDown")
+        and entry_x is not None
+        and entry_y is not None
+        and not target_does_not_require_descent
+        and not just_climbed_from_entry_ladder(history, runner, entry)
+    ):
+        add(
+            kind="descend_route",
+            key_code=DOWN_KEYCODE,
+            ticks=6,
+            score=108,
+            target={"x": entry_x, "y": entry_y, "tile": entry.get("tile", "H")},
+            reason="runner is aligned above an active ladder; descend to enter its route",
+        )
     lower_gold = [
         item
         for item in analysis["nearestGold"]
@@ -1136,6 +1311,26 @@ def add_descent_candidates(add, analysis: dict[str, Any], movement: dict[str, An
             target={"x": target["x"], "y": target["y"], "tile": "$"},
             reason="down movement is valid and remaining gold is below",
         )
+
+
+def just_climbed_from_entry_ladder(
+    history: list[dict[str, Any]],
+    runner: dict[str, Any],
+    entry: dict[str, Any],
+) -> bool:
+    if not history:
+        return False
+    latest = _dict(history[-1])
+    before_runner = _dict(_dict(latest.get("before")).get("runner"))
+    after_runner = _dict(_dict(latest.get("after")).get("runner"))
+    return bool(
+        str(latest.get("candidateId") or "").startswith("climb_ladder_")
+        and _to_int(latest.get("keyCode")) == UP_KEYCODE
+        and _to_int(before_runner.get("x")) == _to_int(entry.get("x"))
+        and _to_int(before_runner.get("y")) == _to_int(entry.get("ladderY"))
+        and _to_int(after_runner.get("x")) == _to_int(runner.get("x"))
+        and _to_int(after_runner.get("y")) == _to_int(runner.get("y"))
+    )
 
 
 def add_god_mode_progress_candidate(add, analysis: dict[str, Any]) -> None:

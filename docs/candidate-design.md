@@ -54,6 +54,27 @@ candidates prevent an empty selection set when ordinary candidates are unavailab
 Active digs, floor refill, and trap resolution use state-specific environment candidates with
 bounded rechecks, rather than a generic wait.
 
+## State and Ladder Geometry
+
+Analysis exposes its computed `primaryProgressTarget` to candidate generation, the prompt, and
+traces. Visible ladder routes include ordinary active ladder tiles and traversable top entries
+where an active ladder begins one row below. Entry metadata includes `onDownEntry`,
+`entryDirection`, and `ladderY`; the horizontal alignment target remains on the runner row.
+When the runner is aligned on a traversable top entry, candidate generation exposes a bounded
+`descend_route` to the underlying ladder. It omits that descent for the single decision immediately
+after the runner climbed out through the same ladder, preventing a direct undo while preserving
+entries reached horizontally. Hidden exit ladders remain inactive until gold is complete. Discovery
+does not force a descent, commit to a route, or change loop suppression.
+When a known progress target is above or on the runner row, alignment to a downward-only
+top entry is omitted because it cannot advance toward that target; below-row and unknown
+targets retain the entry.
+
+After climbing out of a ladder, a progressing horizontal alignment away from that ladder omits
+the ladder just exited from the immediately following decision. The omission applies only when the
+chosen alignment target remains ahead, movement actually reduced its distance, gold did not change,
+and decision risk is low. It does not re-arm on later horizontal decisions or suppress other candidate
+families, so it is a bounded transition correction rather than route commitment.
+
 ## Loop Handling
 
 Loop detection examines the most recent 10 recorded decisions. An active dig prevents loop
@@ -76,7 +97,14 @@ A loop is confirmed as one of:
 After confirmation, the backend removes the repeated route, `wait_or_stop`, and—when vertical
 movement is cycling—the repeated ladder direction. Horizontal suppression also removes routes to
 the same cycle target. `emergency_hold` is never suppressed, and a repeated guard retreat is not
-suppressed by candidate ID.
+suppressed by candidate ID. A horizontal route that reduced distance to its unreached target on
+the latest action also remains eligible; reaching the target or failing to reduce distance restores
+ordinary suppression.
+
+When an existing horizontal-cycle report contains an alternating target sequence `A → B → A → B`,
+candidate finalization suppresses only the predicted return to `A` for that decision. The suppression
+is deferred until validation is complete and applies only when another validated, non-fallback
+candidate remains. It does not create a new loop type or suppress both endpoints together.
 
 The trace records `loopMonitor` evidence and `suppressedCandidates`. Each suppressed item contains
 its ID, kind, direction, and reason, so an evaluator can distinguish loop filtering from a missing

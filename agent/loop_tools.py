@@ -160,7 +160,12 @@ def build_loop_report(
     suppress_kinds: list[str] = []
     suppress_directions: list[str] = []
     preserve_safety_retreat = repeated_kind == "retreat_from_guard"
-    if repeated_id and not preserve_safety_retreat:
+    preserve_horizontal_progress = bool(
+        loop_type == "horizontal_cycle"
+        and repeated_progress["madeProgress"]
+        and not repeated_progress["targetReached"]
+    )
+    if repeated_id and not preserve_safety_retreat and not preserve_horizontal_progress:
         suppress_ids.append(repeated_id)
     suppress_kinds.append("wait_or_stop")
     if loop_type == "vertical_cycle":
@@ -192,6 +197,14 @@ def candidate_suppression_reason(
     # suppressing it can turn a recoverable wait into an empty candidate set.
     if kind == "emergency_hold":
         return None
+    evidence = dict_value(loop_report.get("evidence"))
+    if (
+        loop_report.get("type") == "horizontal_cycle"
+        and candidate_id == evidence.get("repeatedCandidateId")
+        and evidence.get("targetProgress") is True
+        and evidence.get("targetReached") is not True
+    ):
+        return None
     if candidate_id in set(suppress.get("candidateIds") or []):
         return f"repeats {loop_report.get('type')} candidate {candidate_id}"
     if kind in set(suppress.get("candidateKinds") or []):
@@ -222,6 +235,35 @@ def candidate_suppression_reason(
     ):
         return f"vertical direction {direction} repeats {loop_report.get('type')}"
     return None
+
+
+def predicted_horizontal_return_target(
+    loop_report: dict[str, Any],
+) -> tuple[int, int] | None:
+    """Return A for an existing horizontal-cycle target sequence A-B-A-B."""
+    if loop_report.get("type") != "horizontal_cycle":
+        return None
+    evidence = dict_value(loop_report.get("evidence"))
+    if evidence.get("noGoldChange") is not True or evidence.get("noRowChange") is not True:
+        return None
+    candidate_ids = evidence.get("candidateIds") or []
+    key_codes = evidence.get("keyCodes") or []
+    if len(candidate_ids) != len(key_codes):
+        return None
+    target_runs: list[tuple[int, int]] = []
+    for candidate_id, key_code in zip(candidate_ids, key_codes, strict=True):
+        target = candidate_target(candidate_id)
+        if key_code not in {LEFT_KEYCODE, RIGHT_KEYCODE} or target is None:
+            target_runs = []
+            continue
+        if not target_runs or target_runs[-1] != target:
+            target_runs.append(target)
+    if len(target_runs) < 4:
+        return None
+    first, second, third, fourth = target_runs[-4:]
+    if first != third or second != fourth or first == second:
+        return None
+    return first
 
 
 def record_suppressed_candidate(

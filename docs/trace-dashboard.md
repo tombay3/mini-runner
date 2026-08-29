@@ -8,7 +8,7 @@ traces. It reads the flat JSON stores without modifying the game, backend, or st
 Run it from the repository root:
 
 ```sh
-streamlit run dash.py --server.port 5100
+streamlit run dash.py
 ```
 
 The data folder defaults to `__data1`. Set `AGENT_DATA_DIR` or use the sidebar field to read

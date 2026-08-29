@@ -100,10 +100,10 @@ without running the game frontend or backend.
 Start it in another terminal with the Python environment activated:
 
 ```bash
-streamlit run dash.py --server.port 5100
+streamlit run dash.py --server.port 8601
 ```
 
-Open [http://localhost:5100](http://localhost:5100). It reads `__data1` by default; use
+Open [http://localhost:8601](http://localhost:8601). It reads `__data1` by default; use
 `AGENT_DATA_DIR` or the sidebar path to choose another folder. Press **Reload data** after the
 JSON changes. See [Trace dashboard](docs/trace-dashboard.md) for its views, fields, and retention.
 

@@ -55,7 +55,10 @@ try {
     timeout: options.startupTimeoutMs,
   });
 
-  const runtimeStatus = await page.evaluate(() => window.__lodeRunnerEvaluation.status());
+  const runtimeStatus = await page.evaluate(
+    (godMode) => window.__lodeRunnerEvaluation.prepare({ godMode }),
+    options.godMode,
+  );
   if (options.smoke) {
     process.stdout.write(`${JSON.stringify({ smoke: "ok", runtimeStatus }, null, 2)}\n`);
   }
@@ -65,7 +68,10 @@ try {
     process.stdout.write(`run ${index + 1}/${options.runs} ... `);
     let result;
     try {
-      result = await page.evaluate(() => window.__lodeRunnerEvaluation.runAttempt());
+      result = await page.evaluate(
+        (godMode) => window.__lodeRunnerEvaluation.runAttempt({ godMode }),
+        options.godMode,
+      );
     } catch (error) {
       // A wrapper reload can destroy Playwright's execution context between
       // attempts. Reattach to the page and retry that attempt instead of
@@ -77,10 +83,13 @@ try {
       await page.waitForFunction(() => window.__lodeRunnerEvaluation?.ready(), null, {
         timeout: options.startupTimeoutMs,
       });
-      result = await page.evaluate(() => window.__lodeRunnerEvaluation.runAttempt());
+      result = await page.evaluate(
+        (godMode) => window.__lodeRunnerEvaluation.runAttempt({ godMode }),
+        options.godMode,
+      );
     }
     const trace = result.traceId ? await fetchTraceAfterPersistence(page, result.traceId) : null;
-    const attempt = summarizeAttempt(index + 1, startedAt, result, trace);
+    const attempt = summarizeAttempt(index + 1, startedAt, result, trace, options);
     attempts.push(attempt);
     process.stdout.write(
       `${attempt.result} steps=${attempt.stepCount ?? "-"} ` +
@@ -102,7 +111,7 @@ try {
     writeFileSync(outputPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
     process.stdout.write(`report: ${outputPath}\n`);
   }
-  if (report.summary.normalModeViolations > 0) {
+  if (report.summary.modeViolations > 0) {
     process.exitCode = 3;
   } else if (report.summary.integrityViolations > 0) {
     process.exitCode = 4;
@@ -160,6 +169,7 @@ function parseArgs(args) {
     keepServers: false,
     output: null,
     smoke: false,
+    godMode: false,
   };
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
@@ -181,6 +191,7 @@ function parseArgs(args) {
     else if (arg === "--headful") result.headful = true;
     else if (arg === "--keep-servers") result.keepServers = true;
     else if (arg === "--smoke") result.smoke = true;
+    else if (arg === "--god-mode") result.godMode = true;
     else if (arg === "--help") {
       printHelp();
       process.exit(0);
@@ -309,7 +320,7 @@ function resolveBrowserExecutable(explicitPath) {
   return match;
 }
 
-function summarizeAttempt(number, startedAt, result, trace) {
+function summarizeAttempt(number, startedAt, result, trace, config) {
   const steps = Array.isArray(trace?.steps) ? trace.steps : [];
   const decisionSequenceFingerprint = createHash("sha256")
     .update(steps.map((step) => step?.selectedCandidateId || "unknown").join("\n"))
@@ -414,6 +425,14 @@ function summarizeAttempt(number, startedAt, result, trace) {
   }
   const terminalGodMode = trace?.outcome?.finalState?.godMode;
   const recordedGodMode = Number(result.godMode);
+  const requestedGodMode = Boolean(config.godMode);
+  const stepModeValid = steps.every(
+    (step) => step?.state?.godMode === requestedGodMode,
+  );
+  const modeValid =
+    recordedGodMode === (requestedGodMode ? 1 : 0) &&
+    terminalGodMode === requestedGodMode &&
+    stepModeValid;
   const contextValid =
     Number(result.playData) === 1 &&
     Number(result.level) === 1 &&
@@ -439,6 +458,11 @@ function summarizeAttempt(number, startedAt, result, trace) {
     decisionSequenceFingerprint,
     model: trace?.model ?? null,
     normalMode: recordedGodMode === 0 && terminalGodMode === false,
+    requestedMode: requestedGodMode ? "god" : "normal",
+    recordedGodMode: Number.isFinite(recordedGodMode) ? recordedGodMode : null,
+    terminalGodMode: typeof terminalGodMode === "boolean" ? terminalGodMode : null,
+    stepModeValid,
+    modeValid,
     contextValid,
     timelineValid,
     outcome: trace?.outcome ?? null,
@@ -487,7 +511,7 @@ function buildReport(config, attempts, executablePath) {
   const successes = attempts.filter((attempt) => attempt.result === "success").length;
   const failures = attempts.length - successes;
   const successRate = attempts.length ? successes / attempts.length : 0;
-  const normalModeViolations = attempts.filter((attempt) => !attempt.normalMode).length;
+  const modeViolations = attempts.filter((attempt) => !attempt.modeValid).length;
   const integrityViolations = attempts.filter(
     (attempt) => !attempt.contextValid || !attempt.timelineValid,
   ).length;
@@ -498,6 +522,7 @@ function buildReport(config, attempts, executablePath) {
       runs: config.runs,
       target: config.target,
       profile: config.profile,
+      mode: config.godMode ? "god" : "normal",
       baseUrl: config.baseUrl,
       browserExecutable: executablePath,
     },
@@ -508,7 +533,9 @@ function buildReport(config, attempts, executablePath) {
       successRate,
       target: config.target,
       meetsTarget: config.target === null ? null : successes >= config.target,
-      normalModeViolations,
+      mode: config.godMode ? "god" : "normal",
+      modeViolations,
+      normalModeViolations: config.godMode ? 0 : modeViolations,
       integrityViolations,
     },
     attempts,
@@ -523,6 +550,7 @@ function printHelp() {
   process.stdout.write(`  --browser PATH           Chrome/Chromium executable\n`);
   process.stdout.write(`  --base-url URL           wrapper URL (default: http://127.0.0.1:8283/)\n`);
   process.stdout.write(`  --headful                 show the evaluation browser\n`);
+  process.stdout.write(`  --god-mode               run and validate attempts with god mode enabled\n`);
   process.stdout.write(`  --keep-servers            leave servers started by this command running\n`);
   process.stdout.write(`  --output PATH             write the full JSON report under the repository\n`);
   process.stdout.write(`  --smoke                   verify browser/runtime startup without an LLM run\n`);

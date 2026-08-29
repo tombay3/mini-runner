@@ -177,6 +177,26 @@ assert.deepEqual(
 );
 
 assert.equal(recording.formatGameLevel({ playData: 1, level: 1 }), "1:1");
+window.godMode = 0;
+let godModeToggles = 0;
+window.toggleGodMode = () => {
+  window.godMode = Number(window.godMode) === 1 ? 0 : 1;
+  godModeToggles += 1;
+};
+recording.ensureEvaluationGodMode(false);
+assert.equal(godModeToggles, 0, "normal evaluation preserves an already normal runtime");
+recording.ensureEvaluationGodMode(true);
+assert.equal(window.godMode, 1, "god evaluation enables the existing runtime mode");
+assert.equal(godModeToggles, 1, "god evaluation toggles mode exactly once");
+recording.ensureEvaluationGodMode(true);
+assert.equal(godModeToggles, 1, "god evaluation preserves an already enabled runtime");
+recording.ensureEvaluationGodMode(false);
+assert.equal(window.godMode, 0, "normal evaluation disables god mode");
+delete window.toggleGodMode;
+assertThrowsMessage(
+  () => recording.ensureEvaluationGodMode(true),
+  "cannot enable god mode",
+);
 const overlayFacts = (overrides = {}) => ({
   uiError: false,
   busyAction: "",

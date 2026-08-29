@@ -237,6 +237,7 @@ def format_ladder(ladder: dict[str, Any]) -> dict[str, Any]:
     return compact_value(
         {
             "onLadder": ladder.get("onLadder"),
+            "onDownEntry": ladder.get("onDownEntry"),
             "onExitLadder": ladder.get("onExitLadder"),
             "adjacent": ladder.get("adjacentToLadder"),
             "recommendedAction": ladder.get("recommendedAction"),
@@ -246,6 +247,8 @@ def format_ladder(ladder: dict[str, Any]) -> dict[str, Any]:
                 "tile": nearest.get("tile"),
                 "distance": nearest.get("distance"),
                 "direction": nearest.get("direction"),
+                "entryDirection": nearest.get("entryDirection"),
+                "ladderY": nearest.get("ladderY"),
             },
         }
     )
