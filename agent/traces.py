@@ -26,7 +26,7 @@ def summarize_state(snapshot: dict[str, Any], analysis: dict[str, Any] | None) -
     analysis = analysis or {}
     runner = _dict(analysis.get("runner"))
     gold = _dict(analysis.get("gold"))
-    risk = _dict(analysis.get("risk"))
+    risk = _dict(analysis.get("observedGuardRisk", analysis.get("risk")))
     movement = _dict(analysis.get("movement"))
     ladder = _dict(analysis.get("ladder"))
     route_access = _dict(analysis.get("routeAccess"))
@@ -34,6 +34,7 @@ def summarize_state(snapshot: dict[str, Any], analysis: dict[str, Any] | None) -
         "gameState": analysis.get("gameState"),
         "tick": snapshot.get("tick"),
         "godMode": analysis.get("godMode"),
+        "guardThreatIgnored": bool(analysis.get("godMode")),
         "runner": {
             "x": runner.get("x"),
             "y": runner.get("y"),

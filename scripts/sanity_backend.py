@@ -4,6 +4,7 @@ import json
 import sys
 import tempfile
 from copy import deepcopy
+from unittest.mock import patch
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,7 @@ from agent.candidates import (  # noqa: E402
     generate_candidates,
     low_risk_guard_clearance_score_bonus,
     medium_cross_row_clearance_score_penalty,
+    is_action_guard_safe,
     post_ascent_departed_ladder,
 )
 from agent.config import MAX_CANDIDATE_LIMIT  # noqa: E402
@@ -36,6 +38,8 @@ from agent.prompt import build_agent_prompt, build_state_context, read_agent_rul
 from agent.reasoning_tools import find_row_ladders, get_movement_affordance  # noqa: E402
 from agent.service import validate_or_fallback_candidate  # noqa: E402
 import app as backend_app  # noqa: E402
+from agent.service import validate_or_fallback_candidate  # noqa: E402
+from agent.traces import serialize_step_trace  # noqa: E402
 
 
 def assert_equal(actual: Any, expected: Any, message: str) -> None:
@@ -1279,6 +1283,221 @@ def check_guard_selection_validation() -> None:
     )
     assert_equal(selected["id"], left["id"], "high-risk ladder choice is outside medium rule")
     assert_true(not validation["fallbackUsed"], "out-of-scope choice is not replaced")
+def check_guard_neutral_god_mode() -> None:
+    for god_mode in (False, True):
+        for distance, expected_risk in ((7, "low"), (5, "medium"), (3, "high"), (1, "critical")):
+            state = snapshot(
+                grid=["            ", " H          ", "############"],
+                runner={"x": 1, "y": 1, "xOffset": 0, "yOffset": 0, "actionName": "stop"},
+            )
+            state["godMode"] = god_mode
+            state["guards"] = [{
+                "id": 884411, "x": 1 + distance, "y": 1,
+                "xOffset": 0, "yOffset": 0, "actionName": "left", "hasGold": 20,
+            }]
+            state["gold"]["visiblePositions"] = [{"x": 9, "y": 1}]
+            state["gold"]["carriedByGuards"] = [{"id": 884411, "x": 1 + distance, "y": 1}]
+            original = deepcopy(state)
+            candidates, analysis = generate_candidates(state, [])
+            observed = analysis["observedGuardRisk"]
+            assert_equal(observed["risk"], expected_risk, "observed risk retains real guard pressure")
+            assert_equal(analysis["risk"]["runnerOnEdge"], observed["runnerOnEdge"], "neutralization retains edge geometry")
+            assert_equal(analysis["gold"]["carriedByGuards"], state["gold"]["carriedByGuards"], "carried gold is preserved")
+            assert_equal(
+                is_action_guard_safe({"keyCode": 39, "ticks": 4}, analysis),
+                god_mode or expected_risk == "low",
+                "normal-mode guard safety remains active",
+            )
+            prompt = build_agent_prompt(state, candidates=candidates, analysis=analysis)
+            context = json.loads(prompt.split("Decision context (valid JSON):\n", 1)[1])
+            if god_mode:
+                assert_true("guard" not in prompt.lower(), "entire isolated prompt omits guards, including instructions")
+                assert_true("god" not in prompt.lower(), "entire isolated prompt omits mode cues")
+                assert_true("risk policy" not in prompt, "isolated wrapper does not request risk-policy reasoning")
+                assert_true("godMode" not in context["state"]["game"], "mode flag is omitted, not falsified")
+                assert_equal(analysis["risk"]["risk"], "low", "god-mode decision risk is neutral")
+                assert_true(analysis["risk"]["pressureGuard"] is None, "god-mode decisions have no pressure guard")
+                assert_equal(analysis["risk"]["nearbyGuards"], [], "god-mode decisions have no threat list")
+                assert_true("guard" not in json.dumps(context).lower(), "god-mode dynamic prompt has no guard data or wording")
+                assert_true("884411" not in json.dumps(context), "guard identity cannot leak through candidate IDs")
+            else:
+                assert_true("Agent rules:\n" + read_agent_rules() in prompt, "normal-mode guidance is unchanged")
+                assert_true("execution gates and the risk policy" in prompt, "normal-mode wrapper retains risk policy")
+                assert_equal(analysis["risk"], observed, "normal-mode decisions retain observed risk")
+                assert_equal(context["state"]["threat"]["risk"], expected_risk, "normal prompt retains threats")
+                if expected_risk != "low":
+                    assert_true(all(c["firstAction"]["keyCode"] != 39 for c in candidates), "unsafe movement is not exposed in normal mode")
+            assert_equal(context["state"]["gold"]["visible"], [{"x": 9, "y": 1}], "carried gold is not exposed as collectible gold")
+            assert_equal(context["state"]["gold"]["remaining"], 2, "remaining count includes carried gold")
+            for candidate in candidates:
+                selected, validation = validate_or_fallback_candidate(
+                    {"choice": {"candidateId": candidate["id"]}}, candidates, analysis,
+                )
+                assert_true(validation["knownCandidate"], "prompt candidate ID resolves without aliases")
+                if god_mode:
+                    assert_equal(selected["id"], candidate["id"], "neutral mode preserves known selection")
+                    assert_true(not validation["fallbackUsed"], "neutral mode bypasses guard preferences")
+                elif selected["id"] != candidate["id"]:
+                    assert_equal(validation["fallbackReason"],
+                                 "medium same-row guard safety candidate has higher score",
+                                 "normal mode retains the promoted guard selection policy")
+            trace = serialize_step_trace(snapshot=state, action=candidates[0]["firstAction"], analysis=analysis)
+            assert_equal(trace["state"]["guardRisk"]["risk"], expected_risk, "trace reports observed risk, not neutral decision risk")
+            assert_equal(trace["state"]["guardRisk"]["pressureGuard"]["id"], 884411, "trace retains the actual guard")
+            assert_equal(trace["state"]["guardThreatIgnored"], god_mode, "trace labels threat isolation")
+            assert_equal(state, original, "candidate generation and serialization do not mutate snapshots")
+
+
+def check_guard_neutral_physics_and_fallback() -> None:
+    for god_mode in (False, True):
+        state = snapshot(
+            grid=["       ", "  @    ", "#######", "#######"],
+            runner={"x": 3, "y": 1, "xOffset": 0, "yOffset": 0, "actionName": "stop"},
+        )
+        state["godMode"] = god_mode
+        state["guards"] = [{"id": 884411, "x": 4, "y": 1, "actionName": "left"}]
+        analysis = analyze_state(state, [])
+        assert_true(not analysis["movement"]["canMoveLeft"], "walls remain blocking in both modes")
+        assert_true(not analysis["dig"]["canDigRight"], "guard-occupied side cell still physically blocks digging")
+        assert_equal(analysis["movement"]["canMoveRight"], god_mode, "existing non-lethal contact behavior is unchanged")
+
+    state = snapshot(
+        grid=["@@@@", "@  @", "@@@@"],
+        runner={"x": 1, "y": 1, "xOffset": 0, "yOffset": 0, "actionName": "stop"},
+    )
+    state["godMode"] = True
+    state["guards"] = [{"id": 884411, "x": 1, "y": 1, "actionName": "left"}]
+    state["gold"]["visiblePositions"] = []
+    history = [{"candidateId": "wait_or_stop", "keyCode": 32,
+                "after": {"runner": {"x": 1, "y": 1}, "goldCount": 2}} for _ in range(6)]
+    original_history = deepcopy(history)
+    candidates, analysis = generate_candidates(state, history)
+    assert_equal([c["id"] for c in candidates], ["emergency_hold"], "god-mode fallback uses a neutral ID")
+    assert_true("guard" not in json.dumps(candidates).lower(), "fallback metadata has no guard wording")
+    selected, validation = validate_or_fallback_candidate({"choice": {"candidateId": "emergency_hold"}}, candidates, analysis)
+    assert_equal(selected["id"], "emergency_hold", "neutral fallback ID is executable")
+    assert_true(not validation["fallbackUsed"], "neutral fallback ID needs no remapping")
+    assert_equal(history, original_history, "decision history is not rewritten")
+
+
+def check_neutral_prompt_fallbacks() -> None:
+    state = snapshot(
+        grid=["       ", "       ", "#######"],
+        runner={"x": 3, "y": 1, "xOffset": 0, "yOffset": 0, "actionName": "stop"},
+    )
+    state["godMode"] = True
+    state["gold"]["visiblePositions"] = [{"x": 5, "y": 0}]
+    candidates, analysis = generate_candidates(state, [])
+    assert_equal(len(candidates), 1, "progress fallback remains available")
+    candidate = candidates[0]
+    assert_equal(candidate["kind"], "low_risk_horizontal_progress", "fallback uses an existing mode-neutral kind")
+    assert_equal(candidate["firstAction"]["ticks"], 4, "fallback uses shared bounded timing")
+    assert_equal(candidate["score"], 70, "fallback uses shared scoring")
+    selected, validation = validate_or_fallback_candidate({"choice": {"candidateId": candidate["id"]}}, candidates, analysis)
+    assert_equal(selected["id"], candidate["id"], "mode-neutral ID resolves without an alias")
+    assert_true(not validation["fallbackUsed"], "mode-neutral fallback passes validation")
+    for missing_rules in (False, True):
+        if missing_rules:
+            with patch("pathlib.Path.read_text", side_effect=FileNotFoundError):
+                prompt = build_agent_prompt(state, candidates=candidates, analysis=analysis, include_reasoning=True)
+        else:
+            prompt = build_agent_prompt(state, candidates=candidates, analysis=analysis, include_reasoning=True)
+        assert_true("guard" not in prompt.lower() and "god" not in prompt.lower(), "fallback paths do not reintroduce excluded concepts")
+        assert_true("ignore" not in prompt.lower(), "isolation is omission, not an ignore instruction")
+
+
+def check_mode_neutral_progress_policy() -> None:
+    fixtures = [
+        snapshot(
+            grid=["       ", " H   H ", "#######"],
+            runner={"x": 3, "y": 1, "xOffset": 0, "yOffset": 0, "actionName": "stop"},
+        ),
+        snapshot(
+            grid=["       ", "       ", "#######"],
+            runner={"x": 3, "y": 1, "xOffset": 0, "yOffset": 0, "actionName": "stop"},
+        ),
+    ]
+    fixtures[0]["gold"]["visiblePositions"] = [{"x": 5, "y": 1}]
+    fixtures[1]["gold"]["visiblePositions"] = [{"x": 5, "y": 0}]
+
+    def behavior(candidate: dict[str, Any]) -> dict[str, Any]:
+        action = candidate["firstAction"]
+        return {
+            "id": candidate["id"],
+            "kind": candidate["kind"],
+            "score": candidate["score"],
+            "target": candidate.get("target"),
+            "keyCode": action["keyCode"],
+            "ticks": action["ticks"],
+        }
+
+    for fixture in fixtures:
+        by_mode = {}
+        for god_mode in (False, True):
+            state = deepcopy(fixture)
+            state["godMode"] = god_mode
+            candidates, _ = generate_candidates(state, [])
+            by_mode[god_mode] = [behavior(candidate) for candidate in candidates]
+        assert_equal(
+            by_mode[True],
+            by_mode[False],
+            "guard-free progress candidates have mode-neutral ordering, scoring, and actions",
+        )
+
+    loop_state = deepcopy(fixtures[1])
+    loop_history = [
+        {
+            "candidateId": "wait_or_stop",
+            "keyCode": 32,
+            "before": {"runner": {"x": 3, "y": 1}, "goldCount": 2},
+            "after": {"runner": {"x": 3, "y": 1}, "goldCount": 2},
+        }
+        for _ in range(6)
+    ]
+    for god_mode in (False, True):
+        state = deepcopy(loop_state)
+        state["godMode"] = god_mode
+        candidates, analysis = generate_candidates(state, loop_history)
+        assert_true(analysis["loopReport"]["active"], "fixture activates loop suppression")
+        assert_equal(
+            [candidate["kind"] for candidate in candidates],
+            ["emergency_hold"],
+            "neither mode bypasses an active loop with generic horizontal progress",
+        )
+
+
+def check_guard_neutral_route_context() -> None:
+    state = snapshot(
+        grid=["       ", "       ", "## ####", "       ", "#######"],
+        runner={"x": 3, "y": 1, "xOffset": 0, "yOffset": 0, "actionName": "stop"},
+    )
+    state["godMode"] = True
+    state["guards"] = [{"id": 884411, "x": 2, "y": 3, "actionName": "up"}]
+    state["gold"]["visiblePositions"] = [{"x": 1, "y": 3}]
+    candidates, analysis = generate_candidates(state, [])
+    assert_true(any(c["kind"] == "route_access_follow" for c in candidates), "god mode retains physical access route")
+    assert_true("guard" not in json.dumps(candidates).lower(), "access candidate wording is neutral")
+
+    # Raw physical/diagnostic details must not leak through secondary prompt fields.
+    analysis["movement"]["details"]["left"]["openHole"] = {
+        "x": 2, "y": 2, "distance": 1, "occupiedByTrappedGuard": True,
+    }
+    analysis["routeAccess"].update({
+        "followBlockedByGuard": True, "digBlockedByGuard": True,
+        "dropThreat": {"unsafe": True, "nearestThreat": {"id": 884411, "x": 2, "y": 3}},
+        "reason": "guard 884411 occupies the route",
+    })
+    original_analysis = deepcopy(analysis)
+    context = build_state_context(state, analysis)
+    assert_true("guard" not in json.dumps(context).lower(), "secondary prompt fields omit guard information")
+    assert_true("dropThreat" not in json.dumps(context), "route threat metadata is omitted")
+    assert_equal(context["movement"]["openHoles"]["left"]["hole"], {"x": 2, "y": 2, "distance": 1}, "hole geometry remains visible")
+    trace = serialize_step_trace(snapshot=state, action=candidates[0]["firstAction"], analysis=analysis)
+    assert_true(trace["state"]["movement"]["leftOpenHole"]["occupiedByTrappedGuard"], "trace retains physical guard occupancy")
+    assert_equal(analysis, original_analysis, "prompt projection does not mutate diagnostic analysis")
+    normal_context = build_state_context({**state, "godMode": False}, analysis)
+    assert_true(normal_context["route"]["access"]["dropThreat"]["unsafe"], "normal prompt retains route threat details")
+    assert_true(normal_context["movement"]["openHoles"]["left"]["hole"]["occupiedByTrappedGuard"], "normal prompt retains trapped-guard details")
 
 
 def check_loop_recovery() -> None:
@@ -1563,6 +1782,11 @@ def run() -> None:
     check_defensive_dig_selection_policy()
     check_medium_cross_row_selection_policy()
     check_guard_selection_validation()
+    check_guard_neutral_god_mode()
+    check_guard_neutral_physics_and_fallback()
+    check_neutral_prompt_fallbacks()
+    check_mode_neutral_progress_policy()
+    check_guard_neutral_route_context()
     check_loop_recovery()
     check_post_gold_ladder_entry()
     check_no_legacy_knowledge()

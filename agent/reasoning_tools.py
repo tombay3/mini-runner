@@ -751,6 +751,7 @@ def get_route_access_affordance(
                     "wait for guard clearance before entering"
                 ),
             }
+        guard_context = "" if _is_god_mode(snapshot) else " and guard-clear"
         return {
             "available": False,
             "recommendedAction": None,
@@ -760,7 +761,7 @@ def get_route_access_affordance(
             "openedAccessCell": target_cell,
             "reason": (
                 f"route-access hole at ({target_cell.get('x')},{target_cell.get('y')}) "
-                f"is already open and guard-clear; move {opened['side']} to enter"
+                f"is already open{guard_context}; move {opened['side']} to enter"
             ),
         }
 

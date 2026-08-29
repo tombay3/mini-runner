@@ -79,7 +79,7 @@ candidate lane.
 | Lane category | Candidate kinds | Meaning |
 |---|---|---|
 | Safety | `defensive_dig`, `emergency_hold`, `escape_through_open_hole`, `evade_edge_ladder`, `evade_open_hole`, `retreat_from_guard`, `wait_for_guard_clearance`, `wait_for_trap_resolution` | Avoid immediate guard or hole danger, or wait for a safety condition to clear. |
-| Progress | `align_ladder`, `climb_ladder`, `collect_current_tile_gold`, `collect_same_row_gold`, `descend_route`, `exit_ladder_route`, `god_mode_progress`, `low_risk_horizontal_progress`, `route_access_dig`, `route_access_follow` | Collect, change route or row, access terrain, descend, or use the exit. |
+| Progress | `align_ladder`, `climb_ladder`, `collect_current_tile_gold`, `collect_same_row_gold`, `descend_route`, `exit_ladder_route`, `low_risk_horizontal_progress`, `route_access_dig`, `route_access_follow` | Collect, change route or row, access terrain, descend, or use the exit. |
 | Environment | `wait_and_recheck`, `wait_for_dig_completion`, `wait_for_floor_refill` | Advance changing terrain or briefly recheck when no other candidate is available. |
 
 Active digs, floor refill, guard clearance, and trap resolution use state-specific waits with
@@ -106,6 +106,36 @@ the ladder just exited from the immediately following decision. The omission app
 chosen alignment target remains ahead, movement actually reduced its distance, gold did not change,
 and decision risk is low. It does not re-arm on later horizontal decisions or suppress other candidate
 families, so it is a bounded transition correction rather than route commitment.
+
+## God-mode Threat Isolation
+
+The existing `godMode` flag makes tactical guard pressure neutral: decision analysis uses low
+risk, no pressure guard, and no nearby-threat list, while retaining runner-edge geometry. Actual
+observations remain separately available as `observedGuardRisk`. Normal-mode decisions continue
+to use observed threats unchanged.
+
+God-mode model context omits guard threats, trapped-guard occupancy flags, and route-threat
+details. Generated candidate wording is guard-neutral, and the bounded emergency fallback uses
+the stable ID `emergency_hold` rather than a guard-derived signature. IDs are the same in the
+prompt, validation, and trace; there is no alias layer.
+
+The isolated prompt uses `public/LLM_GAME_RULES_NEUTRAL.md`, which describes collection, terrain,
+and execution without mentioning guards or special modes. Its wrapper omits risk-policy
+instructions, and its game context omits `godMode` rather than reporting a false mode. The
+shared progress fallback uses `low_risk_horizontal_progress`; collection, ladder alignment, and
+fallback actions use the same ordering, timing, and scores in guard-free states in both modes.
+An active loop is not bypassed by a separate god-mode progress fallback.
+Normal-mode prompts continue to use the unchanged `public/LLM_GAME_RULES.md`. There is no
+instruction to ignore guards and no filtering of the model's response text.
+
+This is threat-input isolation, not guard-free gameplay. Movement and dig checks still use the
+actual snapshot, including occupancy and holes. Guards still move and carry/drop gold; carried
+gold is not presented as visible collectible gold, and remaining counts are not adjusted.
+
+New trace states retain **observed** `guardRisk` and include `guardThreatIgnored` (`true` in god
+mode, `false` in normal mode). Physical guard details remain in diagnostic traces even when
+omitted from the model context. Existing stores are not rewritten; older traces lack the flag
+and should not be assumed to use this isolation behavior.
 
 ## Loop Handling
 

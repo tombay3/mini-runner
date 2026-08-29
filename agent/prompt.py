@@ -17,13 +17,18 @@ ACTION_NAMES = {
 }
 
 
-def read_agent_rules() -> str:
+def read_agent_rules(*, god_mode: bool = False) -> str:
+    rules_path = (
+        LLM_GAME_RULES_PATH.with_name("LLM_GAME_RULES_NEUTRAL.md")
+        if god_mode else LLM_GAME_RULES_PATH
+    )
     try:
-        return LLM_GAME_RULES_PATH.read_text(encoding="utf-8")[:3000]
+        return rules_path.read_text(encoding="utf-8")[:3000]
     except FileNotFoundError:
         return (
             "Collect all gold, use ladders and route digs to change rows, "
-            "and avoid non-progress loops. In god mode, guard contact is non-lethal."
+            "and avoid non-progress loops."
+            + ("" if god_mode else " In god mode, guard contact is non-lethal.")
         )
 
 
@@ -34,6 +39,8 @@ def build_agent_prompt(
     analysis: dict[str, Any],
     include_reasoning: bool = False,
 ) -> str:
+    god_mode = bool(snapshot.get("godMode"))
+    execution_policy = "execution gates" if god_mode else "execution gates and the risk policy"
     response_format = (
         '{"candidateId":"candidate_id_here","reasoning":"brief rationale"}'
         if include_reasoning
@@ -50,14 +57,14 @@ def build_agent_prompt(
             (
                 "The backend has generated executable candidates and assigned scores, targets, "
                 "and safety intents. Candidates may represent different tactical tradeoffs; "
-                "apply execution gates and the risk policy before comparing progress. Candidate "
+                f"apply {execution_policy} before comparing progress. Candidate "
                 "targets, scores, and reasons are backend-derived. Do not reject a candidate "
                 "because its first short action appears indirect, and do not invent unsupported "
                 "route interpretations."
             ),
             f"Return JSON only: {response_format}.",
             rationale_instruction,
-            "Agent rules:\n" + read_agent_rules(),
+            "Agent rules:\n" + read_agent_rules(god_mode=god_mode),
             format_decision_context(snapshot, candidates, analysis),
         ] if item is not None]
     )
@@ -88,6 +95,7 @@ def format_state_summary(snapshot: dict[str, Any], analysis: dict[str, Any]) -> 
 def build_state_context(
     snapshot: dict[str, Any], analysis: dict[str, Any]
 ) -> dict[str, Any]:
+    include_guards = not bool(snapshot.get("godMode"))
     runner = _dict(analysis.get("runner"))
     gold = _dict(analysis.get("gold"))
     risk = _dict(analysis.get("risk"))
@@ -102,7 +110,7 @@ def build_state_context(
                 "playData": snapshot.get("playData"),
                 "level": snapshot.get("level"),
                 "gameState": snapshot.get("gameStateName"),
-                "godMode": bool(snapshot.get("godMode")),
+                "godMode": bool(snapshot.get("godMode")) if include_guards else None,
             },
             "runner": {
                 "x": runner.get("x"),
@@ -123,7 +131,7 @@ def build_state_context(
                 "nearbyGuards": [
                     format_guard(guard) for guard in risk.get("nearbyGuards") or []
                 ],
-            },
+            } if include_guards else None,
             "movement": {
                 "legalDirections": [
                     direction
@@ -135,11 +143,11 @@ def build_state_context(
                     )
                     if movement.get(field)
                 ],
-                "openHoles": format_open_holes(movement),
+                "openHoles": format_open_holes(movement, include_guards=include_guards),
             },
             "route": {
                 "ladder": format_ladder(ladder),
-                "access": format_route_access(route_access),
+                "access": format_route_access(route_access, include_guards=include_guards),
             },
             "loop": {
                 "active": bool(loop_report.get("active")),
@@ -212,7 +220,7 @@ def format_guard(value: Any) -> dict[str, Any]:
     )
 
 
-def format_open_holes(movement: dict[str, Any]) -> dict[str, Any]:
+def format_open_holes(movement: dict[str, Any], *, include_guards: bool = True) -> dict[str, Any]:
     details = _dict(movement.get("details"))
     result = {}
     for side in ("left", "right"):
@@ -225,7 +233,7 @@ def format_open_holes(movement: dict[str, Any]) -> dict[str, Any]:
                     "x": hole.get("x"),
                     "y": hole.get("y"),
                     "distance": hole.get("distance"),
-                    "occupiedByTrappedGuard": hole.get("occupiedByTrappedGuard"),
+                    "occupiedByTrappedGuard": hole.get("occupiedByTrappedGuard") if include_guards else None,
                 },
             }
         )
@@ -254,7 +262,7 @@ def format_ladder(ladder: dict[str, Any]) -> dict[str, Any]:
     )
 
 
-def format_route_access(route_access: dict[str, Any]) -> dict[str, Any]:
+def format_route_access(route_access: dict[str, Any], *, include_guards: bool = True) -> dict[str, Any]:
     drop_threat = _dict(route_access.get("dropThreat"))
     nearest_threat = _dict(drop_threat.get("nearestThreat"))
     return compact_value(
@@ -263,15 +271,15 @@ def format_route_access(route_access: dict[str, Any]) -> dict[str, Any]:
             "recommendedAction": route_access.get("recommendedAction"),
             "followAvailable": route_access.get("followAvailable"),
             "followAction": route_access.get("followAction"),
-            "followBlockedByGuard": route_access.get("followBlockedByGuard"),
-            "digBlockedByGuard": route_access.get("digBlockedByGuard"),
+            "followBlockedByGuard": route_access.get("followBlockedByGuard") if include_guards else None,
+            "digBlockedByGuard": route_access.get("digBlockedByGuard") if include_guards else None,
             "accessCell": route_access.get("openedAccessCell")
             or route_access.get("plannedAccessCell"),
             "dropThreat": {
                 "unsafe": drop_threat.get("unsafe"),
                 "nearest": format_guard(nearest_threat),
-            },
-            "reason": route_access.get("reason"),
+            } if include_guards else None,
+            "reason": route_access.get("reason") if include_guards else None,
         }
     )
 
