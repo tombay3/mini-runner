@@ -8,7 +8,10 @@
     "dev": "vite --force",
     "build": "vite build",
     "test": "node scripts/sanity.mjs",
-    "evaluate": "node scripts/evaluate-agent.mjs"
+    "notebook": "node scripts/notebook.mjs",
+    "evaluate": "node scripts/evaluate-agent.mjs",
+    "trace:pin": "node scripts/set-trace-pin.mjs pin",
+    "trace:unpin": "node scripts/set-trace-pin.mjs unpin"
   },
   "devDependencies": {
     "playwright-core": "^1.62.1",

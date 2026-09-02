@@ -24,6 +24,8 @@ Local data stores:
 - `GET /api/recordings/<playData>/<level>/records`: return all retained matching records newest-first, each with compact linked trace metadata when available.
 - `PUT /api/recordings/<playData>/<level>`: save a new unpinned record and retain all pinned
   records plus the 10 newest unpinned records. Updating the same id preserves its stored pin.
+- `PATCH /api/recordings/<playData>/<level>/pin`: set `pinned` using a full or unique-prefix
+  `recordId` and a boolean `pinned` value.
 - `DELETE /api/recordings/<playData>/<level>`: delete the newest matching record and linked trace when present.
 - `DELETE /api/recordings/<playData>/<level>?recordId=<recordId>`: delete the selected record and linked trace when present.
 - `DELETE /api/recordings/<playData>/<level>?traceId=<traceId>`: delete the agent record whose id matches the trace id and delete that trace.
@@ -53,11 +55,19 @@ Recording store shape:
 }
 ```
 
-Agent recordings use `traceId` as `id`. User recordings use `user:<timestamp>`. To pin or
-unpin a completed run, edit only its `pinned` field in `recordings.json` while no agent run is
-active. Missing fields are equivalent to `false`. A pinned agent recording also protects its
-linked trace from pruning; pin state is never copied into `agent-traces.json`, and a missing
-linked trace is not recreated.
+Agent recordings use `traceId` as `id`. User recordings use `user:<timestamp>`. With the backend
+running, pin or unpin a retained Classic 1:1 run by full id or unique prefix:
+
+```bash
+npm run trace:pin -- 3dcb7b7d
+npm run trace:unpin -- 3dcb7b7d
+```
+
+The API body is `{ "recordId": "3dcb7b7d", "pinned": true }`. Toggling a pin does not prune
+or delete anything immediately; an unpinned run becomes eligible for normal retention pruning
+when later data is saved. Missing fields are equivalent to `false`. A pinned agent recording
+also protects its linked trace from pruning; pin state is never copied into `agent-traces.json`,
+and a missing linked trace is not recreated.
 The browser normally creates UUID trace IDs. On HTTP contexts where
 `crypto.randomUUID()` is unavailable, it constructs the same UUID format with
 `crypto.getRandomValues()`. If neither Web Crypto method is available, the final fallback
@@ -263,7 +273,7 @@ Environment-only settings:
 
 ## Offline Analytics
 
-Juypter notebook `trace-analytics.ipynb` reads the flat recording and trace stores without
+Jupyter notebook `trace-analytics.ipynb` reads the flat recording and trace stores without
 modifying them. It builds recording, run, step, and candidate data frames; joins recordings
 to traces by `traceId`; and charts outcomes, model usage, run duration, candidate selection,
 loop-filter events, and generic fallbacks. Notebook dependencies are included in `requirements.txt`.

@@ -2,13 +2,12 @@
 
 ## Purpose
 
-`dash.py` and `loader.py` provide a read-only Streamlit dashboard for recordings and agent
-traces. It reads the flat JSON stores without modifying the game, backend, or stores.
+`trace-dash.py` provides a read-only Streamlit dashboard for recordings and agent traces. It reads the flat JSON stores without modifying the game, backend, or stores.
 
 Run it from the repository root:
 
 ```sh
-streamlit run dash.py
+streamlit run trace-dash.py
 ```
 
 The data folder defaults to `__data1`. Set `AGENT_DATA_DIR` or use the sidebar field to read
@@ -17,7 +16,7 @@ from the repository root. Streamlit caches each loaded folder until **Reload dat
 
 ## Data Model
 
-`loader.py` builds three views used by the dashboard:
+`trace-dash.py` builds three pandas views used by the dashboard:
 
 - `runs_df`: recording rows joined to trace metadata by `traceId`;
 - `steps_df`: flattened trace steps with action, validation, loop, state, outcome, and candidate data;

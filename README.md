@@ -17,15 +17,14 @@ tools, an agent evaluator, and a trace dashboard for decision-level debugging.
 - **Candidate agent:** `agent/*` analyzes each snapshot, generates and scores legal actions,
   asks the LLM to choose a candidate ID, validates the choice, and translates it into legacy
   key/tick input.
-- **Trace tooling:** `dash.py` and `loader.py` provide a read-only Streamlit and pandas view of
-  retained runs, individual decisions, outcomes, loop events, and candidate selection.
+- **Trace tooling:** `trace-dash.py` provides a read-only Streamlit and pandas view of retained runs, individual decisions, outcomes, loop events, and candidate selection.
 
 ```text
 public/game/*             Legacy Lode Runner runtime, levels, rendering, and demos
 src/*                     Vite wrapper, recording/playback UI, and browser agent loop
 agent/*                   Analysis, candidate generation, prompting, validation, and traces
 app.py                    Flask APIs for planning, tracing, and recordings
-dash.py, loader.py        Streamlit agent-trace dashboard and pandas loader
+trace-dash.py             Streamlit and pandas agent-trace dashboard
 scripts/*                 Sanity checks, evaluator, and offline trace analytics
 __data1/                  Local recordings, traces, evaluation reports, and debug logs
 ```
@@ -100,7 +99,7 @@ without running the game frontend or backend.
 Start it in another terminal with the Python environment activated:
 
 ```bash
-streamlit run dash.py --server.port 8601
+streamlit run trace-dash.py --server.port 8601
 ```
 
 Open [http://localhost:8601](http://localhost:8601). It reads `__data1` by default; use
@@ -116,8 +115,10 @@ decision traces in `__data1/agent-traces.json` through `traceId`. See
 Set `AGENT_DEBUG_LOG=1` to write the latest 10 raw model I/O turns to
 `__data1/agent-debug.log`. Raw prompts and model responses are excluded from normal traces.
 
-For aggregate offline analysis, `scripts/trace-analytics.ipynb` reads recordings, runs, steps,
+For aggregate offline analysis, `trace-analytics.ipynb` reads recordings, runs, steps,
 candidates, outcomes, loop events, and fallbacks without changing them.
+
+To launch the trace notebook interface, run `npm run notebook` and open `http://127.0.0.1:8081/`.
 
 ## Testing And Evaluation
 

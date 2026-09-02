@@ -10,8 +10,9 @@ short actions, and save the result.
 - `src/*`: Vite wrapper frontend, recording/playback rail, browser AI loop, and host styles.
 - `app.py`: Flask API for recordings, traces, model calls, and local JSON stores.
 - `agent/*`: candidate-agent backend analysis, prompting, model calls, traces, and loop filtering.
-- `dash.py` and `loader.py`: read-only Streamlit and pandas trace dashboard.
-- `scripts/*`: direct sanity checks, real-browser agent evaluator, and a read-only trace analytics notebook.
+- `trace-dash.py`: read-only Streamlit and pandas trace dashboard.
+- `scripts/*`: direct sanity checks, real-browser agent evaluator, and development launchers.
+- `trace-analytics.ipynb`: read-only trace analytics notebook.
 
 ### Bootstrap Flow
 1. Vite serves `index.html`.

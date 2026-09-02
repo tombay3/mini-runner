@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import sys
+import tempfile
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -27,6 +29,7 @@ from agent.loop_tools import (  # noqa: E402
 )
 from agent.prompt import build_agent_prompt, build_state_context, read_agent_rules  # noqa: E402
 from agent.reasoning_tools import find_row_ladders, get_movement_affordance  # noqa: E402
+import app as backend_app  # noqa: E402
 
 
 def assert_equal(actual: Any, expected: Any, message: str) -> None:
@@ -83,6 +86,117 @@ def check_runtime_boundary() -> None:
             pass
         else:
             raise AssertionError(f"invalid request accepted: {invalid}")
+
+
+def check_recording_pin_api() -> None:
+    original_store_path = backend_app.STORE_PATH
+    original_trace_store_path = backend_app.TRACE_STORE_PATH
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            backend_app.STORE_PATH = root / "recordings.json"
+            backend_app.TRACE_STORE_PATH = root / "agent-traces.json"
+            backend_app.save_store(
+                {
+                    "version": 1,
+                    "updatedAt": None,
+                    "records": {
+                        "alpha-111": {
+                            "id": "alpha-111",
+                            "playData": 1,
+                            "level": 1,
+                            "source": "agent",
+                            "traceId": "alpha-111",
+                            "pinned": False,
+                        },
+                        "alpha-222": {
+                            "id": "alpha-222",
+                            "playData": 1,
+                            "level": 1,
+                            "source": "agent",
+                            "traceId": "alpha-222",
+                            "pinned": False,
+                        },
+                        "unique-333": {
+                            "id": "unique-333",
+                            "playData": 1,
+                            "level": 1,
+                            "source": "agent",
+                            "traceId": "unique-333",
+                            "pinned": False,
+                        },
+                    },
+                }
+            )
+            trace_store = {
+                "version": 3,
+                "updatedAt": None,
+                "runs": {"unique-333": {"id": "unique-333", "steps": []}},
+            }
+            backend_app.save_json_store(backend_app.TRACE_STORE_PATH, trace_store)
+
+            client = backend_app.app.test_client()
+            response = client.patch(
+                "/api/recordings/1/1/pin",
+                json={"recordId": "unique", "pinned": True},
+            )
+            assert_equal(response.status_code, 200, "unique prefix pins a recording")
+            assert_equal(response.get_json()["recordId"], "unique-333", "API returns full id")
+            assert_true(
+                backend_app.load_store()["records"]["unique-333"]["pinned"],
+                "pin is persisted",
+            )
+
+            response = client.patch(
+                "/api/recordings/1/1/pin",
+                json={"recordId": "unique-333", "pinned": False},
+            )
+            assert_equal(response.status_code, 200, "full id unpins a recording")
+            assert_true(
+                not backend_app.load_store()["records"]["unique-333"]["pinned"],
+                "unpin is persisted",
+            )
+            assert_equal(
+                json.loads(backend_app.TRACE_STORE_PATH.read_text(encoding="utf-8")),
+                trace_store,
+                "pin changes do not modify linked traces",
+            )
+
+            assert_equal(
+                client.patch(
+                    "/api/recordings/1/1/pin",
+                    json={"recordId": "alpha-", "pinned": True},
+                ).status_code,
+                409,
+                "ambiguous prefixes are rejected",
+            )
+            assert_equal(
+                client.patch(
+                    "/api/recordings/1/1/pin",
+                    json={"recordId": "missing", "pinned": True},
+                ).status_code,
+                404,
+                "unknown ids are rejected",
+            )
+            assert_equal(
+                client.patch(
+                    "/api/recordings/1/1/pin",
+                    json={"recordId": "unique", "pinned": "yes"},
+                ).status_code,
+                400,
+                "pin state must be boolean",
+            )
+            assert_equal(
+                client.patch(
+                    "/api/recordings/1/2/pin",
+                    json={"recordId": "unique", "pinned": True},
+                ).status_code,
+                404,
+                "prefix resolution stays within the requested context",
+            )
+    finally:
+        backend_app.STORE_PATH = original_store_path
+        backend_app.TRACE_STORE_PATH = original_trace_store_path
 
 
 def check_geometry_candidates() -> None:
@@ -659,6 +773,7 @@ def check_no_legacy_knowledge() -> None:
 
 def run() -> None:
     check_runtime_boundary()
+    check_recording_pin_api()
     check_geometry_candidates()
     check_target_relative_ladder_direction()
     check_ladder_entry_discovery()

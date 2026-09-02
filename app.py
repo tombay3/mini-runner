@@ -231,6 +231,27 @@ def find_recordings(
     ]
 
 
+def resolve_recording_id(
+    store: dict[str, Any], record_id_prefix: str, play_data: str, level: str
+) -> tuple[str | None, bool]:
+    records = store.get("records", {})
+    if not isinstance(records, dict):
+        return None, False
+    matching_ids = [
+        str(record_id)
+        for record_id, record in records.items()
+        if isinstance(record, dict)
+        and str(record.get("playData")) == play_data
+        and str(record.get("level")) == level
+        and str(record_id).startswith(record_id_prefix)
+    ]
+    if record_id_prefix in matching_ids:
+        return record_id_prefix, False
+    if len(matching_ids) == 1:
+        return matching_ids[0], False
+    return None, len(matching_ids) > 1
+
+
 def delete_trace_run(trace_id: str | None) -> bool:
     if not trace_id:
         return False
@@ -669,6 +690,46 @@ def put_recording(play_data: str, level: str):
         )
 
     return jsonify(record)
+
+
+@app.patch("/api/recordings/<play_data>/<level>/pin")
+def set_recording_pin(play_data: str, level: str):
+    try:
+        play_data_key = normalize_id(play_data, "playData")
+        level_key = normalize_id(level, "level")
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            raise ValueError("request body must be an object")
+        record_id_prefix = validate_record_id(payload.get("recordId"))
+        if record_id_prefix is None:
+            raise ValueError("recordId is required")
+        pinned = payload.get("pinned")
+        if not isinstance(pinned, bool):
+            raise ValueError("pinned must be a boolean")
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    with _store_lock:
+        store = load_store()
+        record_id, ambiguous = resolve_recording_id(
+            store, record_id_prefix, play_data_key, level_key
+        )
+        if ambiguous:
+            return jsonify({"error": "recordId prefix is ambiguous"}), 409
+        if record_id is None:
+            return jsonify({"error": "recording not found"}), 404
+        record = store["records"][record_id]
+        record["pinned"] = pinned
+        store["updatedAt"] = utc_now()
+        save_store(store)
+
+    return jsonify(
+        {
+            "recordId": record_id,
+            "traceId": record.get("traceId"),
+            "pinned": pinned,
+        }
+    )
 
 
 @app.post("/api/agent/next-action")
