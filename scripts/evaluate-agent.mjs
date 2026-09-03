@@ -41,6 +41,7 @@ try {
   browser = await chromium.launch({
     executablePath,
     headless: !options.headful,
+    args: ["--test-suite=ducky-eval"],
   });
   const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
   page.setDefaultTimeout(0);
