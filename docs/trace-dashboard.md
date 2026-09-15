@@ -7,7 +7,7 @@
 Run it from the repository root:
 
 ```sh
-streamlit run trace-dash.py
+npm run dash
 ```
 
 The data folder defaults to `__data1`. Set `AGENT_DATA_DIR` or use the sidebar field to read
@@ -16,11 +16,10 @@ from the repository root. Streamlit caches each loaded folder until **Reload dat
 
 ## Data Model
 
-`trace-dash.py` builds three pandas views used by the dashboard:
+`trace-dash.py` builds two pandas views used by the dashboard:
 
 - `runs_df`: recording rows joined to trace metadata by `traceId`;
-- `steps_df`: flattened trace steps with action, validation, loop, state, outcome, and candidate data;
-- the candidate dataframe returned by `get_candidates_df()`: one row per eligible candidate.
+- `steps_df`: flattened trace steps with action, validation, loop, state, outcome, and candidate data.
 
 Demo time is converted from legacy ticks at 16 ticks per second. Record time is the trace's
 `updatedAt - createdAt` wall-clock duration. For a non-final action, the dashboard derives
@@ -65,26 +64,28 @@ Step-title markers are:
 - `⚠️`: validation replaced the requested candidate or loop filtering suppressed a candidate;
 - `✨`: the requested candidate's score was below the highest eligible candidate score.
 
-Inside an expanded step:
-
-- **Validation** appears only when the requested and executed candidates differ or a fallback ran;
-- **Suppressed** appears only for non-empty loop-suppression results. One suppressed candidate
-  is shown inline as ``candidate-id — reason``; multiple candidates are shown as a bullet list.
-  Candidates without a reason show only their ID;
-- **Outcome** compares pre-action state with the derived after-state for position, gold, risk,
-  game-state changes, and terminal result;
+Inside an expanded step, the ASCII map shows recorded runner, target, waypoint, guard, visible-gold,
+and route geometry. The adjacent candidate table includes eligible choices, loop-suppressed
+candidates, and safety-rejected candidates. Requested, executed, fallback, lower-score, and
+loop-suppression markers remain inline with the relevant candidate reason.
 
 Candidate IDs retain the candidate kind as their prefix, so the per-step table omits the redundant
 `kind` column. Structured targets remain in the raw trace but are omitted from this compact view.
 
-## Section 3: Candidate Score Breakdown
+## Section 3: Run Signals
 
-For the selected trace, the candidate breakdown groups eligible candidates by kind and shows:
+Run Signals summarizes safety/progress lane availability, singleton types, and non-singleton steps
+where the model received at least two distinct executable actions.
 
-- total appearances;
-- number selected;
-- average score;
-- selection percentage (`win_rate_%`).
+The diagnostic text copied by the section's `Copy` action is organized as `RUN CONTEXT`, `Candidates`, and `EVENTS` so it can be pasted into
+a debugging conversation without occupying dashboard space.
+
+Signals cover safety constraints, confirmed loops, delayed progress, model/heuristic divergence,
+validation results, and sustained stationary stalls. A stationary stall requires
+at least five seconds of unchanged runner position and offsets; its evidence may include an
+emergency hold, forced safety, or an action singleton. Each populated row
+identifies a representative step or range and can navigate to its starting step in the Trace Inspector.
+
 
 ## Retention And Missing Links
 

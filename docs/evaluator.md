@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`npm run evaluate` runs repeatable attempts through the browser wrapper and legacy runtime. It
+`npm run eval` runs repeatable attempts through the browser wrapper and legacy runtime. It
 starts required services when needed and records snapshots, ticks, terminal state, recordings, and
 traces.
 
@@ -14,22 +14,22 @@ the evaluation goal.
 
 ```sh
 # One or more normal evaluator attempts
-npm run evaluate -- --runs 5
+npm run eval -- --runs 5
 
 # Run and validate god-mode attempts
-npm run evaluate -- --profile openai --runs 1 --god-mode
+npm run eval -- --profile openai --runs 1 --god-mode
 
 # Stop early after a requested number of successful attempts
-npm run evaluate -- --runs 10 --target 5
+npm run eval -- --runs 10 --target 5
 
 # Use a specific profile, browser, or visible browser session
-npm run evaluate -- --profile openai --browser /path/to/chrome --headful
+npm run eval -- --profile openai --browser /path/to/chrome --headful
 
 # Verify wrapper/backend/runtime startup without an LLM call
-npm run evaluate -- --smoke
+npm run eval -- --smoke
 
 # Keep an aggregate report outside rolling trace retention
-npm run evaluate -- --runs 20 --output /tmp/evaluation-20.json
+npm run eval -- --runs 20 --output /tmp/evaluation-20.json
 ```
 
 Chrome is discovered from common paths. Set `EVAL_BROWSER_EXECUTABLE` or pass `--browser` when it
@@ -50,7 +50,7 @@ Each attempt records:
 - outcome, decision count, game time, and trace/recording IDs;
 - model metadata and requested-mode evidence;
 - candidates, scores, selections, fallbacks, and audits; and
-- loop evidence, rationale correlation, and a decision-sequence fingerprint.
+- loop evidence and rationale correlation.
 
 Failures before the first planner decision remain useful: they are recorded as zero-step traces
 with the backend or provider error and requested model metadata.

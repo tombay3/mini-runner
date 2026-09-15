@@ -5,8 +5,8 @@
 functions and the Flask test client; it does not run the legacy game, browser automation, or an
 LLM call.
 
-Use `npm run evaluate -- --smoke` for the separate real-browser boot check, or
-`npm run evaluate` for actual model-driven normal-mode trials. See
+Use `npm run eval -- --smoke` for the separate real-browser boot check, or
+`npm run eval` for actual model-driven normal-mode trials. See
 [Agent evaluator](./evaluator.md).
 
 ```bash

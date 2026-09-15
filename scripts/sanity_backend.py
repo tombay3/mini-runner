@@ -218,6 +218,45 @@ def check_geometry_candidates() -> None:
         "generated candidates contain no map-specific route knowledge",
     )
 
+    guarded_state = snapshot(
+        grid=["       ", "       ", "#######"],
+        runner={"x": 3, "y": 1, "xOffset": 0, "yOffset": 0, "actionName": "stop"},
+    )
+    guarded_state["guards"] = [
+        {
+            "id": 1,
+            "x": 1,
+            "y": 1,
+            "xOffset": 0,
+            "yOffset": 0,
+            "actionName": "right",
+        }
+    ]
+    guarded_analysis = analyze_state(guarded_state, [])
+    guarded_builder = CandidateBuilder(
+        snapshot=guarded_state,
+        analysis=guarded_analysis,
+        max_action_ticks=20,
+        limit=7,
+    )
+    guarded_builder.add(
+        kind="retreat_from_guard",
+        key_code=37,
+        ticks=4,
+        score=1,
+        reason="exercise candidate-audit safety detail",
+    )
+    safety_rejections = [
+        item
+        for item in guarded_analysis["candidateAudit"]
+        if item.get("disposition") == "safety_rejection"
+    ]
+    assert_true(safety_rejections, "guard safety rejects the candidate under test")
+    assert_true(
+        all(str(item.get("detail") or "").strip() for item in safety_rejections),
+        "every candidate-audit safety rejection records a meaningful detail",
+    )
+
     emergency_state = snapshot(
         grid=["@@@@", "@  @", "@@@@"],
         runner={"x": 1, "y": 1, "xOffset": 0, "yOffset": 0, "actionName": "stop"},

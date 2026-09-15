@@ -1,5 +1,4 @@
 import { spawn, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -322,9 +321,6 @@ function resolveBrowserExecutable(explicitPath) {
 
 function summarizeAttempt(number, startedAt, result, trace, config) {
   const steps = Array.isArray(trace?.steps) ? trace.steps : [];
-  const decisionSequenceFingerprint = createHash("sha256")
-    .update(steps.map((step) => step?.selectedCandidateId || "unknown").join("\n"))
-    .digest("hex");
   const kinds = {};
   const candidatePoolKinds = {};
   const candidatePoolLanes = {};
@@ -455,7 +451,6 @@ function summarizeAttempt(number, startedAt, result, trace, config) {
     failureReason: result.failureReason,
     demoTime: result.demoTime,
     stepCount: trace?.stepCount ?? steps.length,
-    decisionSequenceFingerprint,
     model: trace?.model ?? null,
     normalMode: recordedGodMode === 0 && terminalGodMode === false,
     requestedMode: requestedGodMode ? "god" : "normal",
@@ -543,7 +538,7 @@ function buildReport(config, attempts, executablePath) {
 }
 
 function printHelp() {
-  process.stdout.write(`Usage: npm run evaluate -- [options]\n\n`);
+  process.stdout.write(`Usage: npm run eval -- [options]\n\n`);
   process.stdout.write(`  --runs N                 fresh attempts (default: 10, maximum: 100)\n`);
   process.stdout.write(`  --target N               stop after N successful runs (maximum 100)\n`);
   process.stdout.write(`  --profile NAME           model profile passed through the browser URL\n`);

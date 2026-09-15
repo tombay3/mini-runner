@@ -117,12 +117,16 @@ class CandidateBuilder:
         )
         action = limit_horizontal_ticks_under_guard_pressure(action, self.analysis)
         action = limit_horizontal_ticks_before_open_hole(action, movement, kind)
-        action = apply_prospective_horizontal_endpoint_safety(
-            action, self.analysis, kind, snapshot=self.snapshot
+        action, endpoint_rejection_detail = (
+            _apply_prospective_horizontal_endpoint_safety(
+                action, self.analysis, kind, snapshot=self.snapshot
+            )
         )
         if action is None:
             audit["disposition"] = "safety_rejection"
-            audit["detail"] = "prospective endpoint safety rejected the action"
+            audit["detail"] = endpoint_rejection_detail or (
+                "prospective endpoint safety rejected the action"
+            )
             return
         if not is_action_physically_valid(
             action,
@@ -135,8 +139,12 @@ class CandidateBuilder:
         ):
             audit["disposition"] = "physical_rejection"
             return
-        if not is_action_guard_safe(action, self.analysis, candidate_kind=kind):
+        guard_rejection_detail = action_guard_safety_rejection_detail(
+            action, self.analysis, candidate_kind=kind
+        )
+        if guard_rejection_detail is not None:
             audit["disposition"] = "safety_rejection"
+            audit["detail"] = guard_rejection_detail
             return
         candidate_id = candidate_id or make_candidate_id(
             kind, target, ACTION_NAMES[key_code]
@@ -1588,15 +1596,31 @@ def apply_prospective_horizontal_endpoint_safety(
     *,
     snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
+    safe_action, _detail = _apply_prospective_horizontal_endpoint_safety(
+        action,
+        analysis,
+        candidate_kind,
+        snapshot=snapshot,
+    )
+    return safe_action
+
+
+def _apply_prospective_horizontal_endpoint_safety(
+    action: dict[str, Any],
+    analysis: dict[str, Any],
+    candidate_kind: str,
+    *,
+    snapshot: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any] | None, str | None]:
     if analysis.get("godMode") or candidate_kind not in PROSPECTIVE_HORIZONTAL_KINDS:
-        return action
+        return action, None
     key_code = action.get("keyCode")
     if key_code not in {LEFT_KEYCODE, RIGHT_KEYCODE}:
-        return action
+        return action, None
     risk = _dict(analysis.get("risk"))
     guard = _dict(risk.get("pressureGuard"))
     if guard.get("risk") not in GUARD_PRESSURE_RISKS or not guard.get("closing"):
-        return action
+        return action, None
     direction = "left" if key_code == LEFT_KEYCODE else "right"
     guard_behind = (
         guard.get("relativeX") == "right"
@@ -1604,7 +1628,7 @@ def apply_prospective_horizontal_endpoint_safety(
         else guard.get("relativeX") == "left"
     )
     if not guard_behind:
-        return action
+        return action, None
 
     runner = _dict(analysis.get("runner"))
     runner_x = _to_int(runner.get("x"))
@@ -1652,26 +1676,34 @@ def apply_prospective_horizontal_endpoint_safety(
         and hole_y >= terrain_height - 1
     )
     if not (edge_ahead or bottom_hole_ahead):
-        return action
+        return action, None
 
+    obstacle = "bottom-row hole" if bottom_hole_ahead else "level edge"
     moving_toward_center = bool(
         (direction == "left" and x_offset > 0)
         or (direction == "right" and x_offset < 0)
     )
     if not moving_toward_center:
-        return None
-    centering_ticks = max(1, (abs(x_offset) + LEGACY_SUBTILE_STEP - 1) // LEGACY_SUBTILE_STEP)
+        return (
+            None,
+            f"moving {direction} would reach the {obstacle} with a closing guard behind",
+        )
+    centering_ticks = max(
+        1, (abs(x_offset) + LEGACY_SUBTILE_STEP - 1) // LEGACY_SUBTILE_STEP
+    )
     if centering_ticks >= int(action.get("ticks") or 1):
-        return action
-    obstacle = "bottom-row hole" if bottom_hole_ahead else "level edge"
-    return {
-        **action,
-        "ticks": centering_ticks,
-        "reason": (
-            f"{action.get('reason', '')}; stop centered before the {obstacle} because a closing "
-            "guard is behind"
-        )[:500],
-    }
+        return action, None
+    return (
+        {
+            **action,
+            "ticks": centering_ticks,
+            "reason": (
+                f"{action.get('reason', '')}; stop centered before the {obstacle} because a closing "
+                "guard is behind"
+            )[:500],
+        },
+        None,
+    )
 
 
 def _action_reaches_open_hole(
@@ -1712,20 +1744,25 @@ def _action_reaches_open_hole(
     return distance <= action_span
 
 
-def is_action_guard_safe(
+def action_guard_safety_rejection_detail(
     action: dict[str, Any],
     analysis: dict[str, Any],
     *,
     candidate_kind: str | None = None,
-) -> bool:
+) -> str | None:
     if analysis.get("godMode"):
-        return True
+        return None
     risk = _dict(analysis.get("risk"))
     guard = _dict(risk.get("pressureGuard"))
     if guard.get("risk") not in GUARD_PRESSURE_RISKS:
-        return True
+        return None
     side = guard.get("relativeX")
     key_code = action.get("keyCode")
+    action_name = (
+        ACTION_NAMES.get(key_code, f"key {key_code}")
+        if isinstance(key_code, int)
+        else f"key {key_code}"
+    )
     if guard.get("risk") in {"high", "critical"} and side in {"left", "right"}:
         for nearby in risk.get("nearbyGuards") or []:
             nearby = _dict(nearby)
@@ -1743,38 +1780,50 @@ def is_action_guard_safe(
                     or (nearby_side == "right" and key_code == RIGHT_KEYCODE)
                 )
             ):
-                return False
+                return (
+                    f"{action_name} moves toward a second closing same-row guard "
+                    f"on the {nearby_side} at distance {nearby_distance}"
+                )
     for nearby in risk.get("nearbyGuards") or []:
         nearby = _dict(nearby)
-        if nearby.get("relativeY") != "same" or nearby.get("risk") not in GUARD_PRESSURE_RISKS:
+        if (
+            nearby.get("relativeY") != "same"
+            or nearby.get("risk") not in GUARD_PRESSURE_RISKS
+        ):
             continue
         if nearby.get("relativeX") == "left" and key_code == LEFT_KEYCODE:
-            return False
+            return (
+                f"left moves toward a same-row {nearby.get('risk')} risk guard "
+                f"at distance {_to_int(nearby.get('distance')) or 'unknown'}"
+            )
         if nearby.get("relativeX") == "right" and key_code == RIGHT_KEYCODE:
-            return False
+            return (
+                f"right moves toward a same-row {nearby.get('risk')} risk guard "
+                f"at distance {_to_int(nearby.get('distance')) or 'unknown'}"
+            )
     if (
         candidate_kind == "evade_edge_ladder"
         and guard.get("relativeY") == "below"
         and key_code in {LEFT_KEYCODE, RIGHT_KEYCODE}
     ):
-        return True
+        return None
     if (
         candidate_kind == "evade_open_hole"
         and guard.get("relativeY") in {"above", "below"}
         and not guard.get("closing")
         and key_code in {LEFT_KEYCODE, RIGHT_KEYCODE}
     ):
-        return True
+        return None
     if (
         guard.get("risk") == "medium"
         and guard.get("relativeY") in {"above", "below"}
         and key_code in {LEFT_KEYCODE, RIGHT_KEYCODE}
     ):
-        return True
+        return None
     if side == "left" and key_code == LEFT_KEYCODE:
-        return False
+        return f"left moves toward the {guard.get('risk')} risk pressure guard on the left"
     if side == "right" and key_code == RIGHT_KEYCODE:
-        return False
+        return f"right moves toward the {guard.get('risk')} risk pressure guard on the right"
     relative_y = guard.get("relativeY")
     if (
         relative_y == "same"
@@ -1783,15 +1832,15 @@ def is_action_guard_safe(
         and guard.get("motion") in {"up", "climb_out"}
         and key_code == UP_KEYCODE
     ):
-        return False
+        return "up moves toward an adjacent same-row guard climbing into the runner's cell"
     if candidate_kind == "emergency_hold" and key_code == STOP_KEYCODE:
-        return True
+        return None
     if (
         candidate_kind == "wait_for_dig_completion"
         and key_code == STOP_KEYCODE
         and _dict(analysis.get("activeDig")).get("active")
     ):
-        return True
+        return None
     if (
         candidate_kind == "wait_for_trap_resolution"
         and key_code == STOP_KEYCODE
@@ -1799,19 +1848,38 @@ def is_action_guard_safe(
             _dict(analysis.get("movement")), risk
         )
     ):
-        return True
+        return None
     if relative_y == "above" and key_code == UP_KEYCODE:
-        return False
+        return f"up moves toward the {guard.get('risk')} risk pressure guard above"
     if relative_y == "below" and key_code == DOWN_KEYCODE:
-        return False
+        return f"down moves toward the {guard.get('risk')} risk pressure guard below"
     runner_action = _dict(analysis.get("runner")).get("action")
     if (
         guard.get("risk") in {"high", "critical"}
         and key_code == STOP_KEYCODE
         and runner_action != "fall"
     ):
-        return False
-    return True
+        return (
+            f"stop remains exposed to {guard.get('risk')} guard pressure while the runner "
+            "is not falling"
+        )
+    return None
+
+
+def is_action_guard_safe(
+    action: dict[str, Any],
+    analysis: dict[str, Any],
+    *,
+    candidate_kind: str | None = None,
+) -> bool:
+    return (
+        action_guard_safety_rejection_detail(
+            action,
+            analysis,
+            candidate_kind=candidate_kind,
+        )
+        is None
+    )
 
 
 def limit_horizontal_ticks_under_guard_pressure(

@@ -99,7 +99,7 @@ without running the game frontend or backend.
 Start it in another terminal with the Python environment activated:
 
 ```bash
-streamlit run trace-dash.py --server.port 8601
+npm run dash
 ```
 
 Open [http://localhost:8601](http://localhost:8601). It reads `__data1` by default; use
@@ -138,13 +138,13 @@ an LLM. See [Sanity tests](docs/sanity-tests.md) for coverage and when to run th
 Run repeatable normal-mode attempts against the real browser game and configured model:
 
 ```bash
-npm run evaluate -- --runs 10 --target 5
+npm run eval -- --runs 10 --target 5
 ```
 
 `--target N` stops early after `N` successful runs; the evaluator performs at most the requested
 `--runs` attempts.
 
-Use `npm run evaluate -- --smoke` to verify the browser, wrapper, backend, and legacy runtime
+Use `npm run eval -- --smoke` to verify the browser, wrapper, backend, and legacy runtime
 without calling the model. See [Agent evaluator](docs/evaluator.md) for profiles, reports,
 normal-mode enforcement, and exit statuses.
 

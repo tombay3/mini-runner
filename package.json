@@ -4,12 +4,13 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "api": "node scripts/api.mjs",
     "dev": "vite --force",
     "build": "vite build",
+    "api": "node scripts/api.mjs",
     "test": "node scripts/sanity.mjs",
+    "eval": "node scripts/evaluate-agent.mjs",
+    "dash": "streamlit run trace-dash.py --server.port 8601",
     "notebook": "node scripts/notebook.mjs",
-    "evaluate": "node scripts/evaluate-agent.mjs",
     "trace:pin": "node scripts/set-trace-pin.mjs pin",
     "trace:unpin": "node scripts/set-trace-pin.mjs unpin"
   },

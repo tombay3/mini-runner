@@ -1,20 +1,28 @@
 import json
 import os
 from datetime import datetime, timezone
+from html import escape
 from pathlib import Path
+from typing import Any, cast
 
 import pandas as pd
 import streamlit as st
 
+from ascii_map import (
+    find_selected_candidate,
+    has_coordinate_geometry,
+    render_ascii_map,
+)
+
 
 # ── Data loading and DataFrame builders ─────────────────────────────────────
-def _parse_ts(val):
+def _parse_ts(val: Any) -> datetime | None:
     if val is None:
         return None
     if isinstance(val, (int, float)):
         try:
             return datetime.fromtimestamp(val, tz=timezone.utc)
-        except Exception:
+        except (OSError, OverflowError, ValueError):
             return None
     if isinstance(val, str):
         for fmt in ("%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ"):
@@ -25,44 +33,59 @@ def _parse_ts(val):
     return None
 
 
-def _trace_id_short(value):
+def _trace_id_short(value: Any) -> str:
     text = str(value or "")
     return text.split("-", 1)[0][:8]
 
 
+def _as_dict(value: Any) -> dict[str, Any]:
+    return cast(dict[str, Any], value) if isinstance(value, dict) else {}
+
+
+def _as_list(value: Any) -> list[Any]:
+    return cast(list[Any], value) if isinstance(value, list) else []
+
+
+def _as_dict_list(value: Any) -> list[dict[str, Any]]:
+    return [item for item in _as_list(value) if isinstance(item, dict)]
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        if pd.isna(value):
+            return default
+        return int(value)
+    except (OverflowError, TypeError, ValueError):
+        return default
+
+
+def _safe_number(value: Any) -> int | float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        return None if pd.isna(value) else value
+    except (TypeError, ValueError):
+        return None
+
+
 def _step_event_flags(step: dict) -> dict[str, bool]:
-    validation = step.get("validation", {})
-    loop = step.get("loopMonitor", {})
-    candidates = step.get("candidates", [])
+    step = _as_dict(step)
+    validation = _as_dict(step.get("validation"))
+    loop = _as_dict(step.get("loopMonitor"))
+    candidates = _as_dict_list(step.get("candidates"))
     requested_id = validation.get("requestedCandidateId") or ""
     selected_id = step.get("selectedCandidateId", "")
-    candidate_scores = [
-        candidate.get("score")
-        for candidate in candidates
-        if isinstance(candidate.get("score"), (int, float))
-    ]
-    requested_score = next(
-        (
-            candidate.get("score")
-            for candidate in candidates
-            if candidate.get("id") == requested_id
-            and isinstance(candidate.get("score"), (int, float))
-        ),
-        None,
-    )
     suppressed_ids = [
         str(item.get("id", ""))
-        for item in (loop.get("suppressedCandidates") or [])
+        for item in _as_list(loop.get("suppressedCandidates"))
         if isinstance(item, dict) and item.get("id")
     ]
-    candidate_replaced = bool(requested_id and requested_id != selected_id)
+    candidate_replaced = bool(requested_id and str(requested_id) != str(selected_id))
     candidate_suppressed = bool(suppressed_ids)
     fallback_used = bool(validation.get("fallbackUsed", False))
     return {
-        "lower_score_request": bool(
-            requested_score is not None
-            and candidate_scores
-            and requested_score < max(candidate_scores)
+        "lower_score_request": _is_meaningful_lower_score_request(
+            candidates, str(requested_id)
         ),
         "warning": candidate_replaced or candidate_suppressed or fallback_used,
         "loop_active": bool(loop.get("active", False)),
@@ -82,7 +105,7 @@ def load_data(folder: str):
     if rec_path.exists():
         try:
             recordings_raw = json.loads(rec_path.read_text())
-        except Exception as e:
+        except (OSError, UnicodeError, json.JSONDecodeError) as e:
             errors.append(f"recordings.json: {e}")
     else:
         errors.append(f"recordings.json not found in {folder}")
@@ -91,11 +114,13 @@ def load_data(folder: str):
     if trace_path.exists():
         try:
             traces_raw = json.loads(trace_path.read_text())
-        except Exception as e:
+        except (OSError, UnicodeError, json.JSONDecodeError) as e:
             errors.append(f"agent-traces.json: {e}")
     else:
         errors.append(f"agent-traces.json not found in {folder}")
 
+    recordings_raw = _as_dict(recordings_raw)
+    traces_raw = _as_dict(traces_raw)
     runs_df, steps_df = _build_dataframes(recordings_raw, traces_raw)
     meta = {
         "rec_updated_at": recordings_raw.get("updatedAt"),
@@ -106,20 +131,26 @@ def load_data(folder: str):
 
 
 def _build_dataframes(recordings_raw: dict, traces_raw: dict):
-    records = recordings_raw.get("records", {})
-    trace_runs = traces_raw.get("runs", {})
+    recordings_raw = _as_dict(recordings_raw)
+    traces_raw = _as_dict(traces_raw)
+    records = _as_dict(recordings_raw.get("records"))
+    trace_runs = _as_dict(traces_raw.get("runs"))
 
     run_rows = []
-    for rec_id, rec in records.items():
-        solver = rec.get("solver") or {}
-        demo = rec.get("demo", {})
+    for rec_id, rec_value in records.items():
+        rec = _as_dict(rec_value)
+        solver = _as_dict(rec.get("solver"))
+        demo = _as_dict(rec.get("demo"))
         trace_id = rec.get("traceId")
-        trace = trace_runs.get(trace_id, {})
-        trace_steps = trace.get("steps", [])
+        trace = _as_dict(trace_runs.get(trace_id)) if isinstance(trace_id, str) else {}
+        trace_steps = _as_list(trace.get("steps"))
         event_flags = [_step_event_flags(step) for step in trace_steps]
         average_candidate_count = (
             round(
-                sum(len(step.get("candidates") or []) for step in trace_steps)
+                sum(
+                    len(_as_dict_list(_as_dict(step).get("candidates")))
+                    for step in trace_steps
+                )
                 / len(trace_steps),
                 1,
             )
@@ -135,7 +166,7 @@ def _build_dataframes(recordings_raw: dict, traces_raw: dict):
         if updated_at and created_at:
             record_time_s = round((updated_at - created_at).total_seconds())
 
-        def _fmt_mm_ss(total_seconds: int) -> str:
+        def _fmt_mm_ss(total_seconds: int | None) -> str:
             if total_seconds is None:
                 return ""
             m = total_seconds // 60
@@ -145,12 +176,14 @@ def _build_dataframes(recordings_raw: dict, traces_raw: dict):
         record_time = _fmt_mm_ss(record_time_s)
         demo_time_ticks = demo.get("time")
         try:
+            if not isinstance(demo_time_ticks, (int, float, str)):
+                raise TypeError
             demo_time_s = round(float(demo_time_ticks) / 16)
         except (TypeError, ValueError):
             demo_time_s = None
         demo_time = _fmt_mm_ss(demo_time_s)
 
-        model_info = trace.get("model") or {}
+        model_info = _as_dict(trace.get("model"))
 
         run_rows.append(
             {
@@ -176,7 +209,7 @@ def _build_dataframes(recordings_raw: dict, traces_raw: dict):
                     flag["lower_score_request"] for flag in event_flags
                 ),
                 "warningStepCount": sum(flag["warning"] for flag in event_flags),
-                "activeLoopCount": sum(flag["loop_active"] for flag in event_flags),
+                "loopActiveSteps": sum(flag["loop_active"] for flag in event_flags),
                 "demoTime": demo_time,
                 "recordTime": record_time,
             }
@@ -185,15 +218,17 @@ def _build_dataframes(recordings_raw: dict, traces_raw: dict):
     runs_df = pd.DataFrame(run_rows) if run_rows else pd.DataFrame()
 
     step_rows = []
-    for trace_id, trace in trace_runs.items():
-        steps = trace.get("steps", [])
-        model_info = trace.get("model", {})
-        outcome = trace.get("outcome") or {}
-        final_state = outcome.get("finalState") or {}
-        for step_idx, step in enumerate(steps):
-            action = step.get("action", {})
-            loop = step.get("loopMonitor", {})
-            suppressed = loop.get("suppressedCandidates", [])
+    for trace_id, trace_value in trace_runs.items():
+        trace = _as_dict(trace_value)
+        steps = _as_list(trace.get("steps"))
+        model_info = _as_dict(trace.get("model"))
+        outcome = _as_dict(trace.get("outcome"))
+        final_state = _as_dict(outcome.get("finalState"))
+        for step_idx, step_value in enumerate(steps):
+            step = _as_dict(step_value)
+            action = _as_dict(step.get("action"))
+            loop = _as_dict(step.get("loopMonitor"))
+            suppressed = _as_list(loop.get("suppressedCandidates"))
             suppressed_candidates = [
                 {
                     "id": str(item.get("id")),
@@ -204,23 +239,41 @@ def _build_dataframes(recordings_raw: dict, traces_raw: dict):
                 for item in suppressed
                 if isinstance(item, dict) and item.get("id")
             ]
-            validation = step.get("validation", {})
-            state = step.get("state", {})
-            candidates = step.get("candidates", [])
+            validation = _as_dict(step.get("validation"))
+            model_selection = _as_dict(step.get("modelSelection"))
+            safety_rejections = [
+                {
+                    "candidateId": str(item.get("candidateId")),
+                    "kind": item.get("kind"),
+                    "detail": str(item.get("detail") or "").strip(),
+                    "action_keyCode": _as_dict(item.get("proposedAction")).get(
+                        "keyCode"
+                    ),
+                    "action_ticks": _as_dict(item.get("proposedAction")).get("ticks"),
+                }
+                for item in _as_list(step.get("candidateAudit"))
+                if isinstance(item, dict)
+                and item.get("disposition") == "safety_rejection"
+                and item.get("candidateId")
+            ]
+            state = _as_dict(step.get("state"))
+            candidates = _as_dict_list(step.get("candidates"))
 
             selected_id = step.get("selectedCandidateId", "")
             selected_kind = step.get("selectedCandidateKind", "")
             event_flags = _step_event_flags(step)
 
-            risk = state.get("guardRisk", {})
-            runner = state.get("runner", {})
+            risk = _as_dict(state.get("guardRisk"))
+            runner = _as_dict(state.get("runner"))
             after_state = (
-                steps[step_idx + 1].get("state") or {}
+                _as_dict(_as_dict(steps[step_idx + 1]).get("state"))
                 if step_idx + 1 < len(steps)
                 else final_state
             )
-            after_runner = after_state.get("runner", {})
-            after_risk = after_state.get("guardRisk", {})
+            after_runner = _as_dict(after_state.get("runner"))
+            after_risk = _as_dict(after_state.get("guardRisk"))
+            state_gold = _as_dict(state.get("gold"))
+            after_gold = _as_dict(after_state.get("gold"))
             is_final_step = step_idx + 1 == len(steps)
 
             step_rows.append(
@@ -228,6 +281,7 @@ def _build_dataframes(recordings_raw: dict, traces_raw: dict):
                     "traceId": trace_id,
                     "stepIndex": step_idx,
                     "state_tick": state.get("tick"),
+                    "after_state_tick": after_state.get("tick"),
                     "action_keyCode": action.get("keyCode"),
                     "action_ticks": action.get("ticks"),
                     "action_reason": action.get("reason", ""),
@@ -238,6 +292,16 @@ def _build_dataframes(recordings_raw: dict, traces_raw: dict):
                     "candidateCount": len(candidates),
                     "fallbackUsed": validation.get("fallbackUsed", False),
                     "fallbackReason": validation.get("fallbackReason") or "",
+                    "reasoningContent": (
+                        model_selection.get("reasoningContent")
+                        if isinstance(model_selection.get("reasoningContent"), str)
+                        else ""
+                    ),
+                    "declaredRationale": (
+                        model_selection.get("declaredRationale")
+                        if isinstance(model_selection.get("declaredRationale"), str)
+                        else ""
+                    ),
                     "event_lowerScoreRequest": event_flags["lower_score_request"],
                     "event_warning": event_flags["warning"],
                     "event_candidateReplaced": event_flags["candidate_replaced"],
@@ -248,17 +312,23 @@ def _build_dataframes(recordings_raw: dict, traces_raw: dict):
                         item["id"] for item in suppressed_candidates
                     ),
                     "loop_suppressedCandidates": suppressed_candidates,
+                    "candidateSafetyRejections": safety_rejections,
+                    "state_raw": state,
                     "runner_x": runner.get("x"),
                     "runner_y": runner.get("y"),
+                    "runner_xOffset": runner.get("xOffset"),
+                    "runner_yOffset": runner.get("yOffset"),
                     "risk_level": risk.get("risk", ""),
-                    "gold_remaining": state.get("gold", {}).get("remainingCount"),
+                    "gold_remaining": state_gold.get("remainingCount"),
+                    "gold_complete": state_gold.get("complete"),
                     "game_state": state.get("gameState", ""),
                     "after_runner_x": after_runner.get("x"),
                     "after_runner_y": after_runner.get("y"),
+                    "after_runner_xOffset": after_runner.get("xOffset"),
+                    "after_runner_yOffset": after_runner.get("yOffset"),
                     "after_risk_level": after_risk.get("risk", ""),
-                    "after_gold_remaining": after_state.get("gold", {}).get(
-                        "remainingCount"
-                    ),
+                    "after_gold_remaining": after_gold.get("remainingCount"),
+                    "after_gold_complete": after_gold.get("complete"),
                     "after_game_state": after_state.get("gameState", ""),
                     "terminal_result": outcome.get("result", "")
                     if is_final_step
@@ -276,27 +346,598 @@ def _build_dataframes(recordings_raw: dict, traces_raw: dict):
     return runs_df, steps_df
 
 
-def get_candidates_df(steps_df: pd.DataFrame) -> pd.DataFrame:
-    if steps_df.empty or "candidates_raw" not in steps_df.columns:
-        return pd.DataFrame()
+def _is_true(value: Any) -> bool:
+    try:
+        return False if pd.isna(value) else bool(value)
+    except (TypeError, ValueError):
+        return False
 
-    rows = []
-    for _, row in steps_df.iterrows():
-        selected_id = row.get("selectedCandidateId", "")
-        for cand in row.get("candidates_raw", []):
-            rows.append(
-                {
-                    "traceId": row["traceId"],
-                    "stepIndex": row["stepIndex"],
-                    "candidateId": cand.get("id", ""),
-                    "kind": cand.get("kind", ""),
-                    "score": cand.get("score", 0),
-                    "selected": cand.get("id") == selected_id,
-                    "reason": (cand.get("firstAction") or {}).get("reason", ""),
-                }
+
+def _action_signature(value: Any) -> tuple[int, int] | None:
+    action = _as_dict(value)
+    key_code = _safe_number(action.get("keyCode"))
+    ticks = _safe_number(action.get("ticks"))
+    if key_code is None or ticks is None:
+        return None
+    return int(key_code), int(ticks)
+
+
+def _candidate_signatures(candidates: list[dict[str, Any]]) -> set[tuple[int, int]]:
+    return {
+        signature
+        for candidate in candidates
+        if (signature := _action_signature(candidate.get("firstAction"))) is not None
+    }
+
+
+def _is_meaningful_lower_score_request(
+    candidates: list[dict[str, Any]], requested_id: str
+) -> bool:
+    """Return whether a model request chose a lower-scored distinct action."""
+    signatures = _candidate_signatures(candidates)
+    if len(signatures) < 2:
+        return False
+    requested = next(
+        (
+            candidate
+            for candidate in candidates
+            if str(candidate.get("id") or "") == requested_id
+        ),
+        None,
+    )
+    if requested is None:
+        return False
+    requested_score = _safe_number(requested.get("score"))
+    requested_signature = _action_signature(requested.get("firstAction"))
+    scored = [
+        (candidate, score)
+        for candidate in candidates
+        if (score := _safe_number(candidate.get("score"))) is not None
+    ]
+    if requested_score is None or requested_signature is None or not scored:
+        return False
+    top_score = max(score for _, score in scored)
+    top_signatures = _candidate_signatures(
+        [candidate for candidate, score in scored if score == top_score]
+    )
+    return requested_score < top_score and requested_signature not in top_signatures
+
+
+def _contiguous_ranges(positions: list[int]) -> list[tuple[int, int]]:
+    if not positions:
+        return []
+    ranges = []
+    start = previous = positions[0]
+    for position in positions[1:]:
+        if position != previous + 1:
+            ranges.append((start, previous))
+            start = position
+        previous = position
+    ranges.append((start, previous))
+    return ranges
+
+
+def _range_ticks(rows: list[pd.Series], start: int, end: int) -> int | None:
+    start_tick = _safe_number(rows[start].get("state_tick"))
+    end_tick = _safe_number(rows[end].get("after_state_tick"))
+    if start_tick is None or end_tick is None or end_tick < start_tick:
+        return None
+    return int(end_tick - start_tick)
+
+
+def _range_rank(rows: list[pd.Series], interval: tuple[int, int]) -> tuple[int, int]:
+    start, end = interval
+    ticks = _range_ticks(rows, start, end)
+    return (ticks if ticks is not None else -1, end - start + 1)
+
+
+def _longest_range(
+    rows: list[pd.Series], ranges: list[tuple[int, int]]
+) -> tuple[int, int] | None:
+    return max(ranges, key=lambda interval: _range_rank(rows, interval), default=None)
+
+
+def _display_step(row: pd.Series) -> int:
+    return _safe_int(row.get("stepIndex")) + 1
+
+
+def _range_label(rows: list[pd.Series], interval: tuple[int, int]) -> str:
+    start, end = interval
+    first = _display_step(rows[start])
+    last = _display_step(rows[end])
+    return f"Step {first}" if first == last else f"Steps {first}–{last}"
+
+
+def _format_tick_duration(ticks: int | None) -> str:
+    if ticks is None:
+        return "duration unavailable"
+    seconds = round(ticks / 16)
+    return f"{seconds} sec"
+
+
+def _candidates_text(choice: dict[str, int]) -> str:
+    return (
+        "Candidates: "
+        f"safety lane {choice['safety_only']} · "
+        f"progress lane {choice['progress_only']} · "
+        f"both lanes {choice['both']} · "
+        f"{choice['candidate_singleton']} singletons · "
+        f"{choice['forced_safety']} forced safety · "
+        f"{choice['forced_progress']} forced progress · "
+        f"{choice['multi_action_decision']} non-singletons on "
+        f"{choice['steps']} steps"
+    )
+
+
+def _signal(
+    title: str,
+    evidence: str,
+    rows: list[pd.Series],
+    interval: tuple[int, int],
+    *,
+    range_after_first_clause: bool = False,
+) -> dict[str, Any]:
+    start, _ = interval
+    return {
+        "title": title,
+        "evidence": evidence,
+        "range": _range_label(rows, interval),
+        "stepIndex": _safe_int(rows[start].get("stepIndex")),
+        "rangeAfterFirstClause": range_after_first_clause,
+    }
+
+
+def _signal_line(signal: dict[str, Any], *, markdown: bool = False) -> str:
+    title = str(signal["title"])
+    evidence = str(signal["evidence"])
+    range_text = f"({signal['range']})"
+    if signal.get("rangeAfterFirstClause"):
+        first, separator, rest = evidence.partition(" · ")
+        evidence = f"{first} {range_text}"
+        if separator:
+            evidence += f"{separator}{rest}"
+    else:
+        evidence = f"{evidence} {range_text}"
+    rendered_title = f"**{title}**" if markdown else title
+    return f"{rendered_title} — {evidence}"
+
+
+def _build_run_signals(
+    trace_steps: pd.DataFrame,
+) -> tuple[dict[str, int], list[dict[str, Any]]]:
+    """Summarize candidates and return one window per signal category."""
+    ordered = trace_steps.sort_values("stepIndex")
+    rows = [row for _, row in ordered.iterrows()]
+    choice = {
+        "steps": len(rows),
+        "safety_only": 0,
+        "progress_only": 0,
+        "both": 0,
+        "candidate_singleton": 0,
+        "forced_safety": 0,
+        "forced_progress": 0,
+        "multi_action_decision": 0,
+    }
+    if not rows:
+        return choice, []
+
+    row_candidates: list[list[dict[str, Any]]] = []
+    row_signatures: list[set[tuple[int, int]]] = []
+    for row in rows:
+        candidates = _as_dict_list(row.get("candidates_raw"))
+        signatures = _candidate_signatures(candidates)
+        row_candidates.append(candidates)
+        row_signatures.append(signatures)
+        lanes = {str(candidate.get("lane") or "") for candidate in candidates}
+        has_safety = "safety" in lanes
+        has_progress = "progress" in lanes
+        availability = (
+            "both"
+            if has_safety and has_progress
+            else "safety_only"
+            if has_safety
+            else "progress_only"
+            if has_progress
+            else None
+        )
+        if availability is not None:
+            choice[availability] += 1
+        choice["candidate_singleton"] += len(candidates) == 1
+        if len(candidates) == 1:
+            singleton = candidates[0]
+            singleton_kind = str(singleton.get("kind") or "")
+            singleton_lane = str(singleton.get("lane") or "")
+            if singleton_kind in {
+                "wait_for_dig_completion",
+                "wait_for_trap_resolution",
+            }:
+                pass
+            elif singleton_kind == "emergency_hold" or singleton_lane == "safety":
+                choice["forced_safety"] += 1
+            elif singleton_lane == "progress":
+                choice["forced_progress"] += 1
+        choice["multi_action_decision"] += len(signatures) >= 2
+
+    signals: list[dict[str, Any]] = []
+
+    # Safety rejection pressure, including the longest repeated kind/action.
+    rejection_step_positions = []
+    safety_rejected_count = 0
+    rejection_positions: dict[tuple[str, int, int], list[int]] = {}
+    for position, row in enumerate(rows):
+        rejections = _as_dict_list(row.get("candidateSafetyRejections"))
+        if rejections:
+            rejection_step_positions.append(position)
+            safety_rejected_count += len(rejections)
+        step_signatures = set()
+        for rejection in rejections:
+            key_code = _safe_number(rejection.get("action_keyCode"))
+            ticks = _safe_number(rejection.get("action_ticks"))
+            kind = str(rejection.get("kind") or "")
+            if kind and key_code is not None and ticks is not None:
+                step_signatures.add((kind, int(key_code), int(ticks)))
+        for signature in step_signatures:
+            rejection_positions.setdefault(signature, []).append(position)
+    if rejection_step_positions:
+        repeated: list[tuple[tuple[int, int], tuple[str, int, int]]] = []
+        for signature, positions in rejection_positions.items():
+            repeated.extend(
+                (interval, signature) for interval in _contiguous_ranges(positions)
+            )
+        if repeated:
+            rejection_interval, rejection_signature = max(
+                repeated,
+                key=lambda item: (
+                    item[0][1] - item[0][0] + 1,
+                    _range_rank(rows, item[0])[0],
+                ),
+            )
+            kind, _, _ = rejection_signature
+            streak_steps = rejection_interval[1] - rejection_interval[0] + 1
+            detail = f" · {kind} safety-rejected {streak_steps} times"
+        else:
+            rejection_interval = (
+                rejection_step_positions[0],
+                rejection_step_positions[0],
+            )
+            detail = ""
+        signals.append(
+            _signal(
+                "Safety constraints",
+                f"{safety_rejected_count} safety rejections on "
+                f"{len(rejection_step_positions)} steps{detail}",
+                rows,
+                rejection_interval,
+            )
+        )
+
+    # Confirmed loop steps are counted separately from contiguous episodes.
+    loop_positions = [
+        position
+        for position, row in enumerate(rows)
+        if _is_true(row.get("loop_active"))
+    ]
+    loop_ranges = _contiguous_ranges(loop_positions)
+    loop_interval = _longest_range(rows, loop_ranges)
+    if loop_interval is not None:
+        signals.append(
+            _signal(
+                "Confirmed loops",
+                f"{len(loop_positions)} active steps on {len(loop_ranges)} episodes · "
+                f"longest {_format_tick_duration(_range_ticks(rows, *loop_interval))}",
+                rows,
+                loop_interval,
+            )
+        )
+
+    # Progress context: no-gold time, bounded waits/holds, and terminal delay.
+    no_gold_groups: list[tuple[int, int]] = []
+    no_gold_start: int | None = None
+    previous_gold: int | float | None = None
+    for position, row in enumerate(rows):
+        before = _safe_number(row.get("gold_remaining"))
+        after = _safe_number(row.get("after_gold_remaining"))
+        unchanged = before is not None and after is not None and before == after
+        if unchanged and (
+            no_gold_start is None or (position > 0 and previous_gold == before)
+        ):
+            if no_gold_start is None:
+                no_gold_start = position
+        else:
+            if no_gold_start is not None:
+                no_gold_groups.append((no_gold_start, position - 1))
+            no_gold_start = position if unchanged else None
+        previous_gold = after if unchanged else None
+    if no_gold_start is not None:
+        no_gold_groups.append((no_gold_start, len(rows) - 1))
+    no_gold_interval = _longest_range(rows, no_gold_groups)
+
+    wait_kinds = {
+        "emergency_hold",
+        "wait_for_dig_completion",
+        "wait_for_floor_refill",
+        "wait_for_trap_resolution",
+    }
+    wait_ranges = _contiguous_ranges(
+        [
+            position
+            for position, row in enumerate(rows)
+            if str(row.get("selectedCandidateKind") or "") in wait_kinds
+        ]
+    )
+    wait_interval = _longest_range(rows, wait_ranges)
+    if wait_interval is not None:
+        wait_ticks = _range_ticks(rows, *wait_interval)
+        wait_steps = wait_interval[1] - wait_interval[0] + 1
+        if not ((wait_ticks is not None and wait_ticks >= 32) or wait_steps >= 3):
+            wait_interval = None
+
+    complete_position = None
+    complete_start_tick = None
+    for position, row in enumerate(rows):
+        if _is_true(row.get("gold_complete")) or row.get("gold_remaining") == 0:
+            complete_position = position
+            complete_start_tick = _safe_number(row.get("state_tick"))
+            break
+        if (
+            _is_true(row.get("after_gold_complete"))
+            or row.get("after_gold_remaining") == 0
+        ):
+            complete_position = position
+            complete_start_tick = _safe_number(row.get("after_state_tick"))
+            break
+    complete_interval = (
+        (complete_position, len(rows) - 1) if complete_position is not None else None
+    )
+    complete_ticks = None
+    if complete_interval is not None:
+        final_tick = _safe_number(rows[-1].get("after_state_tick"))
+        if (
+            complete_start_tick is not None
+            and final_tick is not None
+            and final_tick >= complete_start_tick
+        ):
+            complete_ticks = int(final_tick - complete_start_tick)
+
+    progress_parts = []
+    progress_intervals = []
+    if no_gold_interval is not None:
+        progress_parts.append(
+            f"no gold {_format_tick_duration(_range_ticks(rows, *no_gold_interval))}"
+        )
+        progress_intervals.append(no_gold_interval)
+    if wait_interval is not None:
+        progress_parts.append(
+            f"wait/hold {_format_tick_duration(_range_ticks(rows, *wait_interval))}"
+        )
+        progress_intervals.append(wait_interval)
+    if complete_interval is not None and complete_ticks is not None:
+        progress_parts.append(
+            f"gold complete→terminal {_format_tick_duration(complete_ticks)}"
+        )
+        progress_intervals.append(complete_interval)
+    progress_interval = _longest_range(rows, progress_intervals)
+    if progress_interval is not None:
+        signals.append(
+            _signal(
+                "Progress delay",
+                " · ".join(progress_parts),
+                rows,
+                progress_interval,
+            )
+        )
+
+    # Stationary stalls: the runner's position and offsets do not change for
+    # a sustained window.  Gold is intentionally not part of this detector;
+    # unchanged gold is covered by Progress delay above.
+    stationary_positions = []
+    for position, row in enumerate(rows):
+        state_values = (
+            _safe_number(row.get("runner_x")),
+            _safe_number(row.get("runner_y")),
+            _safe_number(row.get("runner_xOffset")),
+            _safe_number(row.get("runner_yOffset")),
+        )
+        after_values = (
+            _safe_number(row.get("after_runner_x")),
+            _safe_number(row.get("after_runner_y")),
+            _safe_number(row.get("after_runner_xOffset")),
+            _safe_number(row.get("after_runner_yOffset")),
+        )
+        if all(value is not None for value in state_values + after_values):
+            stationary_positions.append(
+                position if state_values == after_values else None
+            )
+    stationary_ranges = _contiguous_ranges(
+        [position for position in stationary_positions if position is not None]
+    )
+    stationary_ranges = [
+        interval
+        for interval in stationary_ranges
+        if (ticks := _range_ticks(rows, *interval)) is not None and ticks >= 5 * 16
+    ]
+    stationary_interval = _longest_range(rows, stationary_ranges)
+    if stationary_interval is not None:
+        start, end = stationary_interval
+        window_rows = rows[start : end + 1]
+        window_candidates = [
+            _as_dict_list(row.get("candidates_raw")) for row in window_rows
+        ]
+        window_signatures = [
+            _candidate_signatures(candidates) for candidates in window_candidates
+        ]
+        selected_by_row = []
+        for row, candidates, signatures in zip(
+            window_rows, window_candidates, window_signatures
+        ):
+            selected_id = str(row.get("selectedCandidateId") or "")
+            selected = next(
+                (
+                    candidate
+                    for candidate in candidates
+                    if str(candidate.get("id") or "") == selected_id
+                ),
+                None,
+            )
+            selected_by_row.append((row, selected, signatures))
+
+        wait_kinds = {
+            "emergency_hold",
+            "wait_for_dig_completion",
+            "wait_for_floor_refill",
+            "wait_for_trap_resolution",
+        }
+        non_action_wait_kinds = {
+            "wait_for_dig_completion",
+            "wait_for_floor_refill",
+            "wait_for_trap_resolution",
+        }
+        emergency_only = all(
+            str(row.get("selectedCandidateKind") or "") == "emergency_hold"
+            for row, _, _ in selected_by_row
+        )
+        forced_safety = all(
+            len(signatures) == 1
+            and str(_as_dict(selected).get("lane") or "") == "safety"
+            and str(row.get("selectedCandidateKind") or "") not in non_action_wait_kinds
+            for row, selected, signatures in selected_by_row
+        )
+        one_action_each = all(
+            len(signatures) == 1 for _, _, signatures in selected_by_row
+        )
+
+        common_rejections = None
+        for row in window_rows:
+            row_rejections = {
+                (
+                    str(rejection.get("kind") or ""),
+                    _safe_int(rejection.get("action_keyCode"), -1),
+                    _safe_int(rejection.get("action_ticks"), -1),
+                )
+                for rejection in _as_dict_list(row.get("candidateSafetyRejections"))
+            }
+            common_rejections = (
+                row_rejections
+                if common_rejections is None
+                else common_rejections & row_rejections
+            )
+        common_rejection = next(iter(common_rejections or ()), None)
+
+        if emergency_only or one_action_each or common_rejection is not None:
+            evidence_parts = []
+            if emergency_only:
+                evidence_parts.append("emergency hold")
+            elif forced_safety:
+                evidence_parts.append("forced safety")
+            elif one_action_each:
+                evidence_parts.append("action singleton")
+            evidence_parts.append("runner state unchanged")
+            duration = _format_tick_duration(_range_ticks(rows, start, end))
+            evidence_parts.append(f"longest {duration}")
+            signals.append(
+                _signal(
+                    "Stationary stalls",
+                    " · ".join(evidence_parts),
+                    rows,
+                    stationary_interval,
+                )
             )
 
-    return pd.DataFrame(rows) if rows else pd.DataFrame()
+    # Compare model requests only when distinct executable actions were visible.
+    divergences = []
+    for position, (row, candidates) in enumerate(zip(rows, row_candidates)):
+        requested_id = str(row.get("requestedCandidateId") or "")
+        if not _is_meaningful_lower_score_request(candidates, requested_id):
+            continue
+        requested = next(
+            (
+                candidate
+                for candidate in candidates
+                if str(candidate.get("id") or "") == requested_id
+            ),
+            None,
+        )
+        requested_score = _safe_number(
+            requested.get("score") if requested is not None else None
+        )
+        requested_signature = _action_signature(
+            requested.get("firstAction") if requested is not None else None
+        )
+        scored = [
+            (candidate, score)
+            for candidate in candidates
+            if (score := _safe_number(candidate.get("score"))) is not None
+        ]
+        if requested_score is None or requested_signature is None or not scored:
+            continue
+        top_score = max(score for _, score in scored)
+        top_candidates = [
+            candidate for candidate, score in scored if score == top_score
+        ]
+        requested_lane = str(
+            requested.get("lane") if requested is not None else "other"
+        )
+        top_lanes = {
+            str(candidate.get("lane") or "other") for candidate in top_candidates
+        }
+        divergences.append(
+            {
+                "position": position,
+                "gap": top_score - requested_score,
+                "lane_change": requested_lane not in top_lanes,
+            }
+        )
+    if divergences:
+        largest = max(divergences, key=lambda item: (item["gap"], -item["position"]))
+        lane_changes = [item for item in divergences if item["lane_change"]]
+        target = lane_changes[0] if lane_changes else largest
+        lane_change_detail = (
+            f" · {len(lane_changes)} lane changes" if lane_changes else ""
+        )
+        interval = (target["position"], target["position"])
+        signals.append(
+            _signal(
+                "Model divergence",
+                f"{len(divergences)} lower-score requests on "
+                f"{choice['multi_action_decision']} choices · "
+                f"largest score gap {largest['gap']:g}{lane_change_detail}",
+                rows,
+                interval,
+            )
+        )
+
+    # Validation outcomes: report intervention counts without exposing IDs or reasons.
+    validation_positions = [
+        position
+        for position, row in enumerate(rows)
+        if _is_true(row.get("fallbackUsed"))
+        or _is_true(row.get("event_candidateReplaced"))
+    ]
+    if validation_positions:
+        fallback_count = sum(_is_true(row.get("fallbackUsed")) for row in rows)
+        replacement_count = sum(
+            _is_true(row.get("event_candidateReplaced")) for row in rows
+        )
+        validation_parts = []
+        if fallback_count:
+            fallback_label = "fallback" if fallback_count == 1 else "fallbacks"
+            validation_parts.append(f"{fallback_count} {fallback_label}")
+        if replacement_count:
+            replacement_label = (
+                "replacement" if replacement_count == 1 else "replacements"
+            )
+            validation_parts.append(f"{replacement_count} {replacement_label}")
+        first_position = validation_positions[0]
+        signals.append(
+            _signal(
+                "Validation results",
+                " · ".join(validation_parts),
+                rows,
+                (first_position, first_position),
+            )
+        )
+
+    return choice, signals
 
 
 def _candidate_reason(
@@ -308,6 +949,8 @@ def _candidate_reason(
     candidate_replaced: bool,
     fallback_used: bool,
     fallback_reason: str,
+    reasoning_content: str,
+    declared_rationale: str,
     suppressed_ids: set[str],
 ) -> str:
     """Prefix a candidate reason with compact semantic markers and context."""
@@ -329,7 +972,13 @@ def _candidate_reason(
     if candidate_id in suppressed_ids:
         markers.append("🔁")
 
-    original_reason = (candidate.get("firstAction") or {}).get("reason", "")
+    if candidate_id == requested_id and requested_below_top_score:
+        original_reason = (
+            str(reasoning_content or "").strip()
+            or str(declared_rationale or "").strip()
+        )
+    else:
+        original_reason = _as_dict(candidate.get("firstAction")).get("reason", "")
     return " ".join(
         part
         for part in [
@@ -384,6 +1033,26 @@ def _resolve_folder(path: str) -> str:
     if not os.path.isabs(p):
         p = os.path.join(_WORKSPACE_ROOT, p)
     return p
+
+
+def _render_step_ascii_map(state_raw, selected_candidate):
+    if has_coordinate_geometry(state_raw):
+        st.code(
+            render_ascii_map(state_raw, selected_candidate),
+            language="text",
+        )
+    else:
+        st.info("No coordinate geometry recorded for this step.")
+
+
+def _queue_trace_jump(trace_id: str, step_index: int) -> None:
+    nonce = _safe_int(st.session_state.get("trace_jump_nonce")) + 1
+    st.session_state["trace_jump_nonce"] = nonce
+    st.session_state["trace_jump"] = {
+        "traceId": trace_id,
+        "stepIndex": step_index,
+        "nonce": nonce,
+    }
 
 
 # ── Sidebar ──────────────────────────────────────────────────────────────────
@@ -463,8 +1132,6 @@ if st.session_state.get("selected_trace") not in _valid_traces:
 
 selected_trace = st.session_state.get("selected_trace")
 
-# Label suffix: which run Sections 2-3 are inspecting (defaults to the first
-# run on fresh load, before any row has been ticked).
 _inspect_label = ""
 if selected_trace and not runs_df.empty and "traceId" in runs_df.columns:
     _match = runs_df[runs_df["traceId"] == selected_trace]
@@ -472,10 +1139,8 @@ if selected_trace and not runs_df.empty and "traceId" in runs_df.columns:
         _row = _match.iloc[0]
         _short = _row.get("traceId_short", str(selected_trace)[:8])
         _result = _row.get("result", "")
-        _inspect_label = (
-            f" · inspecting `{_short}`"
-            + (f" · {_result}" if _result else "")
-            + ("" if _sel_rows else " (default)")
+        _inspect_label = f" · inspecting `{_short}`" + (
+            f" · {_result}" if _result else ""
         )
 
 
@@ -495,14 +1160,18 @@ with st.expander(f"📋 Section 1 — Run Overview{_inspect_label}", expanded=Tr
             "averageCandidateCount",
             "lowerScoreRequestCount",
             "warningStepCount",
-            "activeLoopCount",
+            "loopActiveSteps",
             "recordTime",
             "model",
         ]
         cols_present = [c for c in display_cols if c in overview_runs_df.columns]
-        view = overview_runs_df[cols_present].copy()
+        view = cast(pd.DataFrame, overview_runs_df.loc[:, cols_present].copy())
         # Display-only row number, kept separate from persisted trace IDs.
-        view.insert(0, "#", range(1, len(view) + 1))
+        view.insert(
+            0,
+            "#",
+            pd.Series(range(1, len(view) + 1), index=view.index),
+        )
         if "traceId_short" in view.columns and "source" in overview_runs_df.columns:
             view.loc[overview_runs_df["source"].eq("user"), "traceId_short"] = "user"
         if "traceId_short" in view.columns and "pinned" in overview_runs_df.columns:
@@ -510,20 +1179,31 @@ with st.expander(f"📋 Section 1 — Run Overview{_inspect_label}", expanded=Tr
             view.loc[pinned_rows, "traceId_short"] = (
                 view.loc[pinned_rows, "traceId_short"].astype(str) + " 📌"
             )
-        if "result" in view.columns:
-            view["result"] = view["result"].eq("success")
+        if "failureReason" not in view.columns:
+            view["failureReason"] = ""
+        for row_index in view.index:
+            markers = []
+            if "result" in view.columns and view.at[row_index, "result"] == "success":
+                markers.append("✅")
+            if "godMode" in view.columns and view.at[row_index, "godMode"] == True:
+                markers.append("★")
+            reason = str(
+                _display_scalar(view.at[row_index, "failureReason"], "")
+            ).strip()
+            view.at[row_index, "failureReason"] = " ".join(
+                markers + ([reason] if reason else [])
+            )
+        view = view.drop(columns=["result", "godMode"], errors="ignore")
         view = view.rename(
             columns={
                 "traceId_short": "traceId",
-                "result": "▶",
                 "stepCount": "steps",
                 "demoTime": "time",
                 "failureReason": "reason",
-                "godMode": "★",
                 "averageCandidateCount": "🎯",
                 "lowerScoreRequestCount": "✨",
                 "warningStepCount": "⚠️",
-                "activeLoopCount": "🔁",
+                "loopActiveSteps": "🔁",
                 "recordTime": "record",
             }
         )
@@ -545,9 +1225,7 @@ with st.expander(f"📋 Section 1 — Run Overview{_inspect_label}", expanded=Tr
             height=header_h + row_h * len(view),
             column_config={
                 "#": st.column_config.NumberColumn("#", width=30),
-                "▶": st.column_config.CheckboxColumn("▶", width=30),
                 "reason": st.column_config.TextColumn("reason", width=200),
-                "★": st.column_config.CheckboxColumn("★", width=30),
                 "🎯": st.column_config.NumberColumn("🎯", width=30, format="%.1f"),
                 "✨": st.column_config.NumberColumn("✨", width=30),
                 "⚠️": st.column_config.NumberColumn("⚠️", width=30),
@@ -559,13 +1237,23 @@ with st.expander(f"📋 Section 1 — Run Overview{_inspect_label}", expanded=Tr
             key="run_overview_table",
         )
         st.caption(
-            "🎯 average candidates/step · ✨ model selection · "
-            "⚠️ replacement/suppression · 🔁 active loop"
+            "🎯 average candidates/step · ✨ model requests · "
+            "⚠️ replacement/suppression · 🔁 active loop steps"
         )
 
 
 # ── Section 2: Trace Inspector ───────────────────────────────────────────────
+_jump = _as_dict(st.session_state.get("trace_jump"))
+_jump_matches = bool(
+    selected_trace
+    and _jump.get("traceId") == selected_trace
+    and _safe_number(_jump.get("stepIndex")) is not None
+)
+_jump_step_index = _safe_int(_jump.get("stepIndex"), -1) if _jump_matches else -1
+_jump_nonce = _safe_int(_jump.get("nonce")) if _jump_matches else 0
 _s2_label = "🔍 Section 2 — Trace Inspector"
+_s2_label += _inspect_label
+_trace_stats_suffix = ""
 if selected_trace and not steps_df.empty:
     _n = len(steps_df[steps_df["traceId"] == selected_trace])
     _d = ""
@@ -577,22 +1265,24 @@ if selected_trace and not steps_df.empty:
         _row = runs_df[runs_df["traceId"] == selected_trace]
         if not _row.empty:
             _d = str(_row.iloc[0].get("demoTime") or "")
-    _suffix = f" ({_n} steps"
+    _trace_stats_suffix = f" ({_n} steps"
     if _d:
-        _suffix += f" · {_d}"
-    _suffix += ")"
-    _s2_label += _suffix
+        _trace_stats_suffix += f" · {_d}"
+    _trace_stats_suffix += ")"
+    _s2_label += _trace_stats_suffix
 
-with st.expander(_s2_label, expanded=False):
+_s2_key = f"trace_inspector_jump_{_jump_nonce}" if _jump_matches else "trace_inspector"
+with st.expander(_s2_label, expanded=_jump_matches, key=_s2_key):
     if steps_df.empty:
         st.info("No trace data found.")
     elif not selected_trace:
         st.info("Select a run above.")
     else:
         selected_trace = st.session_state.get("selected_trace")
-        trace_steps = steps_df[steps_df["traceId"] == selected_trace].sort_values(
-            "stepIndex"
-        )
+        trace_steps = cast(
+            pd.DataFrame,
+            steps_df.loc[steps_df["traceId"] == selected_trace, :],
+        ).sort_values(by="stepIndex")
 
         if trace_steps.empty:
             st.warning("No steps found for this trace.")
@@ -613,17 +1303,18 @@ with st.expander(_s2_label, expanded=False):
             # Scrollable panel holding every step (no pagination)
             steps_panel = st.container(height=560)
 
+            _jump_rendered = False
             for chosen_idx in range(n_steps):
                 step_row = trace_steps.iloc[chosen_idx]
-                keycode = int(step_row.get("action_keyCode") or 0)
+                keycode = _safe_int(step_row.get("action_keyCode"))
                 key_label = KEY_MAP.get(keycode, f"key {keycode}")
-                ticks = int(step_row.get("action_ticks") or 0)
+                ticks = _safe_int(step_row.get("action_ticks"))
 
                 sel_id = str(_display_scalar(step_row.get("selectedCandidateId"), "—"))
                 requested_id = str(
                     _display_scalar(step_row.get("requestedCandidateId"), "")
                 )
-                cands = step_row.get("candidates_raw", [])
+                cands = _as_dict_list(step_row.get("candidates_raw"))
                 requested_below_top_score = bool(
                     step_row.get("event_lowerScoreRequest", False)
                 )
@@ -678,55 +1369,35 @@ with st.expander(_s2_label, expanded=False):
                 if event_icons:
                     step_label = f"{' '.join(event_icons)} {step_label}"
 
-                with steps_panel.expander(step_label, expanded=False):
+                _is_jump_target = bool(
+                    _jump_matches
+                    and _safe_int(step_row.get("stepIndex"), -1) == _jump_step_index
+                )
+                _step_key = (
+                    f"trace_jump_target_{_jump_nonce}"
+                    if _is_jump_target
+                    else f"trace_step_{display_step}"
+                )
+                with steps_panel.expander(
+                    step_label,
+                    expanded=_is_jump_target,
+                    key=_step_key,
+                ):
                     fallback_reason = str(
                         _display_scalar(step_row.get("fallbackReason"), "")
                     ).strip()
 
-                    before_pos = f"({rx}, {ry})"
-                    after_x = _display_scalar(step_row.get("after_runner_x"), None)
-                    after_y = _display_scalar(step_row.get("after_runner_y"), None)
-                    outcome_bits = [
-                        (
-                            f"pos {before_pos} → ({after_x}, {after_y})"
-                            if after_x is not None and after_y is not None
-                            else f"pos {before_pos} → pending"
-                        )
-                    ]
-                    after_gold = _display_scalar(
-                        step_row.get("after_gold_remaining"), None
+                    state_raw = step_row.get("state_raw")
+                    if not isinstance(state_raw, dict):
+                        state_raw = {}
+                    selected_candidate = find_selected_candidate(cands, sel_id)
+                    safety_rejections = _as_dict_list(
+                        step_row.get("candidateSafetyRejections")
                     )
-                    if after_gold is not None:
-                        outcome_bits.append(
-                            f"gold {_display_scalar(gold)} → {after_gold}"
-                        )
-                    before_risk = _display_scalar(step_row.get("risk_level"))
-                    after_risk = _display_scalar(step_row.get("after_risk_level"), None)
-                    if after_risk is not None:
-                        outcome_bits.append(f"risk {before_risk} → {after_risk}")
-                    before_state = _display_scalar(step_row.get("game_state"), None)
-                    after_state = _display_scalar(
-                        step_row.get("after_game_state"), None
-                    )
-                    if after_state is not None and after_state != before_state:
-                        outcome_bits.append(
-                            f"state {before_state or '—'} → {after_state}"
-                        )
-                    terminal_result = str(
-                        _display_scalar(step_row.get("terminal_result"), "")
-                    )
-                    if terminal_result:
-                        terminal_reason = str(
-                            _display_scalar(step_row.get("terminal_reason"), "")
-                        )
-                        terminal = f"result {terminal_result}"
-                        if terminal_reason:
-                            terminal += f" ({terminal_reason})"
-                        outcome_bits.append(terminal)
-                    if cands or suppressed_candidates:
-                        outcome_col, candidates_col = st.columns([1, 3])
-                        with outcome_col:
-                            st.markdown("**Outcome:** " + " · ".join(outcome_bits))
+                    if cands or suppressed_candidates or safety_rejections:
+                        map_col, candidates_col = st.columns([1, 3])
+                        with map_col:
+                            _render_step_ascii_map(state_raw, selected_candidate)
                         with candidates_col:
                             suppressed_ids = {
                                 str(item.get("id") or "")
@@ -763,26 +1434,73 @@ with st.expander(_s2_label, expanded=False):
                                             "_suppressed_only": True,
                                         }
                                     )
+                            for safety_rejection in safety_rejections:
+                                display_candidates.append(
+                                    {
+                                        "id": safety_rejection.get("candidateId"),
+                                        "kind": safety_rejection.get(
+                                            "kind", "safety_rejection"
+                                        ),
+                                        "score": None,
+                                        "_safety_rejection": True,
+                                        "_safety_rejection_detail": safety_rejection.get(
+                                            "detail", ""
+                                        ),
+                                    }
+                                )
                             cand_df = pd.DataFrame(
                                 [
                                     {
-                                        "▶": c.get("id") == sel_id,
-                                        "candidate": c.get("id", ""),
+                                        "candidate": (
+                                            "✅ "
+                                            if str(c.get("id") or "") == sel_id
+                                            else ""
+                                        )
+                                        + str(c.get("id") or ""),
                                         "score": (
                                             c.get("score")
                                             if isinstance(c.get("score"), (int, float))
                                             and not c.get("_suppressed_only")
                                             else None
                                         ),
-                                        "reason": _candidate_reason(
-                                            c,
-                                            selected_id=sel_id,
-                                            requested_id=requested_id,
-                                            requested_below_top_score=requested_below_top_score,
-                                            candidate_replaced=candidate_replaced,
-                                            fallback_used=fallback_used,
-                                            fallback_reason=fallback_reason,
-                                            suppressed_ids=suppressed_ids,
+                                        "reason": (
+                                            (
+                                                "⚠️ "
+                                                + str(
+                                                    c.get(
+                                                        "_safety_rejection_detail",
+                                                        "Safety rejection",
+                                                    )
+                                                    or "Safety rejection"
+                                                )
+                                            )
+                                            if c.get("_safety_rejection")
+                                            else _candidate_reason(
+                                                c,
+                                                selected_id=sel_id,
+                                                requested_id=requested_id,
+                                                requested_below_top_score=requested_below_top_score,
+                                                candidate_replaced=candidate_replaced,
+                                                fallback_used=fallback_used,
+                                                fallback_reason=fallback_reason,
+                                                reasoning_content=str(
+                                                    _display_scalar(
+                                                        step_row.get(
+                                                            "reasoningContent"
+                                                        ),
+                                                        "",
+                                                    )
+                                                ),
+                                                declared_rationale=str(
+                                                    _display_scalar(
+                                                        step_row.get(
+                                                            "declaredRationale"
+                                                        ),
+                                                        "",
+                                                    )
+                                                ),
+                                                suppressed_ids=suppressed_ids,
+                                            )
                                         ),
                                     }
                                     for c in display_candidates
@@ -793,7 +1511,6 @@ with st.expander(_s2_label, expanded=False):
                                 width="stretch",
                                 hide_index=True,
                                 column_config={
-                                    "▶": st.column_config.CheckboxColumn("▶", width=30),
                                     "candidate": st.column_config.TextColumn(
                                         "candidate", width=150
                                     ),
@@ -806,38 +1523,121 @@ with st.expander(_s2_label, expanded=False):
                                 },
                             )
                     else:
-                        st.markdown("**Outcome:** " + " · ".join(outcome_bits))
+                        _render_step_ascii_map(state_raw, selected_candidate)
+                _jump_rendered = _jump_rendered or _is_jump_target
+
+            if _jump_rendered:
+                steps_panel.html(
+                    f"""
+                    <script>
+                    requestAnimationFrame(() => {{
+                      document.querySelector(
+                        ".st-key-trace_jump_target_{_jump_nonce}"
+                      )?.scrollIntoView({{behavior: "smooth", block: "center"}});
+                    }});
+                    </script>
+                    """,
+                    unsafe_allow_javascript=True,
+                )
+            if _jump_matches:
+                st.session_state.pop("trace_jump", None)
 
 
-# ── Section 3: Candidate Score Breakdown ─────────────────────────────────────
-with st.expander("📊 Section 3 — Candidate Score Breakdown", expanded=False):
+# ── Section 3: Run Signals ───────────────────────────────────────────────────
+with st.expander(
+    f"📡 Section 3 — Run Signals{_inspect_label}{_trace_stats_suffix}",
+    expanded=False,
+):
     if steps_df.empty:
         st.info("No trace data available.")
     elif not selected_trace:
         st.info("Select a run above.")
     else:
         selected_trace = st.session_state.get("selected_trace")
-        s4_steps = steps_df[steps_df["traceId"] == selected_trace]
-
-        cands_df = get_candidates_df(s4_steps)
-
-        if cands_df.empty:
-            st.info("No candidate data available.")
+        signal_steps = cast(
+            pd.DataFrame,
+            steps_df.loc[steps_df["traceId"] == selected_trace, :],
+        )
+        if signal_steps.empty:
+            st.info("No steps found for this trace.")
         else:
-            # Win rate per kind
-            kind_stats = (
-                cands_df.groupby("kind")
-                .agg(
-                    total=("kind", "count"),
-                    selected=("selected", "sum"),
-                    avg_score=("score", "mean"),
+            choice, run_signals = _build_run_signals(signal_steps)
+            choice_text = _candidates_text(choice)
+
+            run_row = runs_df[runs_df["traceId"] == selected_trace]
+            result = ""
+            if not run_row.empty:
+                result = str(run_row.iloc[0].get("result") or "")
+            ordered_signal_steps = [
+                row for _, row in signal_steps.sort_values("stepIndex").iterrows()
+            ]
+            elapsed = (
+                _format_tick_duration(
+                    _range_ticks(ordered_signal_steps, 0, len(ordered_signal_steps) - 1)
                 )
-                .reset_index()
+                if ordered_signal_steps
+                else "duration unavailable"
             )
-            kind_stats["win_rate_%"] = (
-                kind_stats["selected"] / kind_stats["total"] * 100
-            ).round(1)
-            kind_stats["avg_score"] = kind_stats["avg_score"].round(1)
-            kind_stats = kind_stats.sort_values("win_rate_%", ascending=False)
-            kind_stats = kind_stats.rename(columns={"kind": "candidate"})
-            st.dataframe(kind_stats, width="stretch", hide_index=True)
+            event_lines = [_signal_line(signal) for signal in run_signals]
+            copy_lines = [
+                "RUN CONTEXT",
+                f"trace: {selected_trace}",
+                f"result: {result or 'unknown'}",
+                f"steps: {choice['steps']}",
+                f"elapsed: {elapsed}",
+                choice_text,
+                "EVENTS",
+                *(event_lines or ["No diagnostic run signals found."]),
+            ]
+            copy_text = "\n".join(copy_lines)
+            summary_col, copy_col = st.columns(
+                [6.4, 0.8],
+                vertical_alignment="center",
+            )
+            summary_col.caption(choice_text)
+            copy_col.html(
+                f"""
+                <button id="run-signals-copy" type="button" style="width:100%">
+                  Copy
+                </button>
+                <textarea id="run-signals-copy-text" style="display:none">{
+                    escape(copy_text)
+                }</textarea>
+                <script>
+                (() => {{
+                  const button = document.getElementById("run-signals-copy");
+                  const source = document.getElementById("run-signals-copy-text");
+                  button.addEventListener("click", async () => {{
+                    if (navigator.clipboard) {{
+                      await navigator.clipboard.writeText(source.value);
+                    }} else {{
+                      source.style.display = "block";
+                      source.select();
+                      document.execCommand("copy");
+                      source.style.display = "none";
+                    }}
+                    button.textContent = "Copied";
+                    setTimeout(() => {{ button.textContent = "Copy"; }}, 1200);
+                  }});
+                }})();
+                </script>
+                """,
+                unsafe_allow_javascript=True,
+            )
+
+            if not run_signals:
+                st.info("No diagnostic run signals found.")
+            else:
+                for signal_index, signal in enumerate(run_signals):
+                    event_col, action_col = st.columns(
+                        [6.4, 0.8],
+                        vertical_alignment="center",
+                    )
+                    event_col.markdown(_signal_line(signal, markdown=True))
+                    action_col.button(
+                        f"Step {int(signal['stepIndex']) + 1}",
+                        key=f"run_signal_{signal_index}",
+                        on_click=_queue_trace_jump,
+                        args=(str(selected_trace), int(signal["stepIndex"])),
+                        width="stretch",
+                    )

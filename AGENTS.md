@@ -16,7 +16,7 @@
 ## Data And Config
 
 - Keep secrets in `.env` or `.env.local`; keep non-secret experiment controls in `public/agent-config.json`.
-- `__data1/recordings.json` and `__data1/agent-traces.json` use flat stores retaining the newest 10 runs. Agent recording IDs match their trace IDs.
+- `__data1/recordings.json` and `__data1/agent-traces.json` use flat stores. Recordings retain all pinned runs plus the newest 10 unpinned runs; traces retain runs linked by pinned recordings plus the newest 10 other runs. Agent recording IDs match their trace IDs.
 - Do not rewrite generated data unless the task explicitly targets runtime data or schemas.
 
 ## Editing And Validation
