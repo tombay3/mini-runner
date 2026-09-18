@@ -104,14 +104,14 @@ def build_loop_report(
                 repeated_kind == "emergency_hold"
                 and same_tile_streak >= 6
                 and any(
-                    candidate_kind(candidate_id) == "wait_or_stop"
+                    candidate_kind(candidate_id) == "wait_and_recheck"
                     for candidate_id in candidate_ids[-6:]
                 )
             )
         )
         and (
             (repeated_kind == "route_access_dig" and same_candidate_streak >= 2)
-            or (repeated_kind == "wait_or_stop" and stop_streak >= 3)
+            or (repeated_kind == "wait_and_recheck" and stop_streak >= 3)
             or (
                 same_candidate_streak >= 4
                 and not repeated_progress["madeProgress"]
@@ -167,7 +167,7 @@ def build_loop_report(
     )
     if repeated_id and not preserve_safety_retreat and not preserve_horizontal_progress:
         suppress_ids.append(repeated_id)
-    suppress_kinds.append("wait_or_stop")
+    suppress_kinds.append("wait_and_recheck")
     if loop_type == "vertical_cycle":
         suppress_directions = blocked_vertical_directions(vertical_cycle)
     report["suppress"] = {
@@ -523,7 +523,7 @@ def candidate_kind(candidate_id: str | None) -> str | None:
         "climb_ladder",
         "align_ladder",
         "descend_route",
-        "wait_or_stop",
+        "wait_and_recheck",
         "wait_for_guard_clearance",
         "wait_for_floor_refill",
         "wait_for_dig_completion",

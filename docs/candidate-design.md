@@ -17,7 +17,7 @@ precomputed topology.
 Each candidate supplied to the model contains:
 
 - `id`: deterministic identifier based on kind, local target, and first action;
-- `kind` and `lane`: tactical intent and its safety, progress, environment, or fallback lane;
+- `kind` and `lane`: tactical intent and its safety, progress, or environment lane;
 - `score`: backend heuristic ranking;
 - `target`: local objective metadata when applicable;
 - `firstAction`: the validated short key/tick action;
@@ -41,18 +41,18 @@ even when their first action happens to be the same.
 
 `agent/candidate_lanes.json` is the authoritative lane mapping. Safety candidates handle immediate
 guard or hole threats; progress candidates collect gold, change route or row, access terrain,
-descend, or use the revealed exit; environment candidates wait for changing geometry; fallback
-candidates prevent an empty selection set when ordinary candidates are unavailable.
+descend, or use the revealed exit; environment candidates wait and recheck when the state may
+change or no ordinary action is available. Unknown kinds use `other` in diagnostics and are not a
+candidate lane.
 
 | Lane category | Candidate kinds | Meaning |
 |---|---|---|
 | Safety | `defensive_dig`, `emergency_hold`, `escape_through_open_hole`, `evade_edge_ladder`, `evade_open_hole`, `retreat_from_guard`, `wait_for_guard_clearance`, `wait_for_trap_resolution` | Avoid immediate guard or hole danger, or wait for a safety condition to clear. |
 | Progress | `align_ladder`, `climb_ladder`, `collect_current_tile_gold`, `collect_same_row_gold`, `descend_route`, `exit_ladder_route`, `god_mode_progress`, `low_risk_horizontal_progress`, `route_access_dig`, `route_access_follow` | Collect, change route or row, access terrain, descend, or use the exit. |
-| Environment | `wait_for_dig_completion`, `wait_for_floor_refill` | Advance changing terrain before a movement candidate can be evaluated safely. |
-| Fallback | `wait_or_stop`, unknown kinds | Bounded completeness action or an unrecognized trace kind. |
+| Environment | `wait_and_recheck`, `wait_for_dig_completion`, `wait_for_floor_refill` | Advance changing terrain or briefly recheck when no other candidate is available. |
 
-Active digs, floor refill, and trap resolution use state-specific environment candidates with
-bounded rechecks, rather than a generic wait.
+Active digs, floor refill, guard clearance, and trap resolution use state-specific waits with
+bounded rechecks rather than the generic `wait_and_recheck` action.
 
 ## State and Ladder Geometry
 
@@ -84,7 +84,7 @@ treated conservatively so normal state changes are not mistaken for a loop.
 A loop is confirmed as one of:
 
 - **`stationary_repeat`**: the runner stays on one row without gold progress and either repeats
-  `route_access_dig` twice, repeats `wait_or_stop` three times, repeats the same non-progress
+  `route_access_dig` twice, repeats `wait_and_recheck` three times, repeats the same non-progress
   candidate four times, or remains on one tile for six steps.
 - **`horizontal_cycle`**: the runner stays on one row without gold progress and has at least six
   positions, four horizontal reversals, and a four-tile range. A recent six-step pattern must also
@@ -94,7 +94,7 @@ A loop is confirmed as one of:
   gold progress, and has at least six up/down actions with four alternating direction runs. The
   last six candidates must be ladder movement or guard retreat.
 
-After confirmation, the backend removes the repeated route, `wait_or_stop`, and—when vertical
+After confirmation, the backend removes the repeated route, `wait_and_recheck`, and—when vertical
 movement is cycling—the repeated ladder direction. Horizontal suppression also removes routes to
 the same cycle target. `emergency_hold` is never suppressed, and a repeated guard retreat is not
 suppressed by candidate ID. A horizontal route that reduced distance to its unreached target on
@@ -103,7 +103,7 @@ ordinary suppression.
 
 When an existing horizontal-cycle report contains an alternating target sequence `A → B → A → B`,
 candidate finalization suppresses only the predicted return to `A` for that decision. The suppression
-is deferred until validation is complete and applies only when another validated, non-fallback
+is deferred until validation is complete and applies only when another validated ordinary
 candidate remains. It does not create a new loop type or suppress both endpoints together.
 
 The trace records `loopMonitor` evidence and `suppressedCandidates`. Each suppressed item contains

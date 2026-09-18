@@ -24,4 +24,4 @@
 - Under high or critical guard danger, prefer a valid row-changing climb or descent over horizontal retreat.
 - When a high or critical guard is directly above or below the runner, and the opposite ladder direction is legal, prefer that row-changing retreat over waiting.
 - In god mode, guard contact is non-lethal, so progress normally outranks retreat and defensive digging.
-- Use `wait_or_stop` only when no valid progress or safety candidate exists.
+- Use `wait_and_recheck` only when no other valid candidate exists.

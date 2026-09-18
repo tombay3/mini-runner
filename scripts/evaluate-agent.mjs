@@ -18,7 +18,7 @@ const attempts = [];
 
 function candidateLane(candidateOrKind) {
   const kind = typeof candidateOrKind === "string" ? candidateOrKind : candidateOrKind?.kind;
-  return candidateLanes[kind] || "fallback";
+  return candidateLanes[kind] || "other";
 }
 
 function candidateLaneSet(candidates) {

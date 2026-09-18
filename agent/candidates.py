@@ -47,7 +47,7 @@ CANDIDATE_LANES = json.loads(
 
 
 def candidate_lane(kind: str | None) -> str:
-    return CANDIDATE_LANES.get(kind or "", "fallback")
+    return CANDIDATE_LANES.get(kind or "", "other")
 
 
 GUARD_PRESSURE_RISKS = {"medium", "high", "critical"}
@@ -214,7 +214,7 @@ class CandidateBuilder:
             candidate
             for candidate in self.candidates
             if candidate not in predicted_candidates
-            and candidate.get("lane") != "fallback"
+            and candidate.get("kind") != "wait_and_recheck"
         ]
         if predicted_target is not None and predicted_candidates and alternatives:
             predicted_ids = {
@@ -407,7 +407,7 @@ def generate_candidates(
 
     # Preserve a bounded horizontal progress option for low-risk off-row
     # states when structured routes produced nothing. Without this, a legal
-    # movement toward remaining gold collapses to wait_or_stop.
+    # movement toward remaining gold collapses to a generic wait.
     if (
         not candidates
         and not guard_pressure
@@ -417,7 +417,7 @@ def generate_candidates(
         add_low_risk_horizontal_progress_candidate(add, analysis)
 
     if not candidates and not (guard_pressure or loop_report.get("active")):
-        add_wait_candidate(add)
+        add_wait_and_recheck_candidate(add)
 
     if not candidates:
         add_emergency_hold_candidate(add, risk)
@@ -1385,16 +1385,16 @@ def add_low_risk_horizontal_progress_candidate(add, analysis: dict[str, Any]) ->
     )
 
 
-# Candidate families: fallback
+# Candidate families: environment
 
-def add_wait_candidate(add) -> None:
+def add_wait_and_recheck_candidate(add) -> None:
     add(
-        kind="wait_or_stop",
+        kind="wait_and_recheck",
         key_code=STOP_KEYCODE,
         ticks=2,
         score=1,
-        reason="fallback candidate",
-        candidate_id="wait_or_stop",
+        reason="no ordinary candidate is available; wait briefly and recheck",
+        candidate_id="wait_and_recheck",
     )
 
 

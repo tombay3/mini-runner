@@ -15,9 +15,9 @@
   "retreat_from_guard": "safety",
   "route_access_dig": "progress",
   "route_access_follow": "progress",
+  "wait_and_recheck": "environment",
   "wait_for_dig_completion": "environment",
   "wait_for_floor_refill": "environment",
   "wait_for_guard_clearance": "safety",
-  "wait_for_trap_resolution": "safety",
-  "wait_or_stop": "fallback"
+  "wait_for_trap_resolution": "safety"
 }

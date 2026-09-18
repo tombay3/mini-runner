@@ -168,7 +168,7 @@ def format_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
         {
             "id": candidate.get("id"),
             "kind": candidate.get("kind"),
-            "lane": candidate.get("lane", "fallback"),
+            "lane": candidate.get("lane") or "other",
             "score": candidate.get("score"),
             "target": candidate.get("target"),
             "action": {
