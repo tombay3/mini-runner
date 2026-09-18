@@ -463,9 +463,7 @@ def _candidates_text(choice: dict[str, int]) -> str:
         f"both lanes {choice['both']} · "
         f"{choice['candidate_singleton']} singletons · "
         f"{choice['forced_safety']} forced safety · "
-        f"{choice['forced_progress']} forced progress · "
-        f"{choice['multi_action_decision']} non-singletons on "
-        f"{choice['steps']} steps"
+        f"{choice['forced_progress']} forced progress"
     )
 
 
@@ -474,8 +472,6 @@ def _signal(
     evidence: str,
     rows: list[pd.Series],
     interval: tuple[int, int],
-    *,
-    range_after_first_clause: bool = False,
 ) -> dict[str, Any]:
     start, _ = interval
     return {
@@ -483,21 +479,13 @@ def _signal(
         "evidence": evidence,
         "range": _range_label(rows, interval),
         "stepIndex": _safe_int(rows[start].get("stepIndex")),
-        "rangeAfterFirstClause": range_after_first_clause,
     }
 
 
 def _signal_line(signal: dict[str, Any], *, markdown: bool = False) -> str:
     title = str(signal["title"])
     evidence = str(signal["evidence"])
-    range_text = f"({signal['range']})"
-    if signal.get("rangeAfterFirstClause"):
-        first, separator, rest = evidence.partition(" · ")
-        evidence = f"{first} {range_text}"
-        if separator:
-            evidence += f"{separator}{rest}"
-    else:
-        evidence = f"{evidence} {range_text}"
+    evidence = f"{evidence} ({signal['range']})"
     rendered_title = f"**{title}**" if markdown else title
     return f"{rendered_title} — {evidence}"
 
@@ -594,7 +582,7 @@ def _build_run_signals(
             )
             kind, _, _ = rejection_signature
             streak_steps = rejection_interval[1] - rejection_interval[0] + 1
-            detail = f" · {kind} safety-rejected {streak_steps} times"
+            detail = f" · {kind} rejected {streak_steps} times"
         else:
             rejection_interval = (
                 rejection_step_positions[0],
@@ -901,7 +889,7 @@ def _build_run_signals(
             _signal(
                 "Model divergence",
                 f"{len(divergences)} lower-score requests on "
-                f"{choice['multi_action_decision']} choices · "
+                f"{choice['multi_action_decision']} multi-choices · "
                 f"largest score gap {largest['gap']:g}{lane_change_detail}",
                 rows,
                 interval,
