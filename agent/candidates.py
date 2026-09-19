@@ -398,9 +398,10 @@ def generate_candidates(
         add_route_access_candidate(add, route_access)
         add_route_access_follow_candidate(add, analysis, route_access)
         add_guard_clearance_wait_candidate(add, route_access)
-        add_descent_candidates(add, analysis, movement, history)
     else:
         add_ladder_alignment_candidates(add, analysis, god_mode, history)
+
+    add_descent_candidates(add, analysis, movement, history)
 
     if god_mode and not gold_complete and not candidates:
         add_god_mode_progress_candidate(add, analysis)
@@ -1278,6 +1279,8 @@ def add_descent_candidates(
             target={"x": entry_x, "y": entry_y, "tile": entry.get("tile", "H")},
             reason="runner is aligned above an active ladder; descend to enter its route",
         )
+    if analysis.get("goldComplete"):
+        return
     lower_gold = [
         item
         for item in analysis["nearestGold"]

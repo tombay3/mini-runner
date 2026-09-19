@@ -61,8 +61,9 @@ traces. Visible ladder routes include ordinary active ladder tiles and traversab
 where an active ladder begins one row below. Entry metadata includes `onDownEntry`,
 `entryDirection`, and `ladderY`; the horizontal alignment target remains on the runner row.
 When the runner is aligned on a traversable top entry, candidate generation exposes a bounded
-`descend_route` to the underlying ladder. It omits that descent for the single decision immediately
-after the runner climbed out through the same ladder, preventing a direct undo while preserving
+`descend_route` to the underlying ladder, including after gold collection during exit routing.
+It omits that descent for the single decision immediately after the runner climbed out through
+the same ladder, preventing a direct undo while preserving
 entries reached horizontally. Hidden exit ladders remain inactive until gold is complete. Discovery
 does not force a descent, commit to a route, or change loop suppression.
 When a known progress target is above or on the runner row, alignment to a downward-only

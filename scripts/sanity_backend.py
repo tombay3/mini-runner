@@ -788,6 +788,42 @@ def check_loop_recovery() -> None:
         )
 
 
+def check_post_gold_ladder_entry() -> None:
+    for god_mode in (False, True):
+        state = snapshot(
+            grid=["       ", "       ", " H   H ", "#####H#"],
+            runner={"x": 1, "y": 1, "xOffset": 0, "yOffset": 0, "actionName": "left"},
+            gold_complete=True,
+        )
+        state["godMode"] = god_mode
+        candidates, analysis = generate_candidates(state, [])
+        assert_true(analysis["movement"]["canMoveDown"], "post-gold fixture has a legal entry")
+        descent = next((c for c in candidates if c["id"] == "descend_route_1_2_down"), None)
+        assert_true(descent is not None, "post-gold ladder entry exposes descent")
+        assert_equal(descent["firstAction"]["keyCode"], 40, "entry action moves down")
+        assert_true(
+            any(a["candidateId"] == descent["id"] and a["disposition"] == "exposed"
+                for a in analysis["candidateAudit"]),
+            "post-gold entry is exposed in the audit",
+        )
+        history = [{
+            "candidateId": "climb_ladder_1_2_up", "keyCode": 38,
+            "before": {"runner": {"x": 1, "y": 2}},
+            "after": {"runner": {"x": 1, "y": 1}, "goldCount": 0},
+        }]
+        candidates, _ = generate_candidates(state, history)
+        assert_true(
+            all(c["id"] != "descend_route_1_2_down" for c in candidates),
+            "post-gold entry still avoids immediately undoing a climb",
+        )
+        state["runner"]["x"] = 3
+        candidates, _ = generate_candidates(state, [])
+        assert_true(
+            all(c["kind"] != "descend_route" for c in candidates),
+            "post-gold descent requires a legal aligned entry",
+        )
+
+
 def check_no_legacy_knowledge() -> None:
     assert_true(candidate_kind("removed_kind_1_1_left") != "removed_kind", "unknown route kinds do not become supported candidates")
     assert_equal(candidate_lane("collect_same_row_gold"), "progress", "progress lane is shared")
@@ -818,6 +854,7 @@ def run() -> None:
     check_ladder_entry_discovery()
     check_post_ascent_alignment_reversal()
     check_loop_recovery()
+    check_post_gold_ladder_entry()
     check_no_legacy_knowledge()
     print("backend geometry sanity ok")
 
