@@ -73,8 +73,8 @@ Keyboard shortcuts (hotkeys) control the selected stored recording:
 - `Tab`: select the next stored run when rail navigation is available.
 - `Shift-Tab`: select the previous stored run when rail navigation is available.
 - `Space`: when playback is inactive, start the selected recording already paused; otherwise pause or resume playback.
-- `.`: while paused, advance one recorded key/action segment (`demo.action` in `recordings.json`) → pause again.
-- `,`: while paused, advance one trace step (`run.steps` in `agent-traces.json`) → pause again.
+- `,`: while paused, advance one recorded key/action segment (`demo.action` in `recordings.json`) → pause again.
+- `.`: while paused, advance one trace step (`run.steps` in `agent-traces.json`) → pause again.
 
 Trace stepping is aligned by trace step tick, which can cross zero, one, or many recorded demo action segments because trace steps and demo key events are different timelines.
 

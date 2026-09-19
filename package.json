@@ -11,6 +11,7 @@
     "eval": "node scripts/evaluate-agent.mjs",
     "dash": "streamlit run trace-dash.py --server.port 8601",
     "notebook": "node scripts/notebook.mjs",
+    "cohorts:check": "node scripts/reconcile-cohorts.mjs",
     "trace:pin": "node scripts/set-trace-pin.mjs pin",
     "trace:unpin": "node scripts/set-trace-pin.mjs unpin"
   },
