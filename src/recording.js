@@ -885,11 +885,11 @@ function handlePlaybackDebugKeyDown(state, event) {
     toggleStoredPlaybackPause(state);
     return;
   }
-  if (isPeriod && state.playbackPhase === "paused") {
+  if (isComma && state.playbackPhase === "paused") {
     stepStoredPlaybackSegment(state);
     return;
   }
-  if (isComma && state.playbackPhase === "paused") {
+  if (isPeriod && state.playbackPhase === "paused") {
     stepStoredPlaybackTraceStep(state);
   }
 }

@@ -528,7 +528,7 @@ def _build_run_signals(
         signatures = _candidate_signatures(candidates)
         row_candidates.append(candidates)
         row_signatures.append(signatures)
-        lanes = {str(candidate.get("lane") or "") for candidate in candidates}
+        lanes = {str(candidate.get("lane") or "other") for candidate in candidates}
         has_safety = "safety" in lanes
         has_progress = "progress" in lanes
         availability = (
@@ -546,7 +546,7 @@ def _build_run_signals(
         if len(candidates) == 1:
             singleton = candidates[0]
             singleton_kind = str(singleton.get("kind") or "")
-            singleton_lane = str(singleton.get("lane") or "")
+            singleton_lane = str(singleton.get("lane") or "other")
             if singleton_kind in {
                 "wait_for_dig_completion",
                 "wait_for_trap_resolution",
@@ -875,7 +875,9 @@ def _build_run_signals(
             candidate for candidate, score in scored if score == top_score
         ]
         requested_lane = str(
-            requested.get("lane") if requested is not None else "other"
+            (requested.get("lane") or "other")
+            if requested is not None
+            else "other"
         )
         top_lanes = {
             str(candidate.get("lane") or "other") for candidate in top_candidates

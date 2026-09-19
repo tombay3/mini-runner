@@ -266,7 +266,7 @@ def check_geometry_candidates() -> None:
     ]
     emergency_history = [
         {
-            "candidateId": "wait_or_stop",
+            "candidateId": "wait_and_recheck",
             "keyCode": 32,
             "after": {"runner": {"x": 1, "y": 1}, "goldCount": 2},
         }
@@ -776,7 +776,7 @@ def check_loop_recovery() -> None:
                 candidate["id"] == "align_ladder_25_1_right"
                 for candidate in single_candidates
             ),
-            "predicted return remains when no validated non-fallback alternative exists",
+            "predicted return remains when no validated ordinary alternative exists",
         )
         assert_true(
             all(
@@ -791,7 +791,7 @@ def check_loop_recovery() -> None:
 def check_no_legacy_knowledge() -> None:
     assert_true(candidate_kind("removed_kind_1_1_left") != "removed_kind", "unknown route kinds do not become supported candidates")
     assert_equal(candidate_lane("collect_same_row_gold"), "progress", "progress lane is shared")
-    assert_equal(candidate_lane("unknown_kind"), "fallback", "unknown kinds use fallback lane")
+    assert_equal(candidate_lane("unknown_kind"), "other", "unknown kinds remain diagnosable")
     rules = read_agent_rules()
     prompt = build_agent_prompt({}, candidates=[], analysis={})
     assert_true("classic level" not in rules.lower(), "rules contain no level-specific guidance")

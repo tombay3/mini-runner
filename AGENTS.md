@@ -18,6 +18,8 @@
 - Keep secrets in `.env` or `.env.local`; keep non-secret experiment controls in `public/agent-config.json`.
 - `__data1/recordings.json` and `__data1/agent-traces.json` use flat stores. Recordings retain all pinned runs plus the newest 10 unpinned runs; traces retain runs linked by pinned recordings plus the newest 10 other runs. Agent recording IDs match their trace IDs.
 - Do not rewrite generated data unless the task explicitly targets runtime data or schemas.
+- Before trace/cohort review, run `npm run cohorts:check` (read-only). Report uncataloged runs or stale links rather than assuming the catalog is complete. See `docs/trace-cohort.md` for catalog maintenance.
+- When a requested run-review or campaign includes cataloging, reconcile with `npm run cohorts:check -- --write`, record evidence-backed provenance/classification for the reviewed run, and check again before reporting completion. Never infer a historical source revision from current HEAD. Pin changes require no catalog edit.
 
 ## Editing And Validation
 
