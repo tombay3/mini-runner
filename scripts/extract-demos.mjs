@@ -42,10 +42,11 @@ export function loadSources() {
   return {demos, maps};
 }
 
-export function selectLevels(maps) {
+export function selectLevels(maps, all = false) {
   const seen = new Map();
-  return Array.from({length: 20}, (_, i) => {
-    const level = 1 + Math.round(i * 149 / 19);
+  const initial = Array.from({length: 20}, (_, i) => 1 + Math.round(i * 149 / 19));
+  const levels = all ? [...initial, ...Array.from({length: 150}, (_, i) => i + 1).filter(n => !initial.includes(n))] : initial;
+  return levels.map((level, i) => {
     const mapHash = hash(maps[level - 1]);
     const intendedSplit = i % 5 === 4 ? 'test' : i % 5 === 3 ? 'validation' : 'train';
     const prior = seen.get(mapHash);
@@ -63,13 +64,23 @@ export function parseArgs(args) {
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === '--pilot') options.pilot = true;
+    else if (arg === '--all') options.all = true;
     else if (arg === '--resume') options.resume = true;
     else if (arg === '--help') options.help = true;
     else if (names[arg] && args[i + 1] && !args[i + 1].startsWith('--')) options[names[arg]] = args[++i];
     else throw new Error(`Unknown or incomplete argument: ${arg}`);
   }
   if (options.resume && !options.output) throw new Error('--resume requires --output');
+  if (options.pilot && options.all) throw new Error('--pilot and --all are mutually exclusive');
   return options;
+}
+
+export function initialGatePassed(manifest, selected) {
+  return selected.slice(0, 20).every(({level}) => manifest.levels[level]?.status === 'completed');
+}
+
+export function transientBrowserError(error) {
+  return /Target (page, context or browser has been closed|crashed)|Browser closed unexpectedly|browser has been closed|browser disconnected/i.test(error.message);
 }
 
 export function validateReplay(replay, demo, maxTicks) {
@@ -109,7 +120,7 @@ function provenance(config) {
     sourceHashes: {bootstrap: hash(readFileSync(path.join(root, 'src/app.js'))),
       fixture: hash(readFileSync(path.join(root, 'docs/fast-demo1.json'))),
       agent: treeHashes(path.join(root, 'agent')), runtime: treeHashes(path.join(root, 'public/game')),
-      scripts: Object.fromEntries(['extract-demos.mjs', 'demo-replay.mjs', 'demo-candidates.py'].map(name =>
+      scripts: Object.fromEntries(['extract-demos.mjs', 'demo-replay.mjs', 'demo-candidates.py', 'demo-campaign.mjs'].map(name =>
         [name, hash(readFileSync(path.join(root, 'scripts', name)))]))}, config};
 }
 
@@ -181,12 +192,12 @@ export function verifyFiles(directory, files) {
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   if (options.help) {
-    console.log('npm run demos:extract -- [--pilot] [--output ABSOLUTE_DIRECTORY] [--resume] [--browser-executable PATH] [--python PATH]');
+    console.log('npm run demos:extract -- [--pilot | --all] [--output ABSOLUTE_DIRECTORY] [--resume] [--browser-executable PATH] [--python PATH]');
     return;
   }
   const {demos, maps} = loadSources();
   const config = json(path.join(root, 'public/agent-config.json'));
-  const selected = selectLevels(maps);
+  const selected = selectLevels(maps, options.all);
   const source = provenance(config);
   const datasetId = `${new Date().toISOString().replace(/[:.]/g, '-')}-${source.revision.slice(0, 7)}`;
   const output = path.resolve(options.output || path.join(os.homedir(), 'runner1-experiments/demo-scoring', datasetId));
@@ -198,7 +209,8 @@ async function main() {
   if (worktrees.some(dir => resolved === realpathSync(dir) || resolved.startsWith(realpathSync(dir) + path.sep))) {
     throw new Error('Output must be outside repository worktrees');
   }
-  if (!options.resume && existsSync(output) && readdirSync(output).length) throw new Error('Output is not empty; use --resume');
+  const supervisorFiles = new Set(['campaign.log', 'supervisor.json', '.campaign.lock']);
+  if (!options.resume && existsSync(output) && readdirSync(output).some(name => !supervisorFiles.has(name))) throw new Error('Output is not empty; use --resume');
   if (options.resume && !existsSync(path.join(output, 'manifest.json'))) throw new Error('No manifest to resume');
   mkdirSync(output, {recursive: true});
   const lock = path.join(output, '.extract.lock');
@@ -214,7 +226,7 @@ async function main() {
     const {chromium} = await import('playwright-core');
     browser = await chromium.launch({headless: true, executablePath: options.browserExecutable});
     const environment = {node: process.version, python: pythonVersion.stdout.trim(), browser: browser.version(), platform: process.platform};
-    const identity = hash({schema: 1, source, selected, environment});
+    const identity = hash({schema: 2, source, selected, environment});
     if (options.resume) {
       const prior = json(manifestFile);
       if (prior.identity !== identity) throw new Error('Incompatible source/configuration/runtime; create a new dataset');
@@ -222,26 +234,29 @@ async function main() {
       manifest.status = 'running';
       delete manifest.failure;
     } else {
-      manifest = {schemaVersion: 1, datasetId, identity, source, environment, selected, levels: {}, pilot: null,
+      manifest = {schemaVersion: 2, datasetId, identity, source, environment, selected, levels: {}, pilot: null,
         startedAt: new Date().toISOString(), status: 'running'};
       atomic(manifestFile, manifest);
       atomic(path.join(output, 'splits.json'), selected);
     }
     const hosted = await serve(); server = hosted.server;
     let active = 'startup';
-    heartbeat = setInterval(() => console.log(`active: ${active}`), 30000);
+    heartbeat = setInterval(() => console.log(`active: ${active}`), 300000);
     console.log(`Dataset: ${output}\nSource: ${source.branch} ${source.revision}\n${source.status || 'Worktree clean'}`);
     const runLevel = async (level, pilot = false) => {
       const name = `classic-${String(level).padStart(3, '0')}`;
       const dir = path.join(output, 'levels', name);
       const previous = manifest.levels[level];
-      if (previous?.status === 'completed') {
+      if (['completed', 'quarantined'].includes(previous?.status)) {
         if (!verifyFiles(dir, previous.files)) throw new Error(`Corrupted completed artifacts: ${name}`);
         console.log(`verified: level ${level}`); return;
       }
       const demo = demos.find(d => d.level === level);
       if (!demo) throw new Error(`Missing demo: ${level}`);
       active = `level ${level}${pilot ? ' pilot control replay' : ''}`;
+      if (hash(source) !== hash(provenance(json(path.join(root, 'public/agent-config.json'))))) {
+        throw new Error('Source/configuration changed during extraction; create a new dataset');
+      }
       manifest.levels[level] = {status: 'running'}; atomic(manifestFile, manifest);
       const control = pilot ? await replay(browser, hosted.url, demo, config, false) : null;
       active = `level ${level} extraction replay`;
@@ -276,6 +291,7 @@ async function main() {
       renameSync(staging, dir);
       manifest.levels[level] = {status: validation.valid ? 'completed' : 'quarantined', files,
         validation, usableLabels: analysis?.coverage.usableLabels ?? 0,
+        coverage: analysis?.coverage.classes ?? {},
         elapsedMs: result.elapsedMs, analysisMs: analysis?.elapsedMs ?? 0};
       if (pilot) manifest.pilot = {passed: validation.valid, checkpointHash: metadata.checkpointHash};
       atomic(manifestFile, manifest);
@@ -286,7 +302,14 @@ async function main() {
     else {
       if (!verifyFiles(path.join(output, 'levels/classic-001'), manifest.levels[1].files)) throw new Error('Pilot artifacts corrupted');
     }
-    if (!options.pilot) for (const {level} of selected) await runLevel(level);
+    if (!options.pilot) {
+      for (const {level} of selected.slice(0, 20)) await runLevel(level);
+      if (options.all) {
+        if (!initialGatePassed(manifest, selected)) throw new Error('20-level gate failed; expansion blocked');
+        manifest.gate20Passed = true; atomic(manifestFile, manifest);
+        for (const {level} of selected.slice(20)) await runLevel(level);
+      }
+    }
     if (hash(source) !== hash(provenance(json(path.join(root, 'public/agent-config.json'))))) {
       throw new Error('Source/configuration changed during extraction; create a new dataset');
     }
@@ -297,13 +320,20 @@ async function main() {
       partitionSizes: Object.fromEntries(['train', 'validation', 'test'].map(split => [split, selected.filter(s => s.split === split).length])),
       estimated100LevelMs: entries.reduce((n, e) => n + e.elapsedMs + e.analysisMs, 0) / entries.length * 100,
       estimateBasis: 'Observed replay + analysis mean; excludes setup and pilot control replay; level durations vary.',
-      readyForTrainingReview: !options.pilot && entries.length === 20 && entries.every(e => e.status === 'completed') && entries.some(e => e.usableLabels > 0)};
+      coverage: entries.reduce((total, e) => {
+        for (const [key, count] of Object.entries(e.coverage || {})) total[key] = (total[key] || 0) + count;
+        return total;
+      }, {}),
+      targetLevels: options.pilot ? 1 : selected.length,
+      readyForTrainingReview: !options.pilot && entries.length === selected.length && entries.every(e => e.status === 'completed') && entries.some(e => e.usableLabels > 0)};
     mkdirSync(path.join(output, 'reports'), {recursive: true});
     atomic(path.join(output, 'reports/summary.json'), summary);
     manifest.status = options.pilot ? 'pilot_complete' : summary.failed ? 'complete_with_quarantine' : 'complete';
     manifest.finishedAt = new Date().toISOString(); atomic(manifestFile, manifest);
     console.log(JSON.stringify(summary, null, 2));
   } catch (error) {
+    if (hash(beforeStores) !== hash(treeHashes(path.join(root, '__data1')))) error = new Error('Runtime-store integrity check failed');
+    if (hash(source) !== hash(provenance(json(path.join(root, 'public/agent-config.json'))))) error = new Error('Source/configuration changed during extraction');
     if (manifest) {
       manifest.status = 'failed'; manifest.failure = error.message; atomic(manifestFile, manifest);
       mkdirSync(path.join(output, 'reports'), {recursive: true});
@@ -320,5 +350,5 @@ async function main() {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  main().catch(error => {console.error(error.stack); process.exitCode = 1;});
+  main().catch(error => {console.error(error.stack); process.exitCode = transientBrowserError(error) ? 75 : 1;});
 }
