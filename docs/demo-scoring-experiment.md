@@ -1,155 +1,150 @@
-# Demo scoring experiment: Linux handoff
+# Demo scoring experiment: unattended Linux campaign
 
-## Purpose and source
+## Task and boundaries
 
-Extract replay states and candidate-ranking evidence without model calls. This phase
-validates the pipeline on Classic level 1, then extracts 20 Classic levels. Training,
-weight changes, production multi-level support, and promotion are deferred.
+Run a level-1 pilot, validate 20 Classic levels, then automatically extract all 150
+levels in wfastDemoData1. Defer scorer training, deeper analysis, code iteration,
+candidate/label changes, and production multi-level support.
 
-Base revision: `72d5735` on `pooh-dev`, including the Linux ladder-entry fix.
-Before starting, inspect `git status --short --branch` and `git log -3 --oneline`.
-Use the approved handoff commit containing these scripts. If Linux has advanced,
-report the additional commits; never reset or infer the historical source from HEAD.
-The manifest records the actual revision, worktree status, diff fingerprint, source
-content hashes (including uncommitted extractor code), configuration, and runtimes.
+Base revision: 72d5735. Initial extraction handoff: 796a22c. Pull the latest approved
+pooh-dev commit containing demos:campaign. Inspect revision and worktree first;
+preserve unexpected changes and report them rather than resetting.
 
-The command serves an isolated page containing the existing legacy scripts in their
-normal bootstrap order. It does not load the application or recording wrapper and
-does not start Flask or Vite. Existing servers need no restart. Browser traffic is
-restricted to read-only requests to its private local asset server. Candidate analysis
-uses a local Python subprocess importing only the candidate pipeline; socket connects
-are prohibited. Existing `__data1/` files are hashed before/after, never rewritten.
+The runner starts its own temporary loopback asset server and headless Chromium.
+Flask and Vite are unnecessary. It loads legacy scripts without the recording wrapper,
+restricts browser requests to local GETs, and runs analysis in a Python subprocess
+that blocks socket connections and imports no provider service. No paid gameplay
+model calls or writes to __data1/ are allowed. Runtime stores are hashed before/after.
 
 ## Linux setup and commands
 
-Use Node 20+ and Python 3.10+. In the `pooh-dev` checkout:
+Use Node 20+, Python 3.10+, and distribution-installed Chromium with its OS libraries.
+playwright-core does not download a browser. No model API credentials are required.
 
-```bash
-npm ci
-python3 -m venv .venv
-.venv/bin/python -m pip install -r requirements.txt
-npm test
-npm run demos:test
-```
+    git pull --ff-only origin pooh-dev
+    npm ci
+    python3 -m venv .venv
+    .venv/bin/python -m pip install -r requirements.txt
+    npm test
+    npm run demos:test
+    npm run demos:campaign -- --browser-executable /usr/bin/chromium --output /home/USER/runner1-experiments/demo-scoring/classic-150
 
-Install Chromium and its OS dependencies using the Linux distribution's package
-manager. Pass the actual executable (commonly `/usr/bin/chromium` or
-`/usr/bin/chromium-browser`). `playwright-core` does not download a browser.
-The experiment needs no model credentials. Do not disable Chromium's sandbox to
-work around a host configuration problem; run under a regular user.
+Replace executable/home paths with the real paths. Preserve an existing virtualenv;
+create it only if absent. Run as a regular user with Chromium's sandbox enabled.
+Use tmux and the Linux host's sleep-prevention policy to survive SSH disconnects.
+Do not use macOS caffeinate. Do not edit code while extraction runs.
 
-```bash
-# Pilot only: two ordinary-speed level-1 replays and offline candidate analysis.
-npm run demos:extract -- --pilot \
-  --browser-executable /usr/bin/chromium \
-  --output /home/USER/runner1-experiments/demo-scoring/pilot-20
+The supervisor automatically runs pilot → initial 20 → remaining 130. Detailed
+per-level output goes to campaign.log. It prints only the final JSON summary.
+Local process/progress checks occur every five minutes without model calls.
+Codex should poll no more often than every five minutes, avoid repeated log reads,
+and report only completion or an unrecoverable stop.
 
-# Continue the SAME dataset after the pilot gate passes.
-npm run demos:extract -- --resume \
-  --browser-executable /usr/bin/chromium \
-  --output /home/USER/runner1-experiments/demo-scoring/pilot-20
-```
+Worker exit is detected immediately. Recognized browser disconnect/crash errors
+(exit 75), SIGSEGV, and SIGABRT permit at most two retries for the whole campaign,
+persisted across resumes. Other failures—including watchdog expiration, validation,
+source changes, integrity violations, and code defects—stop without retry.
+Each replay has a duration-based watchdog. No progress at a single five-minute
+check alone is not grounds to kill a long level. Never repair code or relax gates.
 
-Replace `/home/USER` with the actual home directory. Alternatively omit `--output`
-on the initial invocation to use `~/runner1-experiments/demo-scoring/<dataset-id>`.
-The command prints the resulting path. `--resume` always requires that explicit path.
-Omit `--pilot` on the first invocation to run both phases automatically. `--python`
-or `DEMO_PYTHON` can select a Python executable; the default is `.venv/bin/python`.
-`CHROME_PATH` is an alternative to `--browser-executable`.
+To resume an interrupted campaign with the SAME source, configuration and runtime:
 
-Keep the Linux host awake using its normal host policy. Run inside `tmux` if the SSH
-connection may close. The batch command owns progress and recovery; a Codex goal is
-optional supervision, not a dependency. It reports each completed level and emits
-a heartbeat every 30 seconds. No macOS `caffeinate` command is used on Linux.
+    npm run demos:campaign -- --resume --browser-executable /usr/bin/chromium --output /home/USER/runner1-experiments/demo-scoring/classic-150
 
-## Sampling, labels, and partitions
+Omit --output initially to create a dated directory under
+~/runner1-experiments/demo-scoring/. Resume always requires an explicit path.
+--python or DEMO_PYTHON overrides .venv/bin/python; CHROME_PATH selects Chromium.
+For a separate level-1 smoke test use demos:campaign -- --pilot and a separate output
+directory. Direct demos:extract retains its 20-level default and supports --all for
+150 levels without supervision. Old schema-1 datasets cannot resume with this
+schema-2 runner; use a new directory after updating.
 
-Only `wfastDemoData1` is used. Its level-1 replay fields must exactly match
-`docs/fast-demo1.json`. The fixture is counted once. The smaller demo collections
-are excluded. Player names, IPs, and other player metadata are not exported.
+## Replay, labels, and partitions
 
-Twenty levels are selected as `1 + round(i * 149 / 19)`, for `i=0..19`.
-Every fifth selection is test; every fifth starting at the fourth is validation;
-the rest are training (12/4/4). Identical map hashes inherit the first map's split,
-keeping level 1 in training. `splits.json` records intended and actual assignments.
-Reserve test levels before training; do not tune on their coverage examples.
+Only wfastDemoData1 is included. Verify its level-1 replay fields against
+docs/fast-demo1.json and count that fixture once. Exclude smaller demo collections.
+Player names and IP addresses are not exported.
 
-Playback uses recorded AI, god mode, key/tick events, gold drops, and respawns.
-Ordinary demo speed is retained (currently 35 ticks/second). Headless does not mean
-accelerated. Samples precede action changes and occur at most `maxActionTicks`
-apart. Snapshots use the demo tick as `tick` and `timing.recordTick`; the original
-recording tick is retained as `legacyRecordTick` because recording is disabled.
+Replay recorded mode, AI version, key/tick events, gold drops and respawns at ordinary
+demo speed (currently 35 ticks/second). The pilot compares control checkpoints against
+sampled playback. Both must reproduce the terminal tick/outcome and checkpoints,
+with complete gold for successful demos. Sample before action changes and no more
+than maxActionTicks apart; enforce context, mode, and increasing ticks. Export demo
+ticks as tick/timing.recordTick and retain the original counter as legacyRecordTick.
 
-Candidate analysis happens after playback, so Python latency cannot affect the game.
-The adapter captures proposed scores/actions, rejection and suppression audits,
-the pool before final loop filtering, the eligible ranked pool, the exposed shortlist,
-and state-analysis features. It reconstructs bounded history from observed snapshots
-and actions. It never invents candidate IDs; ID-dependent loop detection consequently
-has less information than during an actual agent run.
+Initial levels: 1 + round(i * 149 / 19), i=0..19. All 20 must pass replay/integrity
+checks before expansion. Initial quarantines block expansion after that batch.
+During expansion, quarantine individual replay mismatches and continue. Systemic
+browser/adapter failures stop. Candidate-match coverage has no pass threshold.
 
-Exact validated key/duration matches are high-confidence **action-equivalence** labels,
-not proof of optimality or intent. Multiple exact candidates form a positive set.
-Same-key/different-duration candidates are ambiguous and excluded by default.
-The report separates exact exposed, exact truncated, suppressed/rejected, duration
-mismatch, and missing-candidate samples. Clipped final actions can lower exact-match
-coverage. Do not change candidate timing merely to improve these labels.
+Fix partitions for all 150 before extraction. Keep the original 20 first and append
+other levels ascending. Every fifth assignment is test, every fifth starting at
+the fourth is validation, the others training (90/30/30 absent map duplicates).
+Identical map hashes inherit the first assignment; level 1 stays in training.
+splits.json records intended/actual assignments and duplicate links.
 
-## Output, resume, and integrity gates
+Analyze candidates after playback. Capture scores/actions, rejection/suppression
+audits, pre-final-filter pool, eligible ranked pool, shortlist, and analysis features.
+History uses observed transitions without invented candidate IDs; ID-dependent loop
+detection consequently has less information than in an agent run.
 
-All artifacts live outside repository worktrees:
+Exact validated key/duration matches are action-equivalence labels, not proof of
+optimality or intent. Multiple matches form a positive set. Same-key/different-duration
+matches are ambiguous and excluded from training by default. Report exposed,
+truncated, suppressed/rejected, duration mismatch and missing-candidate cases
+separately. Do not change candidate timing to inflate coverage.
 
-```text
-<dataset>/
-  manifest.json
-  splits.json
-  levels/classic-NNN/
-    metadata.json
-    states.jsonl
-    decisions.jsonl
-    checkpoints.jsonl
-    coverage.json
-  reports/summary.json
-```
+## Output and recovery
 
-Metadata includes sanitized demo data, source demo/map hashes, terminal evidence,
-validation, replay time and analysis time. Decision rows link by tick to states and
-include their observed history, pools/audits, features, and matching labels.
-The manifest includes file hashes, per-level states, and the pilot gate result.
-The report estimates 100-level cost from observed replay plus analysis time; pilot
-control replay and browser startup are excluded. This estimate needs more than one
-level before it is representative. `readyForTrainingReview` is a review signal, not
-approval to train or evidence of a good learned policy.
+Keep all artifacts outside repository worktrees:
 
-Level output is staged and renamed atomically. Resume verifies completed file hashes,
-skips intact completed levels, and retries interrupted/quarantined levels. Previous
-failed artifacts are retained under `.previous-*`. Source/config/runtime changes
-require a new dataset directory. Do not silently resume after amending code.
+    <dataset>/
+      manifest.json
+      splits.json
+      levels/classic-NNN/
+        metadata.json
+        states.jsonl
+        decisions.jsonl
+        checkpoints.jsonl
+        coverage.json
+      reports/summary.json
+      reports/failure.json       # if an extraction attempt failed
+      campaign.log
+      supervisor.json
+      campaign-summary.json
 
-An exclusive `.extract.lock` prevents simultaneous writers. After a crash, inspect
-its PID/hostname and confirm that extraction is inactive before removing that single
-lock file. Normal completion and handled failures release the lock. Do not delete
-partial or previous artifacts as routine cleanup; they remain diagnostic evidence.
+Manifest: actual source revision/status, dirty-diff fingerprint, source/runtime
+hashes, config, schema, splits, level status and artifact hashes. Metadata: sanitized
+demo, map/demo hashes, terminal proof, checkpoint hashes, validation and timings.
+Decisions link to states by tick. Old failure evidence remains; use current manifest
+and supervisor status to determine the final result.
 
-The pilot compares ordinary control playback (checkpoints only) against sampled
-playback. Both must reproduce the recorded terminal tick and outcome, with matching
-state checkpoints and complete gold for a successful demo. Samples must have monotonic
-ticks, correct Classic level and mode, and bounded gaps. Candidate coverage has no
-arbitrary pass threshold. Any unexpected network request, browser/adapter error, or
-store mutation fails the campaign. Other levels with replay mismatches are quarantined
-while subsequent levels continue. Report failures; do not repair demos or engine data.
+Write level directories atomically. Resume verifies and skips completed/quarantined
+levels and retries interrupted levels. Preserve previous artifacts under .previous-*.
+Source/config/runtime changes require a new dataset. Transfer generated data separately
+from Git, retaining hashes. Training must reference an exact dataset version.
 
-Before handoff: `npm test`, `npm run demos:test`, Python compilation, and
-`git diff --check`. Run `npm run build` if frontend code changes. Report checks that
-could not run. Commit boundary: `[Experiment] Add offline demo extraction pilot`.
-Ask the user before committing and pushing. Never rewrite shared Linux commits.
+Exclusive .campaign.lock and .extract.lock prevent simultaneous writers. After a
+crash, inspect hostname/PID and confirm inactivity before clearing that single lock.
+Automatic retry clears only its own exited worker's lock after confirming the PID
+is dead. Never remove another process's lock or overwrite dataset provenance.
 
-## Linux task prompt
+Final report: completed/quarantined levels, retries, integrity failures, splits,
+coverage counts, usable labels, elapsed time, and dataset/log paths. A 100-level
+estimate excludes setup/control replay and is only indicative. Training-readiness
+flags are review signals, not permission to train or proof of scoring quality.
 
-Read AGENTS.md and this document. Verify the handoff revision and preserve existing
-changes. Run the level-1 pilot, then the documented 20-level extraction if its gates
-pass. Use no paid model calls and leave existing `__data1/` stores untouched. Keep
-outputs in the external dataset directory and make execution resumable. Report
-completed/failed levels, split sizes, usable labels, candidate gaps, replay/analysis
-timing, output location, and training readiness. Stop before scorer training. Ask
-for approval at commit boundaries, before pushing, and before promotion or rewriting
-shared commits. Transfer generated data separately from Git, preserving file hashes.
+Before handoff: npm test, npm run demos:test, Python compilation, git diff --check;
+build if production frontend changes. Use [Experiment] boundaries and obtain approval
+for new commits/pushes. Never rewrite shared Linux commits.
+
+## Linux Codex prompt (Luna, Low reasoning)
+
+Read AGENTS.md and this document. Verify the approved checkout and preserve changes.
+Set up dependencies and Chromium, run tests, then launch the unattended 150-level
+campaign. Resolve routine executable-path/dependency issues only. Do not modify
+code, candidates, labels, gates or scoring. Let the supervisor handle retries and
+five-minute monitoring. Do not report individual levels. Report once on completion
+or an unrecoverable stop, with dataset path, counts, coverage, integrity and timing.
+Defer analysis, code iteration and training. Do not start Flask/Vite or modify
+__data1/. If setup needs interactive authority you lack, stop and explain the blocker.
