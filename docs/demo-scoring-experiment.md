@@ -1,14 +1,59 @@
-# Demo scoring experiment: unattended Linux campaign
+# Demo scoring experiment: completed extraction and audit reference
 
 ## Task and boundaries
 
-Run a level-1 pilot, validate 20 Classic levels, then automatically extract all 150
-levels in wfastDemoData1. Defer scorer training, deeper analysis, code iteration,
-candidate/label changes, and production multi-level support.
+The Linux extraction campaign is complete according to its reported summary. The
+current task is a training-partition coverage audit, not another extraction run.
+Read [the final Linux handoff](demo-scoring-linux-handoff.md) for the full context,
+eight-step workflow, audit requirements, and subsequent scoring roadmap. This file
+retains the extraction setup, dataset contract, and recovery reference.
 
-Base revision: 72d5735. Initial extraction handoff: 796a22c. Pull the latest approved
-pooh-dev commit containing demos:campaign. Inspect revision and worktree first;
-preserve unexpected changes and report them rather than resetting.
+Linux is the authoritative development environment on pooh-dev. Preserve the reported
+modified trace-analytics.ipynb and user-owned staged changes. Keep original data and
+labels immutable, and save derived audits separately under ignored __data2. Do not
+inspect validation/test examples to develop the audit's fixes or labeling policy.
+Scoring changes, training, paid model campaigns, and production multi-level support
+remain pending review.
+
+Base revision: 72d5735; extraction handoff: 796a22c; 150-level supervisor: ad066c6;
+sandbox-safe test fix: 2343bde. Verify actual campaign source and dirty fingerprint
+from its manifest; do not infer them from current HEAD. Inspect revision and worktree
+before synchronizing and preserve local work. The documentation commit previously
+identified as 0ab7c25 is being replaced by a user-approved amendment containing both
+handoff documents. If Linux already pulled that superseded commit, an ordinary
+fast-forward pull will not apply the amendment; reconcile only that verified replaced
+commit while preserving user changes. Do not overwrite additional Linux commits.
+
+## Reported completed dataset
+
+Dataset ID: 20260920-010128. Linux reported 150 completed, zero quarantines/retries/
+validation errors, passing pilot and 20-level gate, partitions 90 train / 30 validation
+/ 30 test, and 6,045.839 seconds elapsed. Across 16,296 decisions: 788 exact exposed,
+7,132 duration mismatches, 8,317 missing candidates, and 59 suppressed/rejected.
+The 788 exact labels include held-out partitions; calculate training-only counts.
+These results establish reported extraction integrity, not scoring quality.
+
+Original location:
+
+    /home/tomchin/runner1-experiments/demo-scoring/20260920-010128
+
+Requested location for the completed data:
+
+    /home/tomchin/3po/ducky/run-8283/__data2/demo-scoring/20260920-010128
+
+The move was not confirmed in this conversation. Locate the existing dataset and
+verify its manifest and artifact hashes. Do not duplicate it or rewrite embedded
+original paths merely because its physical location changed.
+
+The next audit should categorize duration/missing-candidate cases and exact-label
+distribution using training levels only, with representative level/tick evidence.
+Do not assume a missing exact action is physically impossible or that demo choices
+are uniquely optimal. Report evidence and propose the smallest next experiment.
+
+Pending development remains explicitly ordered: behavior-preserving scoring inventory
+and truthful score breakdowns; evaluator-only top-score selection; gameplay baselines;
+then a small learned ranker if the audited labels support it. These features are not
+implemented by demo extraction and are not authorized merely by this reference.
 
 The runner starts its own temporary loopback asset server and headless Chromium.
 Flask and Vite are unnecessary. It loads legacy scripts without the recording wrapper,
@@ -16,7 +61,10 @@ restricts browser requests to local GETs, and runs analysis in a Python subproce
 that blocks socket connections and imports no provider service. No paid gameplay
 model calls or writes to __data1/ are allowed. Runtime stores are hashed before/after.
 
-## Linux setup and commands
+## Extraction setup and commands (reference for separately approved future runs)
+
+Do not execute this section for the completed dataset's audit. The audit does not
+require starting Chromium, Flask, Vite, or another extraction campaign.
 
 Use Node 20+, Python 3.10+, and distribution-installed Chromium with its OS libraries.
 playwright-core does not download a browser. No model API credentials are required.
@@ -96,7 +144,13 @@ separately. Do not change candidate timing to inflate coverage.
 
 ## Output and recovery
 
-Keep all artifacts outside repository worktrees:
+New extraction and extraction-resume outputs must remain outside repository worktrees.
+Completed data may be moved into ignored __data2 for read-only analysis. The current
+extractor rejects in-worktree resume targets, so moving completed data does not make
+the new location an accepted resume target. Save derived reports in a separate audit
+directory and retain the original dataset unchanged.
+
+Extraction artifact layout:
 
     <dataset>/
       manifest.json
@@ -134,17 +188,19 @@ coverage counts, usable labels, elapsed time, and dataset/log paths. A 100-level
 estimate excludes setup/control replay and is only indicative. Training-readiness
 flags are review signals, not permission to train or proof of scoring quality.
 
-Before handoff: npm test, npm run demos:test, Python compilation, git diff --check;
-build if production frontend changes. Use [Experiment] boundaries and obtain approval
-for new commits/pushes. Never rewrite shared Linux commits.
+For implementation changes: npm test, focused experiment tests, Python compilation
+for Python edits, git diff --check, and build for frontend edits. Documentation-only
+updates need document/link and whitespace checks, not replay campaigns. Use
+[Experiment], [Candidate], and [Promotion] boundaries and obtain approval for commits,
+pushes, and promotion. Amend shared commits only with explicit approval; the current
+final-documentation amendment is such an approved exception.
 
-## Linux Codex prompt (Luna, Low reasoning)
+## Current Linux kickoff: training-only audit
 
-Read AGENTS.md and this document. Verify the approved checkout and preserve changes.
-Set up dependencies and Chromium, run tests, then launch the unattended 150-level
-campaign. Resolve routine executable-path/dependency issues only. Do not modify
-code, candidates, labels, gates or scoring. Let the supervisor handle retries and
-five-minute monitoring. Do not report individual levels. Report once on completion
-or an unrecoverable stop, with dataset path, counts, coverage, integrity and timing.
-Defer analysis, code iteration and training. Do not start Flask/Vite or modify
-__data1/. If setup needs interactive authority you lack, stop and explain the blocker.
+Read AGENTS.md, docs/demo-scoring-linux-handoff.md, and this reference. Preserve the
+notebook and staged changes. Verify the dataset's actual location, provenance and
+integrity, then perform section 6 of the final handoff using training levels only.
+Store reproducible audit reports separately under __data2. Reusable audit tooling
+may be prepared for review; do not commit or push it without approval. Do not rerun
+extraction, change candidates/scoring/labels, inspect held-out behavior for tuning,
+or train. Return a concise evidence-backed report and the smallest next experiment.
