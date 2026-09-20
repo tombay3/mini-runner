@@ -9,6 +9,8 @@
     "api": "node scripts/api.mjs",
     "test": "node scripts/sanity.mjs",
     "eval": "node scripts/evaluate-agent.mjs",
+    "demos:extract": "node scripts/extract-demos.mjs",
+    "demos:test": "node --test scripts/demo-extraction.test.mjs",
     "dash": "streamlit run trace-dash.py --server.port 8601",
     "notebook": "node scripts/notebook.mjs",
     "cohorts:check": "node scripts/reconcile-cohorts.mjs",
