@@ -51,9 +51,15 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(payload, original)
 
     def test_socket_prohibition(self):
-        with patch.object(socket.socket, "connect", adapter.deny_network), socket.socket() as sock:
-            with self.assertRaisesRegex(RuntimeError, "Network is forbidden"):
-                sock.connect(("127.0.0.1", 1))
+        # Test the patched entry points without allocating an OS socket. Restricted
+        # Linux environments may deny socket creation before connect is reached.
+        for method in ("connect", "connect_ex"):
+            with self.subTest(method=method), \
+                    patch.object(socket.socket, "__init__", side_effect=PermissionError) as constructor, \
+                    patch.object(socket.socket, method, adapter.deny_network):
+                with self.assertRaisesRegex(RuntimeError, "Network is forbidden"):
+                    getattr(socket.socket, method)(object(), ("127.0.0.1", 1))
+                constructor.assert_not_called()
 
 
 if __name__ == "__main__":
