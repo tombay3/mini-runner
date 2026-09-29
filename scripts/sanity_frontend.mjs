@@ -22,6 +22,53 @@ const agentModule = await import("../src/agent.js");
 const recordingModule = await import("../src/recording.js");
 const agent = agentModule._test;
 const recording = recordingModule._test;
+
+// Saving an agent result must include the recording refresh in the attempt's
+// lifetime, even when that refresh is slower than the evaluator's next start.
+for (const result of ["success", "failure"]) {
+  let releaseRefresh;
+  let enterRefresh;
+  const entered = new Promise((resolve) => { enterRefresh = resolve; });
+  const pending = new Promise((resolve) => { releaseRefresh = resolve; });
+  const state = { agentRunning: true, agentRunId: "run", busyAction: "agent" };
+  let settled = false;
+  let stopped = 0;
+  let saves = 0;
+  const record = { id: "run", source: "agent", result };
+  const deps = {
+    normalizeDemo: () => ({}),
+    apiFetch: async () => { saves += 1; return record; },
+    recordingApiBase: "/api/recordings",
+    formatGameLevel: () => "1:1",
+    finishUiAction: (s) => { s.busyAction = ""; },
+    scheduleRefresh: () => { throw new Error("agent refresh must be awaited"); },
+    refreshStatus: async (s, force) => {
+      assert.equal(force, true);
+      s.busyAction = "refresh";
+      enterRefresh();
+      await pending;
+      s.busyAction = "";
+    },
+    syncOverlayState: () => {},
+  };
+  const completion = agent.finishAgentRun(
+    state, deps, { stop: () => { stopped += 1; } }, {}, result,
+    result === "failure" ? "runner dead" : null,
+    { agent: { playData: 1, level: 1 } },
+  ).then((value) => { settled = true; return value; });
+  await Promise.race([entered, completion]);
+  assert.equal(settled, false, "attempt cannot resolve before refresh finishes");
+  assert.equal(state.agentRunning, true);
+  assert.equal(state.busyAction, "refresh");
+  assert.equal(stopped, 0);
+  releaseRefresh();
+  assert.equal(await completion, record);
+  assert.equal(state.agentRunning, false);
+  assert.equal(state.busyAction, "");
+  assert.equal(stopped, 1);
+  assert.equal(saves, 1, "refresh synchronization must not duplicate recording saves");
+}
+
 const agentHookSource = readFileSync(
   new URL("../public/game/lodeRunner.agentHooks.js", import.meta.url),
   "utf8",

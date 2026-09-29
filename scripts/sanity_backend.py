@@ -13,10 +13,15 @@ sys.path.insert(0, str(ROOT))
 from agent import AgentRequestError, validate_agent_request  # noqa: E402
 from agent.candidates import (  # noqa: E402
     CandidateBuilder,
+    LOW_RISK_GUARD_CLEARANCE_BONUS,
+    MEDIUM_CROSS_ROW_CLEARANCE_PENALTY,
+    add_non_god_escape_candidates,
     add_emergency_hold_candidate,
     analyze_state,
     choose_ladder_direction,
     generate_candidates,
+    low_risk_guard_clearance_score_bonus,
+    medium_cross_row_clearance_score_penalty,
     post_ascent_departed_ladder,
 )
 from agent.config import MAX_CANDIDATE_LIMIT  # noqa: E402
@@ -29,6 +34,7 @@ from agent.loop_tools import (  # noqa: E402
 )
 from agent.prompt import build_agent_prompt, build_state_context, read_agent_rules  # noqa: E402
 from agent.reasoning_tools import find_row_ladders, get_movement_affordance  # noqa: E402
+from agent.service import validate_or_fallback_candidate  # noqa: E402
 import app as backend_app  # noqa: E402
 
 
@@ -306,6 +312,211 @@ def check_geometry_candidates() -> None:
     assert_true(
         any(candidate["kind"] == "exit_ladder_route" for candidate in exit_candidates),
         "revealed exit produces a geometry-driven exit candidate",
+    )
+
+
+def check_low_risk_guard_clearance_scoring() -> None:
+    guard = {
+        "id": 1,
+        "x": 17,
+        "y": 10,
+        "risk": "low",
+        "relativeX": "right",
+        "relativeY": "same",
+        "motion": "left",
+        "closing": True,
+        "distance": 7,
+    }
+    analysis = {
+        "godMode": False,
+        "runner": {"x": 10, "y": 10, "xOffset": 0, "yOffset": 0},
+        "risk": {"risk": "low", "pressureGuard": guard, "nearbyGuards": [guard]},
+        "movement": {
+            "canMoveLeft": True,
+            "canMoveRight": True,
+            "canMoveUp": True,
+            "canMoveDown": True,
+            "details": {"left": {}, "right": {}},
+        },
+        "dig": {},
+        "activeDig": {},
+        "loopReport": {"active": False},
+    }
+    builder = CandidateBuilder(
+        snapshot={}, analysis=analysis, max_action_ticks=20, limit=7
+    )
+    builder.add(
+        kind="low_risk_horizontal_progress",
+        key_code=39,
+        ticks=4,
+        score=70,
+        reason="same progress while reducing clearance",
+        candidate_id="progress_toward_guard",
+    )
+    builder.add(
+        kind="climb_ladder",
+        key_code=38,
+        ticks=4,
+        score=70,
+        reason="same progress while preserving clearance",
+        candidate_id="progress_preserve_clearance",
+    )
+    candidates, _ = builder.finalize()
+    by_id = {candidate["id"]: candidate for candidate in candidates}
+    assert_equal(
+        by_id["progress_toward_guard"]["score"], 70,
+        "safe distance-reducing progress keeps its original score",
+    )
+    assert_equal(
+        by_id["progress_preserve_clearance"]["score"],
+        70 + LOW_RISK_GUARD_CLEARANCE_BONUS,
+        "clearance-preserving progress receives only the bounded bonus",
+    )
+    assert_equal(
+        candidates[0]["id"],
+        "progress_preserve_clearance",
+        "equal-value progress prefers preserved low-risk guard clearance",
+    )
+    assert_true(
+        set(by_id) == {"progress_toward_guard", "progress_preserve_clearance"},
+        "the preference does not remove a safe distance-reducing candidate",
+    )
+    assert_true(
+        any(
+            "preserves clearance" in reason
+            for reason in by_id["progress_preserve_clearance"]["reasons"]
+        ),
+        "the model receives the reason for the score preference",
+    )
+
+    trapped = deepcopy(analysis)
+    trapped_guard = trapped["risk"]["nearbyGuards"][0]
+    trapped_guard["motion"] = "in_hole"
+    trapped["risk"]["pressureGuard"] = trapped_guard
+    assert_equal(
+        low_risk_guard_clearance_score_bonus(
+            {"keyCode": 39, "ticks": 4},
+            trapped,
+            candidate_kind="low_risk_horizontal_progress",
+        ),
+        0,
+        "trapped guards do not influence progress scoring",
+    )
+
+    multiple_guards = deepcopy(analysis)
+    multiple_guards["risk"]["nearbyGuards"].append({
+        "id": 2,
+        "x": 10,
+        "y": 4,
+        "risk": "low",
+        "relativeX": "same",
+        "relativeY": "above",
+        "motion": "stop",
+        "closing": False,
+        "distance": 6,
+    })
+    assert_equal(
+        low_risk_guard_clearance_score_bonus(
+            {"keyCode": 38, "ticks": 4},
+            multiple_guards,
+            candidate_kind="climb_ladder",
+        ),
+        0,
+        "one approaching guard prevents a bonus even when another stays clear",
+    )
+
+    medium = deepcopy(analysis)
+    medium["risk"]["risk"] = "medium"
+    medium["risk"]["pressureGuard"]["risk"] = "medium"
+    medium["risk"]["nearbyGuards"][0]["risk"] = "medium"
+    assert_equal(
+        low_risk_guard_clearance_score_bonus(
+            {"keyCode": 38, "ticks": 4},
+            medium,
+            candidate_kind="climb_ladder",
+        ),
+        0,
+        "medium pressure remains under the existing safety policy",
+    )
+
+
+def check_medium_cross_row_clearance_scoring() -> None:
+    pressure_guard = {
+        "id": 0, "x": 27, "y": 13, "risk": "medium",
+        "relativeX": "right", "relativeY": "above", "motion": "down",
+        "closing": False, "distance": 4,
+    }
+    other_guard = {
+        "id": 1, "x": 19, "y": 13, "risk": "low",
+        "relativeX": "left", "relativeY": "above", "motion": "fall",
+        "closing": False, "distance": 6,
+    }
+    analysis = {
+        "godMode": False,
+        "runner": {"x": 24, "y": 14, "xOffset": -8, "yOffset": 0},
+        "risk": {
+            "risk": "medium", "pressureGuard": pressure_guard,
+            "nearbyGuards": [pressure_guard, other_guard],
+        },
+        "movement": {
+            "canMoveLeft": True, "canMoveRight": True,
+            "canMoveUp": False, "canMoveDown": False,
+            "details": {"left": {}, "right": {}},
+        },
+        "dig": {}, "activeDig": {}, "loopReport": {"active": False},
+    }
+    builder = CandidateBuilder(
+        snapshot={}, analysis=analysis, max_action_ticks=20, limit=7
+    )
+    builder.add(
+        kind="align_ladder", key_code=39, ticks=8, score=99,
+        target={"x": 27, "y": 14, "tile": "H"},
+        reason="near right ladder", candidate_id="align_ladder_27_14_right",
+    )
+    builder.add(
+        kind="align_ladder", key_code=37, ticks=8, score=90,
+        target={"x": 4, "y": 14, "tile": "H"},
+        reason="far left ladder", candidate_id="align_ladder_4_14_left",
+    )
+    candidates, _ = builder.finalize()
+    by_id = {candidate["id"]: candidate for candidate in candidates}
+    assert_equal(
+        by_id["align_ladder_27_14_right"]["score"],
+        99 - MEDIUM_CROSS_ROW_CLEARANCE_PENALTY,
+        "step-135 route that consumes nearest clearance receives the bounded penalty",
+    )
+    assert_equal(
+        by_id["align_ladder_4_14_left"]["score"], 90,
+        "clearance-preserving alternative keeps its score",
+    )
+    assert_equal(
+        candidates[0]["id"], "align_ladder_4_14_left",
+        "403 step 135 prefers the exposed route that preserves minimum clearance",
+    )
+    assert_true(
+        set(by_id) == {"align_ladder_27_14_right", "align_ladder_4_14_left"},
+        "medium clearance scoring does not remove either progress candidate",
+    )
+    assert_true(
+        any("consumes minimum clearance" in reason
+            for reason in by_id["align_ladder_27_14_right"]["reasons"]),
+        "the model receives the reason for the medium-risk penalty",
+    )
+    assert_equal(
+        medium_cross_row_clearance_score_penalty(
+            {"keyCode": 38, "ticks": 6}, analysis,
+            candidate_kind="climb_ladder",
+        ), 0,
+        "the accepted bounded vertical climb is outside the horizontal preference",
+    )
+    same_row = deepcopy(analysis)
+    same_row["risk"]["pressureGuard"]["relativeY"] = "same"
+    assert_equal(
+        medium_cross_row_clearance_score_penalty(
+            {"keyCode": 39, "ticks": 4}, same_row,
+            candidate_kind="align_ladder",
+        ), 0,
+        "same-row threats remain under hard safety policy",
     )
 
 
@@ -593,6 +804,483 @@ def check_post_ascent_alignment_reversal() -> None:
     )
 
 
+def check_low_risk_loop_escape_climb() -> None:
+    """Keep one safe row change when loop filtering leaves only guard approach."""
+    up_id = "climb_ladder_4_14_up"
+    recent_ids = ["climb_ladder_4_13_up", "climb_ladder_4_13_down"] * 4
+
+    def collect(*, guard_changes=None, recent=None, extra_route=False,
+                can_move_up=True, ticks=6):
+        guard = {
+            "id": 1, "x": 10, "y": 14, "distance": 6, "risk": "low",
+            "relativeX": "right", "relativeY": "same", "closing": True,
+            "motion": "left",
+        }
+        guard.update(guard_changes or {})
+        analysis = {
+            "godMode": False,
+            "runner": {"x": 4, "y": 14, "xOffset": 0, "action": "stop"},
+            "risk": {"risk": guard["risk"], "pressureGuard": guard,
+                     "nearbyGuards": [guard]},
+            "movement": {"canMoveUp": can_move_up, "canMoveLeft": True,
+                         "canMoveRight": True},
+            "dig": {},
+            "loopReport": {
+                "active": True, "type": "vertical_cycle",
+                "suppress": {"directions": ["up"]},
+                "evidence": {"candidateIds": recent_ids if recent is None else recent},
+                "suppressedCandidates": [],
+            },
+        }
+        builder = CandidateBuilder(snapshot={}, analysis=analysis,
+                                   max_action_ticks=20, limit=7)
+        builder.add(kind="climb_ladder", key_code=38, ticks=ticks, score=108,
+                    target={"x": 4, "y": 14, "tile": "H"}, reason="safe row change",
+                    candidate_id=up_id)
+        builder.add(kind="align_ladder", key_code=39, ticks=8, score=90,
+                    target={"x": 27, "y": 14}, reason="approach ladder",
+                    candidate_id="align_ladder_27_14_right")
+        if extra_route:
+            builder.add(kind="align_ladder", key_code=37, ticks=4, score=90,
+                        target={"x": 1, "y": 14}, reason="another safe route",
+                        candidate_id="align_ladder_1_14_left")
+        candidates, _ = builder.finalize()
+        return candidates, {item["candidateId"]: item["disposition"]
+                            for item in builder.audit}
+
+    candidates, audit = collect()
+    assert_equal(candidates[0]["id"], up_id, "safe escape climb survives loop filtering")
+    assert_equal(audit[up_id], "exposed", "restored climb remains in candidate audit")
+    for controls in (
+        {"guard_changes": {"closing": False, "motion": "right"}},
+        {"guard_changes": {"distance": 8}},
+        {"guard_changes": {"relativeY": "above"}},
+        {"recent": recent_ids[:-1] + [up_id]},
+        {"recent": []},
+        {"extra_route": True},
+        {"ticks": 7},
+    ):
+        _, audit = collect(**controls)
+        assert_equal(audit[up_id], "loop_suppressed",
+                     f"escape exception stays bounded: {controls}")
+    _, audit = collect(can_move_up=False)
+    assert_equal(audit[up_id], "physical_rejection", "escape cannot bypass physical rejection")
+    for risk in ("high", "critical"):
+        candidates, audit = collect(guard_changes={"risk": risk, "distance": 1})
+        assert_true(not candidates, "danger does not restore an unsafe movement")
+        assert_equal(audit["align_ladder_27_14_right"], "safety_rejection",
+                     f"{risk} same-row approach stays rejected")
+
+
+def check_medium_cross_row_ladder_clearance() -> None:
+    classic_level_one = [
+        "                  S         ",
+        "    $             S         ",
+        "#######H#######   S         ",
+        "       H----------S    $    ",
+        "       H    ##H   #######H##",
+        "       H    ##H          H  ",
+        "     0 H    ##H       $0 H  ",
+        "##H#####    ########H#######",
+        "  H                 H       ",
+        "  H           0     H       ",
+        "#########H##########H       ",
+        "         H          H       ",
+        "       $ H----------H   $   ",
+        "    H######         #######H",
+        "    H         &  $         H",
+        "############################",
+    ]
+    state = snapshot(
+        grid=classic_level_one,
+        runner={
+            "x": 4,
+            "y": 13,
+            "xOffset": 0,
+            "yOffset": 10,
+            "actionName": "stop",
+        },
+    )
+    state["gold"]["visiblePositions"] = [{"x": 4, "y": 1}, {"x": 23, "y": 3}]
+    state["guards"] = [
+        {
+            "id": 2,
+            "x": 8,
+            "y": 12,
+            "xOffset": 8,
+            "yOffset": 0,
+            "actionName": "stop",
+            "hasGold": 0,
+        },
+        {
+            "id": 0,
+            "x": 9,
+            "y": 12,
+            "xOffset": 16,
+            "yOffset": 0,
+            "actionName": "stop",
+            "hasGold": 0,
+        },
+        {
+            "id": 1,
+            "x": 9,
+            "y": 11,
+            "xOffset": 0,
+            "yOffset": 18,
+            "actionName": "stop",
+            "hasGold": 0,
+        },
+    ]
+    candidates, analysis = generate_candidates(state, [])
+    assert_equal(analysis["risk"]["risk"], "medium", "fixture has medium guard pressure")
+    assert_true(analysis["movement"]["canMoveUp"], "terrain permits the upward climb")
+    assert_true(
+        any(candidate["id"] == "climb_ladder_4_13_up" for candidate in candidates),
+        "three-or-more-column clearance preserves the bounded climb",
+    )
+    assert_true(
+        all(candidate["kind"] != "emergency_hold" for candidate in candidates),
+        "safe ladder progress does not collapse to emergency hold",
+    )
+
+    trapped_guard_state = deepcopy(state)
+    trapped_guard_state["runner"] = {
+        "x": 27,
+        "y": 13,
+        "xOffset": 0,
+        "yOffset": 10,
+        "actionName": "down",
+    }
+    trapped_guard_state["gold"]["visiblePositions"] = [
+        {"x": 4, "y": 1},
+        {"x": 23, "y": 3},
+        {"x": 7, "y": 12},
+    ]
+    trapped_guard_state["guards"] = [
+        {
+            "id": 0,
+            "x": 26,
+            "y": 13,
+            "xOffset": 0,
+            "yOffset": 0,
+            "actionName": "in_hole",
+            "hasGold": 0,
+        },
+        {
+            "id": 1,
+            "x": 24,
+            "y": 12,
+            "xOffset": -8,
+            "yOffset": 0,
+            "actionName": "climb_out",
+            "hasGold": 0,
+        },
+        {
+            "id": 2,
+            "x": 9,
+            "y": 3,
+            "xOffset": -16,
+            "yOffset": 0,
+            "actionName": "right",
+            "hasGold": 0,
+        },
+    ]
+    trapped_candidates, trapped_analysis = generate_candidates(trapped_guard_state, [])
+    assert_equal(
+        trapped_analysis["risk"]["risk"],
+        "medium",
+        "trapped-guard fixture has medium cross-row pressure",
+    )
+    assert_true(
+        any(candidate["id"] == "climb_ladder_27_13_up" for candidate in trapped_candidates),
+        "a low-risk guard in the adjacent hole does not block a clear climb",
+    )
+
+    below_state = deepcopy(state)
+    below_state["gold"]["visiblePositions"] = [{"x": 4, "y": 14}]
+    below_state["guards"] = [{
+        "id": 2,
+        "x": 8,
+        "y": 14,
+        "xOffset": 0,
+        "yOffset": 0,
+        "actionName": "stop",
+        "hasGold": 0,
+    }]
+    below_candidates, below_analysis = generate_candidates(below_state, [])
+    assert_equal(
+        below_analysis["risk"]["risk"],
+        "medium",
+        "below-row fixture has medium guard pressure",
+    )
+    assert_true(
+        any(candidate["id"] == "climb_ladder_4_13_down" for candidate in below_candidates),
+        "the bounded clearance rule is symmetric for downward climbs",
+    )
+
+    close_guard = deepcopy(state)
+    close_guard["guards"] = [{
+        "id": 2,
+        "x": 6,
+        "y": 11,
+        "xOffset": 0,
+        "yOffset": 0,
+        "actionName": "stop",
+        "hasGold": 0,
+    }]
+    close_candidates, close_analysis = generate_candidates(close_guard, [])
+    assert_equal(
+        close_analysis["risk"]["risk"],
+        "medium",
+        "close control remains medium before the climb",
+    )
+    assert_true(
+        all(candidate["kind"] != "climb_ladder" for candidate in close_candidates),
+        "two-column projected clearance still rejects the climb",
+    )
+    assert_true(
+        any(candidate["kind"] == "emergency_hold" for candidate in close_candidates),
+        "rejected close pressure retains emergency hold",
+    )
+
+    high_guard = deepcopy(state)
+    high_guard["guards"] = [{
+        "id": 2,
+        "x": 6,
+        "y": 12,
+        "xOffset": 0,
+        "yOffset": 0,
+        "actionName": "stop",
+        "hasGold": 0,
+    }]
+    high_candidates, high_analysis = generate_candidates(high_guard, [])
+    assert_equal(high_analysis["risk"]["risk"], "high", "high-pressure control is active")
+    assert_true(
+        all(candidate["kind"] != "climb_ladder" for candidate in high_candidates),
+        "high cross-row pressure still rejects the climb",
+    )
+
+
+def check_defensive_dig_signal() -> None:
+    def collect_for(side: str, *, guard_could_fall: bool, risk: str = "medium"):
+        added = []
+
+        def add(**candidate):
+            added.append(candidate)
+
+        direction = "right" if side == "left" else "left"
+        guard = {
+            "id": 0,
+            "x": 11 if side == "left" else 23,
+            "y": 14,
+            "relativeX": side,
+            "relativeY": "same",
+            "distance": 4,
+            "motion": direction,
+            "closing": True,
+            "risk": risk,
+        }
+        dig_direction = side
+        dig = {
+            f"canDig{dig_direction.title()}": True,
+            dig_direction: {
+                "canDefensiveDig": True,
+                "guardCouldFall": guard_could_fall,
+            },
+        }
+        movement = {
+            "canMoveLeft": True,
+            "canMoveRight": True,
+            "canMoveUp": False,
+            "canMoveDown": False,
+            "details": {},
+        }
+        add_non_god_escape_candidates(
+            add,
+            {"runner": {"x": 15, "y": 14}},
+            movement,
+            dig,
+            {"risk": risk, "pressureGuard": guard, "nearbyGuards": [guard]},
+        )
+        return added
+
+    for side in ("left", "right"):
+        candidates = collect_for(side, guard_could_fall=True)
+        defensive = next(item for item in candidates if item["kind"] == "defensive_dig")
+        assert_equal(defensive["score"], 112, f"{side} medium defensive score is unchanged")
+        assert_equal(
+            defensive["reason"],
+            f"closing same-row guard can fall into dig_{side}; dig now while centered",
+            f"{side} defensive dig exposes the predicted trap outcome",
+        )
+        assert_true(
+            any(item["kind"] == "retreat_from_guard" for item in candidates),
+            f"{side} retreat remains available beside defensive dig",
+        )
+
+    high_control = collect_for("right", guard_could_fall=False, risk="high")
+    defensive = next(item for item in high_control if item["kind"] == "defensive_dig")
+    assert_equal(
+        defensive["reason"],
+        "guard pressure from right and dig_right is legal",
+        "non-fall high-pressure dig retains the generic legal reason",
+    )
+
+
+def check_defensive_dig_selection_policy() -> None:
+    rules = read_agent_rules()
+    prompt = build_agent_prompt({}, candidates=[], analysis={})
+    required = (
+        "In normal mode at overall medium risk",
+        "pressure guard is on the same row and closing",
+        "an exposed `defensive_dig` reason says the guard can fall",
+        "choose the highest-scored exposed safety candidate after execution gates",
+        "Equal top scores may choose either candidate",
+        "Do not apply this rule while a dig or trap-resolution gate is active",
+        "or at low, high, or critical risk",
+        "Ladder-before-access-dig guidance does not override this defensive safety choice",
+    )
+    for phrase in required:
+        assert_true(phrase in rules, f"defensive-dig selection policy includes {phrase!r}")
+        assert_true(phrase in prompt, f"built prompt includes {phrase!r}")
+    raw_rules = (ROOT / "public" / "LLM_GAME_RULES.md").read_text(encoding="utf-8")
+    policy_end = raw_rules.index(required[-1]) + len(required[-1])
+    assert_true(policy_end <= 3000, "defensive-dig selection policy survives the rule read limit")
+
+
+def check_medium_cross_row_selection_policy() -> None:
+    rules = read_agent_rules()
+    prompt = build_agent_prompt({}, candidates=[], analysis={})
+    required = (
+        "medium cross-row guard risk",
+        "after execution gates and safety policy",
+        "prefer the higher-scored exposed horizontal ladder progress candidate",
+        "A nearer ladder alone is not guard-safe",
+        "Keep safety candidates and same-row restrictions first",
+        "Ladder-before-access-dig guidance applies to navigation digs for route access",
+        "It does not override defensive digging or make a ladder route guard-safe",
+    )
+    for phrase in required:
+        assert_true(phrase in rules, f"cross-row selection policy includes {phrase!r}")
+        assert_true(phrase in prompt, f"built prompt includes {phrase!r}")
+    assert_true(len((ROOT / "public" / "LLM_GAME_RULES.md").read_text(encoding="utf-8")) <= 3000,
+                "entire selection policy survives the rule read limit")
+
+
+def check_guard_selection_validation() -> None:
+    dig = {
+        "id": "defensive_dig_dig_right", "kind": "defensive_dig", "lane": "safety",
+        "score": 112, "firstAction": {
+            "keyCode": 88, "ticks": 8,
+            "reason": "closing same-row guard can fall into dig_right; dig now while centered",
+        },
+    }
+    retreat = {
+        "id": "retreat_from_guard_left", "kind": "retreat_from_guard", "lane": "safety",
+        "score": 108, "firstAction": {"keyCode": 37, "ticks": 4},
+    }
+    descent = {
+        "id": "retreat_from_guard_down", "kind": "retreat_from_guard", "lane": "safety",
+        "score": 118, "firstAction": {"keyCode": 40, "ticks": 6},
+    }
+    same_row = {
+        "godMode": False,
+        "runner": {"x": 19, "y": 14, "xOffset": 0},
+        "risk": {"risk": "medium", "pressureGuard": {
+            "x": 23, "y": 14, "relativeX": "right", "relativeY": "same",
+            "distance": 4, "risk": "medium", "closing": True, "motion": "left",
+        }, "nearbyGuards": []},
+        "movement": {"canMoveLeft": True, "canMoveDown": True},
+        "dig": {"canDigRight": True},
+    }
+    selected, validation = validate_or_fallback_candidate(
+        {"choice": {"candidateId": retreat["id"]}}, [dig, retreat], same_row
+    )
+    assert_equal(selected["id"], dig["id"], "closing guard chooses dig over lower-scored retreat")
+    assert_true(validation["fallbackUsed"], "policy replacement is recorded in validation")
+    selected, _ = validate_or_fallback_candidate(
+        {"choice": {"candidateId": dig["id"]}}, [descent, dig, retreat], same_row
+    )
+    assert_equal(selected["id"], descent["id"], "higher-scored row-changing safety remains preferred")
+    loop_evidence = {
+        "noGoldChange": True,
+        "xRange": 0,
+        "candidateIds": [
+            "retreat_from_guard_down",
+            "climb_ladder_4_13_up",
+            "retreat_from_guard_down",
+            "climb_ladder_4_13_up",
+        ],
+    }
+    looping_same_row = {
+        **same_row,
+        "loopReport": {"active": False, "type": None, "evidence": loop_evidence},
+    }
+    selected, validation = validate_or_fallback_candidate(
+        {"choice": {"candidateId": dig["id"]}},
+        [descent, dig, retreat],
+        looping_same_row,
+    )
+    assert_equal(selected["id"], dig["id"], "validated dig breaks repeated downward retreat cycle")
+    assert_true(not validation["fallbackUsed"], "loop-breaking model choice is preserved")
+    for evidence_changes in (
+        {"noGoldChange": False},
+        {"xRange": 2},
+        {"candidateIds": loop_evidence["candidateIds"][:2]},
+    ):
+        control = deepcopy(looping_same_row)
+        control["loopReport"]["evidence"].update(evidence_changes)
+        selected, _ = validate_or_fallback_candidate(
+            {"choice": {"candidateId": dig["id"]}}, [descent, dig, retreat], control
+        )
+        assert_equal(selected["id"], descent["id"],
+                     "dig exception requires repeated retreat without progress")
+    invalid_dig = deepcopy(looping_same_row)
+    invalid_dig["dig"]["canDigRight"] = False
+    selected, validation = validate_or_fallback_candidate(
+        {"choice": {"candidateId": dig["id"]}}, [descent, dig, retreat], invalid_dig
+    )
+    assert_equal(selected["id"], descent["id"], "loop exception cannot execute an illegal dig")
+    assert_true(validation["fallbackUsed"], "illegal loop-breaking dig records fallback")
+    upward_retreat = {
+        "id": "retreat_from_guard_up", "kind": "retreat_from_guard", "lane": "safety",
+        "score": 120, "firstAction": {"keyCode": 38, "ticks": 6},
+    }
+    selected, _ = validate_or_fallback_candidate(
+        {"choice": {"candidateId": dig["id"]}},
+        [upward_retreat, descent, dig, retreat],
+        looping_same_row,
+    )
+    assert_equal(selected["id"], upward_retreat["id"], "multiple higher safety choices keep score gate")
+
+    left = {
+        "id": "align_ladder_left", "kind": "align_ladder", "lane": "progress",
+        "score": 84, "firstAction": {"keyCode": 37, "ticks": 4},
+    }
+    right = {
+        "id": "align_ladder_right", "kind": "align_ladder", "lane": "progress",
+        "score": 90, "firstAction": {"keyCode": 39, "ticks": 4},
+    }
+    cross_row = {
+        **same_row,
+        "risk": {"risk": "medium", "pressureGuard": {
+            "x": 9, "y": 10, "relativeX": "left", "relativeY": "above",
+            "distance": 5, "risk": "medium", "closing": False, "motion": "down",
+        }, "nearbyGuards": []},
+        "movement": {"canMoveLeft": True, "canMoveRight": True},
+    }
+    selected, _ = validate_or_fallback_candidate(
+        {"choice": {"candidateId": left["id"]}}, [right, left], cross_row
+    )
+    assert_equal(selected["id"], right["id"], "medium cross-row ladder follows exposed ranking")
+    selected, validation = validate_or_fallback_candidate(
+        {"choice": {"candidateId": left["id"]}}, [right, left],
+        {**cross_row, "risk": {**cross_row["risk"], "risk": "high"}},
+    )
+    assert_equal(selected["id"], left["id"], "high-risk ladder choice is outside medium rule")
+    assert_true(not validation["fallbackUsed"], "out-of-scope choice is not replaced")
+
+
 def check_loop_recovery() -> None:
     vertical_history = [
         {
@@ -788,6 +1476,56 @@ def check_loop_recovery() -> None:
         )
 
 
+def check_post_gold_ladder_entry() -> None:
+    for god_mode in (False, True):
+        state = snapshot(
+            grid=["       ", "       ", " H   H ", "#####H#"],
+            runner={"x": 1, "y": 1, "xOffset": 0, "yOffset": 0, "actionName": "left"},
+            gold_complete=True,
+        )
+        state["godMode"] = god_mode
+        candidates, analysis = generate_candidates(state, [])
+        assert_true(analysis["movement"]["canMoveDown"], "post-gold fixture has a legal entry")
+        descent = next((c for c in candidates if c["id"] == "descend_route_1_2_down"), None)
+        assert_true(descent is not None, "post-gold ladder entry exposes descent")
+        assert_equal(descent["firstAction"]["keyCode"], 40, "entry action moves down")
+        assert_true(
+            any(a["candidateId"] == descent["id"] and a["disposition"] == "exposed"
+                for a in analysis["candidateAudit"]),
+            "post-gold entry is exposed in the audit",
+        )
+        for upward_candidate_id in (
+            "climb_ladder_1_2_up",
+            "exit_ladder_route_1_2_up",
+        ):
+            history = [{
+                "candidateId": upward_candidate_id, "keyCode": 38,
+                "before": {"runner": {"x": 1, "y": 2}},
+                "after": {"runner": {"x": 1, "y": 1}, "goldCount": 0},
+            }]
+            candidates, _ = generate_candidates(state, history)
+            assert_true(
+                all(c["id"] != "descend_route_1_2_down" for c in candidates),
+                f"post-gold entry avoids immediately undoing {upward_candidate_id}",
+            )
+        horizontal_history = [{
+            "candidateId": "align_ladder_1_1_right", "keyCode": 39,
+            "before": {"runner": {"x": 0, "y": 1}},
+            "after": {"runner": {"x": 1, "y": 1}, "goldCount": 0},
+        }]
+        candidates, _ = generate_candidates(state, horizontal_history)
+        assert_true(
+            any(c["id"] == "descend_route_1_2_down" for c in candidates),
+            "horizontal ladder arrival keeps post-gold descent available",
+        )
+        state["runner"]["x"] = 3
+        candidates, _ = generate_candidates(state, [])
+        assert_true(
+            all(c["kind"] != "descend_route" for c in candidates),
+            "post-gold descent requires a legal aligned entry",
+        )
+
+
 def check_no_legacy_knowledge() -> None:
     assert_true(candidate_kind("removed_kind_1_1_left") != "removed_kind", "unknown route kinds do not become supported candidates")
     assert_equal(candidate_lane("collect_same_row_gold"), "progress", "progress lane is shared")
@@ -814,10 +1552,19 @@ def run() -> None:
     check_runtime_boundary()
     check_recording_pin_api()
     check_geometry_candidates()
+    check_low_risk_guard_clearance_scoring()
+    check_medium_cross_row_clearance_scoring()
     check_target_relative_ladder_direction()
     check_ladder_entry_discovery()
     check_post_ascent_alignment_reversal()
+    check_low_risk_loop_escape_climb()
+    check_medium_cross_row_ladder_clearance()
+    check_defensive_dig_signal()
+    check_defensive_dig_selection_policy()
+    check_medium_cross_row_selection_policy()
+    check_guard_selection_validation()
     check_loop_recovery()
+    check_post_gold_ladder_entry()
     check_no_legacy_knowledge()
     print("backend geometry sanity ok")
 

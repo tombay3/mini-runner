@@ -39,6 +39,11 @@ substantial provider time and quota.
 `--target N` stops after `N` successes or when `--runs` is exhausted. Runs and target values are
 positive integers with a maximum of 100.
 
+An attempt finishes only after its saved recording has been refreshed in the wrapper.
+The evaluator checks readiness before every attempt, using `--startup-timeout-ms`
+as the timeout, and includes wrapper status when that check fails. It does not retry
+an attempt merely because the wrapper is busy.
+
 Normal mode remains the default. `--god-mode` enables god mode through the existing runtime toggle
 before smoke validation and before every attempt. Reports record the requested mode plus recording
 step, and terminal evidence; a mismatch is an evaluation failure.

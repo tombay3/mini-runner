@@ -68,10 +68,8 @@ try {
     process.stdout.write(`run ${index + 1}/${options.runs} ... `);
     let result;
     try {
-      result = await page.evaluate(
-        (godMode) => window.__lodeRunnerEvaluation.runAttempt({ godMode }),
-        options.godMode,
-      );
+      await waitForAttemptReady(page);
+      result = await runAttemptWithTimeout(page, options.godMode);
     } catch (error) {
       // A wrapper reload can destroy Playwright's execution context between
       // attempts. Reattach to the page and retry that attempt instead of
@@ -80,13 +78,8 @@ try {
         throw error;
       }
       await page.goto(url.href, { waitUntil: "domcontentloaded" });
-      await page.waitForFunction(() => window.__lodeRunnerEvaluation?.ready(), null, {
-        timeout: options.startupTimeoutMs,
-      });
-      result = await page.evaluate(
-        (godMode) => window.__lodeRunnerEvaluation.runAttempt({ godMode }),
-        options.godMode,
-      );
+      await waitForAttemptReady(page);
+      result = await runAttemptWithTimeout(page, options.godMode);
     }
     const trace = result.traceId ? await fetchTraceAfterPersistence(page, result.traceId) : null;
     const attempt = summarizeAttempt(index + 1, startedAt, result, trace, options);
@@ -142,6 +135,20 @@ try {
   }
 }
 
+async function waitForAttemptReady(page) {
+  try {
+    await page.waitForFunction(() => window.__lodeRunnerEvaluation?.ready(), null, {
+      timeout: options.startupTimeoutMs,
+    });
+  } catch (error) {
+    const status = await page.evaluate(() => window.__lodeRunnerEvaluation?.status())
+      .catch(() => null);
+    throw new Error(`evaluator readiness failed: ${JSON.stringify(status)}; ${error.message}`, {
+      cause: error,
+    });
+  }
+}
+
 async function fetchTraceAfterPersistence(page, traceId) {
   const deadline = Date.now() + 10_000;
   let lastStatus = "unavailable";
@@ -165,6 +172,7 @@ function parseArgs(args) {
     baseUrl: "http://127.0.0.1:8283/",
     browserExecutable: process.env.EVAL_BROWSER_EXECUTABLE || null,
     startupTimeoutMs: 30_000,
+    attemptTimeoutMs: 1_800_000,
     headful: false,
     keepServers: false,
     output: null,
@@ -187,6 +195,8 @@ function parseArgs(args) {
     else if (arg === "--browser") result.browserExecutable = nonempty(next(), "browser");
     else if (arg === "--startup-timeout-ms") {
       result.startupTimeoutMs = positiveInteger(next(), "startup timeout", 300_000);
+    } else if (arg === "--attempt-timeout-ms") {
+      result.attemptTimeoutMs = positiveInteger(next(), "attempt timeout", 1_800_000);
     } else if (arg === "--output") result.output = nonempty(next(), "output");
     else if (arg === "--headful") result.headful = true;
     else if (arg === "--keep-servers") result.keepServers = true;
@@ -214,6 +224,24 @@ function nonempty(value, label) {
   const text = String(value).trim();
   if (!text) throw new Error(`${label} must not be empty`);
   return text;
+}
+
+async function runAttemptWithTimeout(page, godMode) {
+  let timer;
+  const attempt = page.evaluate(
+    (requestedGodMode) => window.__lodeRunnerEvaluation.runAttempt({ godMode: requestedGodMode }),
+    godMode,
+  );
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(`evaluator attempt timed out after ${options.attemptTimeoutMs} ms`));
+    }, options.attemptTimeoutMs);
+  });
+  try {
+    return await Promise.race([attempt, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function ensureServer(name, healthUrl, npmArgs) {
@@ -545,6 +573,8 @@ function printHelp() {
   process.stdout.write(`  --profile NAME           model profile passed through the browser URL\n`);
   process.stdout.write(`  --browser PATH           Chrome/Chromium executable\n`);
   process.stdout.write(`  --base-url URL           wrapper URL (default: http://127.0.0.1:8283/)\n`);
+  process.stdout.write(`  --startup-timeout-ms N   service/browser readiness timeout (default: 30000)\n`);
+  process.stdout.write(`  --attempt-timeout-ms N   maximum time for one agent attempt (default: 1800000)\n`);
   process.stdout.write(`  --headful                 show the evaluation browser\n`);
   process.stdout.write(`  --god-mode               run and validate attempts with god mode enabled\n`);
   process.stdout.write(`  --keep-servers            leave servers started by this command running\n`);

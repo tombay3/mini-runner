@@ -24,7 +24,7 @@ const agentController = createAgentController({
   finishUiAction,
   normalizeDemo,
   recordingApiBase: API_BASE,
-  scheduleRefresh,
+  refreshStatus,
   stopPlaybackVideoRecording,
   syncOverlayState,
 });

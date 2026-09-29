@@ -33,6 +33,37 @@ Scores order candidates before prompt truncation and define deterministic fallba
 not proof that a candidate is correct. A model may choose a lower-scored legal candidate when its
 local tradeoff is better.
 
+Validation enforces two narrow medium-risk preferences after the model returns a
+`candidateId`. When a closing same-row guard can fall into an exposed defensive
+dig, a non-safety or lower-scored safety choice is replaced by the highest-scored
+exposed safety candidate. One bounded exception preserves a requested
+guard-can-fall dig when downward retreat is its sole higher-scored alternative
+and recent history contains at least two retreat-down/up-ladder cycles with no
+gold or horizontal progress. When the pressure guard is cross-row, no safety
+candidate is exposed, and the model selects a horizontal ladder alignment, a
+lower-scored ladder choice is replaced by the highest-scored exposed horizontal
+ladder alignment. Ties keep the model's choice. Active dig/trap/floor waits, god
+mode, other risk levels, and secondary medium-or-higher same-row guards bypass
+these preferences. Physical and guard-safety validation still runs on the
+resulting candidate. The validation trace records the model's requested ID and
+any replacement reason; candidate generation, scores, and the V2 `candidateId`
+contract are unchanged.
+
+Under overall low guard risk, a directional progress candidate receives a four-point bonus when a
+bounded projection preserves or increases its distance from every active low-risk guard. The
+projection samples the runner action and observed guard motion at eight ticks per grid cell. Guards
+already in holes do not participate. The bonus explains itself in the candidate reasons; it does
+not penalize or reject safely separated progress that reduces distance, and it does not change any
+medium, high, critical, same-row, or route-interception rejection.
+
+Under overall medium pressure from a guard on another row, horizontal progress
+receives a twelve-point penalty when the same bounded projection reduces the
+minimum distance to any active guard. This is a ranking preference: the candidate
+remains exposed, and a clearance-preserving alternative keeps its original score.
+Vertical ladder actions are excluded so the bounded cross-row climb correction
+retains its established behavior. Same-row and high/critical threats continue
+through hard safety validation.
+
 Candidates with identical normalized key/tick actions are merged only when kind and target match.
 Their intents, targets, and reasons are retained. Semantically different candidates remain visible
 even when their first action happens to be the same.
@@ -61,8 +92,9 @@ traces. Visible ladder routes include ordinary active ladder tiles and traversab
 where an active ladder begins one row below. Entry metadata includes `onDownEntry`,
 `entryDirection`, and `ladderY`; the horizontal alignment target remains on the runner row.
 When the runner is aligned on a traversable top entry, candidate generation exposes a bounded
-`descend_route` to the underlying ladder. It omits that descent for the single decision immediately
-after the runner climbed out through the same ladder, preventing a direct undo while preserving
+`descend_route` to the underlying ladder, including after gold collection during exit routing.
+It omits that descent for the single decision immediately after the runner climbed out through
+the same ladder, preventing a direct undo while preserving
 entries reached horizontally. Hidden exit ladders remain inactive until gold is complete. Discovery
 does not force a descent, commit to a route, or change loop suppression.
 When a known progress target is above or on the runner row, alignment to a downward-only
@@ -101,6 +133,13 @@ suppressed by candidate ID. A horizontal route that reduced distance to its unre
 the latest action also remains eligible; reaching the target or failing to reduce distance restores
 ordinary suppression.
 
+One bounded vertical exception keeps a previously validated climb when a closing low-risk guard
+is on the runner's row within seven cells and the only remaining progress candidate moves toward
+that guard. The climb must take at most six ticks and must not have been selected in the recent
+eight-decision loop window. Other available routes, a non-closing or cross-row guard, and
+medium-or-higher pressure leave ordinary loop suppression in place. Physical and guard-safety
+validation still precede this exception; it does not guarantee a safe future route.
+
 When an existing horizontal-cycle report contains an alternating target sequence `A → B → A → B`,
 candidate finalization suppresses only the predicted return to `A` for that decision. The suppression
 is deferred until validation is complete and applies only when another validated ordinary
@@ -130,6 +169,10 @@ After the LLM returns a `candidateId`, `agent/service.py` validates the choice b
 The model response falls back when its JSON cannot be parsed or its `candidateId` is absent from
 the supplied candidates. A known candidate also falls back if its action is no longer physically
 valid or would move into guard pressure.
+
+A ladder climb toward a cross-row medium-risk guard remains available for one bounded action for at most six ticks. High/critical guards block the exception. A medium-risk guard whose
+adjacent-row endpoint distance is at most five cells must have at least three columns of horizontal
+clearance; closer cross-row pressure and longer actions retain the conservative rejection. Low-risk guards already trapped in holes do not block the climb.
 
 The fallback is the first backend-ranked candidate. The trace records the requested and selected
 IDs, whether the requested ID was known, and the fallback reason before executing one short

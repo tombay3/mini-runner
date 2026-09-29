@@ -398,7 +398,9 @@ async function saveAgentResult(
   state.currentRecord = record;
   state.currentGameLevel = deps.formatGameLevel({ playData, level });
   deps.finishUiAction(state, { error: result !== "success" });
-  deps.scheduleRefresh(state);
+  // Keep the attempt active until its recording refresh has finished. A delayed
+  // refresh can otherwise acquire the UI busy flag during the next attempt.
+  await deps.refreshStatus(state, true);
   return record;
 }
 
@@ -589,6 +591,7 @@ function createRunId() {
 }
 
 export const _test = {
+  finishAgentRun,
   createRunId,
   deriveAgentButtonState,
   getAgentModelProfileOption,

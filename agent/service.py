@@ -31,6 +31,7 @@ from .traces import serialize_step_trace
 
 
 LOGGER = get_logger("service")
+OPENAI_REQUEST_TIMEOUT_SECONDS = 90.0
 
 
 class AisuiteAgentClient:
@@ -106,7 +107,11 @@ class AisuiteAgentClient:
         config = model.provider_configs.get("openai", {})
         cache_key = json.dumps(config, sort_keys=True)
         if cache_key not in self._openai_clients:
-            self._openai_clients[cache_key] = openai.OpenAI(**config)
+            self._openai_clients[cache_key] = openai.OpenAI(
+                **config,
+                timeout=OPENAI_REQUEST_TIMEOUT_SECONDS,
+                max_retries=0,
+            )
         response = self._openai_clients[cache_key].responses.create(
             model=model.model.split(":", 1)[1],
             input=messages,
@@ -404,6 +409,15 @@ def validate_or_fallback_candidate(
         fallback_used = True
         fallback_reason = result.get("parseError") or f"unknown candidateId: {requested_id}"
 
+    if not fallback_used:
+        policy_choice, policy_reason = preferred_guard_policy_candidate(
+            selected, candidates, analysis
+        )
+        if policy_choice is not None:
+            selected = policy_choice
+            fallback_used = True
+            fallback_reason = policy_reason
+
     action_valid = is_action_physically_valid(
         selected["firstAction"],
         analysis["movement"],
@@ -433,6 +447,125 @@ def validate_or_fallback_candidate(
         "fallbackReason": fallback_reason,
     }
     return selected, validation
+
+
+def preferred_guard_policy_candidate(
+    selected: dict[str, Any],
+    candidates: list[dict[str, Any]],
+    analysis: dict[str, Any],
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Enforce only the two demonstrated medium-risk score preferences."""
+    risk = analysis.get("risk") or {}
+    guard = risk.get("pressureGuard") or {}
+    if (
+        analysis.get("godMode")
+        or (analysis.get("activeDig") or {}).get("active")
+        or risk.get("risk") != "medium"
+        or any(
+            candidate.get("kind") in {
+                "wait_for_dig_completion",
+                "wait_for_trap_resolution",
+                "wait_for_floor_refill",
+            }
+            for candidate in candidates
+        )
+    ):
+        return None, None
+
+    if guard.get("relativeY") == "same" and guard.get("closing"):
+        fall_digs = [
+            candidate for candidate in candidates
+            if candidate.get("kind") == "defensive_dig"
+            and "closing same-row guard can fall" in str(
+                (candidate.get("firstAction") or {}).get("reason") or ""
+            )
+        ]
+        if fall_digs:
+            safety = [candidate for candidate in candidates if candidate.get("lane") == "safety"]
+            best = max(safety, key=lambda candidate: int(candidate.get("score") or 0))
+            if _preserve_loop_breaking_defensive_dig(selected, candidates, analysis):
+                return None, None
+            if (
+                selected.get("lane") != "safety"
+                or int(selected.get("score") or 0) < int(best.get("score") or 0)
+            ):
+                return best, "medium same-row guard safety candidate has higher score"
+        return None, None
+
+    if guard.get("relativeY") not in {"above", "below"}:
+        return None, None
+    if selected.get("kind") != "align_ladder" or any(
+        candidate.get("lane") == "safety" for candidate in candidates
+    ):
+        return None, None
+    if any(
+        nearby.get("relativeY") == "same"
+        and nearby.get("risk") in {"medium", "high", "critical"}
+        for nearby in risk.get("nearbyGuards") or []
+    ):
+        return None, None
+    ladders = [
+        candidate for candidate in candidates
+        if candidate.get("kind") == "align_ladder"
+        and (candidate.get("firstAction") or {}).get("keyCode") in {37, 39}
+    ]
+    if len(ladders) < 2:
+        return None, None
+    best = max(ladders, key=lambda candidate: int(candidate.get("score") or 0))
+    if int(selected.get("score") or 0) < int(best.get("score") or 0):
+        return best, "medium cross-row ladder candidate has higher score"
+    return None, None
+
+
+def _preserve_loop_breaking_defensive_dig(
+    selected: dict[str, Any],
+    candidates: list[dict[str, Any]],
+    analysis: dict[str, Any],
+) -> bool:
+    if (
+        selected.get("kind") != "defensive_dig"
+        or "closing same-row guard can fall" not in str(
+            (selected.get("firstAction") or {}).get("reason") or ""
+        )
+    ):
+        return False
+    selected_score = int(selected.get("score") or 0)
+    higher = [
+        candidate for candidate in candidates
+        if int(candidate.get("score") or 0) > selected_score
+    ]
+    if len(higher) != 1:
+        return False
+    retreat = higher[0]
+    if (
+        retreat.get("id") != "retreat_from_guard_down"
+        or retreat.get("kind") != "retreat_from_guard"
+        or (retreat.get("firstAction") or {}).get("keyCode") != 40
+    ):
+        return False
+
+    evidence = ((analysis.get("loopReport") or {}).get("evidence") or {})
+    x_range = evidence.get("xRange")
+    if (
+        not evidence.get("noGoldChange")
+        or not isinstance(x_range, (int, float))
+        or x_range > 1
+    ):
+        return False
+    cycle_actions = []
+    for candidate_id in evidence.get("candidateIds") or []:
+        candidate_id = str(candidate_id or "")
+        if candidate_id == "retreat_from_guard_down":
+            cycle_actions.append("down")
+        elif (
+            candidate_id.startswith(("climb_ladder_", "exit_ladder_route_"))
+            and candidate_id.endswith("_up")
+        ):
+            cycle_actions.append("up")
+    return sum(
+        before == "down" and after == "up"
+        for before, after in zip(cycle_actions, cycle_actions[1:])
+    ) >= 2
 
 
 def build_loop_monitor(analysis: dict[str, Any]) -> dict[str, Any]:

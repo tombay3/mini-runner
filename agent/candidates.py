@@ -51,6 +51,13 @@ def candidate_lane(kind: str | None) -> str:
 
 
 GUARD_PRESSURE_RISKS = {"medium", "high", "critical"}
+LOW_RISK_GUARD_CLEARANCE_BONUS = 4
+LOW_RISK_LOOP_ESCAPE_MAX_DISTANCE = 7
+MEDIUM_CROSS_ROW_CLEARANCE_PENALTY = 12
+GUARD_CLEARANCE_TICKS_PER_CELL = 8
+
+MEDIUM_CROSS_ROW_CLIMB_MAX_TICKS = 6
+MEDIUM_CROSS_ROW_CLIMB_MIN_HORIZONTAL_CLEARANCE = 3
 
 PROSPECTIVE_HORIZONTAL_KINDS = {
     "align_ladder",
@@ -85,6 +92,7 @@ class CandidateBuilder:
         self.limit = limit
         self.candidates: list[dict[str, Any]] = []
         self.audit: list[dict[str, Any]] = []
+        self._loop_suppressed_climbs: list[tuple[dict[str, Any], dict[str, Any], str]] = []
         self._seen: set[str] = set()
         self.analysis["candidateAudit"] = self.audit
 
@@ -159,22 +167,43 @@ class CandidateBuilder:
         candidate = {"id": candidate_id, "kind": kind, "firstAction": action}
         loop_report = self.analysis["loopReport"]
         suppression_reason = candidate_suppression_reason(candidate, loop_report)
-        if suppression_reason:
-            record_suppressed_candidate(loop_report, candidate, suppression_reason)
-            audit["disposition"] = "loop_suppressed"
-            audit["detail"] = suppression_reason
-            return
+        clearance_bonus = low_risk_guard_clearance_score_bonus(
+            action, self.analysis, candidate_kind=kind
+        )
+        clearance_penalty = medium_cross_row_clearance_score_penalty(
+            action, self.analysis, candidate_kind=kind
+        )
+        adjusted_score = score + clearance_bonus - clearance_penalty
+        reasons = [reason]
+        if clearance_bonus:
+            reasons.append(
+                "bounded progress preserves clearance from active low-risk guards"
+            )
+        if clearance_penalty:
+            reasons.append(
+                "bounded progress consumes minimum clearance under medium cross-row pressure"
+            )
         next_candidate = {
             "id": candidate_id,
             "kind": kind,
             "lane": candidate_lane(kind),
-            "score": score,
+            "score": adjusted_score,
             "target": target,
             "firstAction": action,
             "intents": [kind],
             "targets": [target] if target else [],
-            "reasons": [reason],
+            "reasons": reasons,
         }
+        if suppression_reason:
+            audit["disposition"] = "loop_suppressed"
+            audit["detail"] = suppression_reason
+            if loop_report.get("type") == "vertical_cycle" and kind == "climb_ladder":
+                self._loop_suppressed_climbs.append(
+                    (next_candidate, audit, suppression_reason)
+                )
+            else:
+                record_suppressed_candidate(loop_report, candidate, suppression_reason)
+            return
         signature = (action["keyCode"], action["ticks"])
         for index, existing in enumerate(self.candidates):
             existing_action = existing["firstAction"]
@@ -183,7 +212,9 @@ class CandidateBuilder:
             if not candidates_semantically_mergeable(existing, next_candidate):
                 continue
             merged = merge_candidate_metadata(existing, next_candidate)
-            if (-score, candidate_id) < (-int(existing["score"]), str(existing["id"])):
+            if (-adjusted_score, candidate_id) < (
+                -int(existing["score"]), str(existing["id"])
+            ):
                 self.candidates[index] = {
                     **merged,
                     **next_candidate,
@@ -200,6 +231,7 @@ class CandidateBuilder:
         audit["disposition"] = "validated"
 
     def finalize(self) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        self._restore_guard_escape_climb()
         predicted_target = predicted_horizontal_return_target(
             self.analysis["loopReport"]
         )
@@ -254,6 +286,52 @@ class CandidateBuilder:
                 else "limit_truncated"
             )
         return exposed, self.analysis
+
+    def _restore_guard_escape_climb(self) -> None:
+        loop_report = self.analysis["loopReport"]
+        restore = False
+        if len(self.candidates) == 1 and len(self._loop_suppressed_climbs) == 1:
+            route = self.candidates[0]
+            climb, audit, _reason = self._loop_suppressed_climbs[0]
+            risk = _dict(self.analysis.get("risk"))
+            guard = _dict(risk.get("pressureGuard"))
+            distance = _to_int(guard.get("distance"))
+            toward_guard = {
+                "left": LEFT_KEYCODE,
+                "right": RIGHT_KEYCODE,
+            }.get(guard.get("relativeX"))
+            recent_ids = _dict(loop_report.get("evidence")).get("candidateIds")
+            restore = bool(
+                loop_report.get("type") == "vertical_cycle"
+                and not self.analysis.get("godMode")
+                and risk.get("risk") == "low"
+                and guard.get("risk") == "low"
+                and guard.get("relativeY") == "same"
+                and guard.get("closing")
+                and guard.get("motion") in {"left", "right"}
+                and distance is not None
+                and 1 < distance <= LOW_RISK_LOOP_ESCAPE_MAX_DISTANCE
+                and route.get("lane") == "progress"
+                and _dict(route.get("firstAction")).get("keyCode") == toward_guard
+                and _dict(climb.get("firstAction")).get("keyCode") in {
+                    UP_KEYCODE, DOWN_KEYCODE,
+                }
+                and (_to_int(_dict(climb.get("firstAction")).get("ticks")) or 0) <= 6
+                and isinstance(recent_ids, list)
+                and len(recent_ids) >= 8
+                and climb.get("id") not in recent_ids[-8:]
+            )
+            if restore:
+                climb["reasons"].append(
+                    "short ladder exit preserves a row-changing option while a guard closes ahead"
+                )
+                self.candidates.append(climb)
+                audit["disposition"] = "validated"
+                audit.pop("detail", None)
+        for climb, _audit, reason in self._loop_suppressed_climbs:
+            if not restore or climb not in self.candidates:
+                record_suppressed_candidate(loop_report, climb, reason)
+        self._loop_suppressed_climbs.clear()
 
 
 def analyze_state(snapshot: dict[str, Any], history: list[dict[str, Any]]) -> dict[str, Any]:
@@ -398,9 +476,10 @@ def generate_candidates(
         add_route_access_candidate(add, route_access)
         add_route_access_follow_candidate(add, analysis, route_access)
         add_guard_clearance_wait_candidate(add, route_access)
-        add_descent_candidates(add, analysis, movement, history)
     else:
         add_ladder_alignment_candidates(add, analysis, god_mode, history)
+
+    add_descent_candidates(add, analysis, movement, history)
 
     if god_mode and not gold_complete and not candidates:
         add_god_mode_progress_candidate(add, analysis)
@@ -733,6 +812,12 @@ def add_non_god_escape_candidates(
             reason=(
                 "guard above-left is descending toward this row; dig_left now while centered"
                 if imminent_landing_trap
+                else "closing same-row guard can fall into dig_left; dig now while centered"
+                if (
+                    closing
+                    and guard.get("relativeY") == "same"
+                    and left_dig.get("guardCouldFall")
+                )
                 else "guard pressure from left and dig_left is legal"
             ),
         )
@@ -756,6 +841,12 @@ def add_non_god_escape_candidates(
             reason=(
                 "guard above-right is descending toward this row; dig_right now while centered"
                 if imminent_landing_trap
+                else "closing same-row guard can fall into dig_right; dig now while centered"
+                if (
+                    closing
+                    and guard.get("relativeY") == "same"
+                    and right_dig.get("guardCouldFall")
+                )
                 else "guard pressure from right and dig_right is legal"
             ),
         )
@@ -1278,6 +1369,8 @@ def add_descent_candidates(
             target={"x": entry_x, "y": entry_y, "tile": entry.get("tile", "H")},
             reason="runner is aligned above an active ladder; descend to enter its route",
         )
+    if analysis.get("goldComplete"):
+        return
     lower_gold = [
         item
         for item in analysis["nearestGold"]
@@ -1332,7 +1425,9 @@ def just_climbed_from_entry_ladder(
     before_runner = _dict(_dict(latest.get("before")).get("runner"))
     after_runner = _dict(_dict(latest.get("after")).get("runner"))
     return bool(
-        str(latest.get("candidateId") or "").startswith("climb_ladder_")
+        str(latest.get("candidateId") or "").startswith(
+            ("climb_ladder_", "exit_ladder_route_")
+        )
         and _to_int(latest.get("keyCode")) == UP_KEYCODE
         and _to_int(before_runner.get("x")) == _to_int(entry.get("x"))
         and _to_int(before_runner.get("y")) == _to_int(entry.get("ladderY"))
@@ -1744,6 +1839,146 @@ def _action_reaches_open_hole(
     return distance <= action_span
 
 
+def low_risk_guard_clearance_score_bonus(
+    action: dict[str, Any],
+    analysis: dict[str, Any],
+    *,
+    candidate_kind: str | None = None,
+) -> int:
+    """Reward directional progress that does not consume low-risk clearance."""
+    if (
+        analysis.get("godMode")
+        or candidate_lane(candidate_kind) != "progress"
+        or _dict(analysis.get("risk")).get("risk") != "low"
+    ):
+        return 0
+    key_code = _to_int(action.get("keyCode"))
+    runner_vector = {
+        LEFT_KEYCODE: (-1, 0),
+        RIGHT_KEYCODE: (1, 0),
+        UP_KEYCODE: (0, -1),
+        DOWN_KEYCODE: (0, 1),
+    }.get(key_code)
+    if runner_vector is None:
+        return 0
+    runner = _dict(analysis.get("runner"))
+    runner_x = _to_int(runner.get("x"))
+    runner_y = _to_int(runner.get("y"))
+    if runner_x is None or runner_y is None:
+        return 0
+
+    active_guards = []
+    for item in _dict(analysis.get("risk")).get("nearbyGuards") or []:
+        guard = _dict(item)
+        guard_x = _to_int(guard.get("x"))
+        guard_y = _to_int(guard.get("y"))
+        if (
+            guard.get("risk") != "low"
+            or guard.get("motion") == "in_hole"
+            or guard_x is None
+            or guard_y is None
+        ):
+            continue
+        active_guards.append((guard, guard_x, guard_y))
+    if not active_guards:
+        return 0
+
+    ticks = max(1, _to_int(action.get("ticks")) or 1)
+    guard_vectors = {
+        "left": (-1, 0),
+        "right": (1, 0),
+        "up": (0, -1),
+        "down": (0, 1),
+        "fall": (0, 1),
+    }
+    for guard, guard_x, guard_y in active_guards:
+        guard_vector = guard_vectors.get(str(guard.get("motion")), (0, 0))
+        current_distance = abs(guard_x - runner_x) + abs(guard_y - runner_y)
+        for tick in range(1, ticks + 1):
+            progress = tick / GUARD_CLEARANCE_TICKS_PER_CELL
+            projected_runner_x = runner_x + runner_vector[0] * progress
+            projected_runner_y = runner_y + runner_vector[1] * progress
+            projected_guard_x = guard_x + guard_vector[0] * progress
+            projected_guard_y = guard_y + guard_vector[1] * progress
+            projected_distance = abs(projected_guard_x - projected_runner_x) + abs(
+                projected_guard_y - projected_runner_y
+            )
+            if projected_distance < current_distance:
+                return 0
+    return LOW_RISK_GUARD_CLEARANCE_BONUS
+
+
+def medium_cross_row_clearance_score_penalty(
+    action: dict[str, Any],
+    analysis: dict[str, Any],
+    *,
+    candidate_kind: str | None = None,
+) -> int:
+    """Demote horizontal progress that consumes the nearest medium-risk clearance."""
+    if analysis.get("godMode") or candidate_lane(candidate_kind) != "progress":
+        return 0
+    risk = _dict(analysis.get("risk"))
+    pressure_guard = _dict(risk.get("pressureGuard"))
+    if (
+        risk.get("risk") != "medium"
+        or pressure_guard.get("risk") != "medium"
+        or pressure_guard.get("relativeY") not in {"above", "below"}
+    ):
+        return 0
+    key_code = _to_int(action.get("keyCode"))
+    runner_vector = {
+        LEFT_KEYCODE: (-1, 0),
+        RIGHT_KEYCODE: (1, 0),
+    }.get(key_code)
+    if runner_vector is None:
+        return 0
+    runner = _dict(analysis.get("runner"))
+    runner_x = _to_int(runner.get("x"))
+    runner_y = _to_int(runner.get("y"))
+    if runner_x is None or runner_y is None:
+        return 0
+
+    active_guards = []
+    for item in risk.get("nearbyGuards") or []:
+        guard = _dict(item)
+        guard_x = _to_int(guard.get("x"))
+        guard_y = _to_int(guard.get("y"))
+        if (
+            guard.get("motion") == "in_hole"
+            or guard_x is None
+            or guard_y is None
+        ):
+            continue
+        active_guards.append((guard, guard_x, guard_y))
+    if not active_guards:
+        return 0
+
+    guard_vectors = {
+        "left": (-1, 0),
+        "right": (1, 0),
+        "up": (0, -1),
+        "down": (0, 1),
+        "fall": (0, 1),
+    }
+    current_minimum = min(
+        abs(guard_x - runner_x) + abs(guard_y - runner_y)
+        for _, guard_x, guard_y in active_guards
+    )
+    ticks = max(1, _to_int(action.get("ticks")) or 1)
+    for tick in range(1, ticks + 1):
+        progress = tick / GUARD_CLEARANCE_TICKS_PER_CELL
+        projected_runner_x = runner_x + runner_vector[0] * progress
+        projected_runner_y = runner_y
+        projected_minimum = min(
+            abs(guard_x + guard_vectors.get(str(guard.get("motion")), (0, 0))[0] * progress - projected_runner_x)
+            + abs(guard_y + guard_vectors.get(str(guard.get("motion")), (0, 0))[1] * progress - projected_runner_y)
+            for guard, guard_x, guard_y in active_guards
+        )
+        if projected_minimum < current_minimum:
+            return MEDIUM_CROSS_ROW_CLEARANCE_PENALTY
+    return 0
+
+
 def action_guard_safety_rejection_detail(
     action: dict[str, Any],
     analysis: dict[str, Any],
@@ -1849,9 +2084,22 @@ def action_guard_safety_rejection_detail(
         )
     ):
         return None
-    if relative_y == "above" and key_code == UP_KEYCODE:
+    clear_medium_cross_row_climb = _medium_cross_row_climb_has_clearance(
+        action,
+        analysis,
+        candidate_kind=candidate_kind,
+    )
+    if (
+        relative_y == "above"
+        and key_code == UP_KEYCODE
+        and not clear_medium_cross_row_climb
+    ):
         return f"up moves toward the {guard.get('risk')} risk pressure guard above"
-    if relative_y == "below" and key_code == DOWN_KEYCODE:
+    if (
+        relative_y == "below"
+        and key_code == DOWN_KEYCODE
+        and not clear_medium_cross_row_climb
+    ):
         return f"down moves toward the {guard.get('risk')} risk pressure guard below"
     runner_action = _dict(analysis.get("runner")).get("action")
     if (
@@ -1864,6 +2112,61 @@ def action_guard_safety_rejection_detail(
             "is not falling"
         )
     return None
+
+
+def _medium_cross_row_climb_has_clearance(
+    action: dict[str, Any],
+    analysis: dict[str, Any],
+    *,
+    candidate_kind: str | None,
+) -> bool:
+    """Allow one short ladder step when medium cross-row pressure is well separated."""
+    if candidate_kind != "climb_ladder":
+        return False
+    risk = _dict(analysis.get("risk"))
+    pressure_guard = _dict(risk.get("pressureGuard"))
+    if pressure_guard.get("risk") != "medium":
+        return False
+    key_code = action.get("keyCode")
+    relative_y = pressure_guard.get("relativeY")
+    if not (
+        (relative_y == "above" and key_code == UP_KEYCODE)
+        or (relative_y == "below" and key_code == DOWN_KEYCODE)
+    ):
+        return False
+    ticks = _to_int(action.get("ticks"))
+    if ticks is None or ticks < 1 or ticks > MEDIUM_CROSS_ROW_CLIMB_MAX_TICKS:
+        return False
+    runner = _dict(analysis.get("runner"))
+    runner_x = _to_int(runner.get("x"))
+    runner_y = _to_int(runner.get("y"))
+    if runner_x is None or runner_y is None:
+        return False
+    endpoint_y = runner_y + (-1 if key_code == UP_KEYCODE else 1)
+    nearby_guards = [pressure_guard]
+    nearby_guards.extend(
+        _dict(item)
+        for item in risk.get("nearbyGuards") or []
+        if isinstance(item, dict) and item.get("id") != pressure_guard.get("id")
+    )
+    for nearby in nearby_guards:
+        if nearby.get("risk") not in GUARD_PRESSURE_RISKS:
+            continue
+        if nearby.get("risk") in {"high", "critical"}:
+            return False
+        guard_x = _to_int(nearby.get("x"))
+        guard_y = _to_int(nearby.get("y"))
+        if guard_x is None or guard_y is None:
+            return False
+        horizontal_clearance = abs(guard_x - runner_x)
+        projected_distance = horizontal_clearance + abs(guard_y - endpoint_y)
+        if (
+            projected_distance <= 5
+            and horizontal_clearance
+            < MEDIUM_CROSS_ROW_CLIMB_MIN_HORIZONTAL_CLEARANCE
+        ):
+            return False
+    return True
 
 
 def is_action_guard_safe(

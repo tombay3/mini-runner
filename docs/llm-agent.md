@@ -107,3 +107,41 @@ stay in `.env` or `.env.local`; see [Public agent config](./backend-spec.md#publ
 Each trace step records compact state, candidates, selection, validation, loop data, and candidate
 audit. Agent recording IDs match trace IDs. See [Trace API and store](./backend-spec.md#trace-api-and-store)
 for data fields and [Agent evaluator](./evaluator.md) for evaluation and retention.
+
+## Development experiment workflow
+
+Use a saved trace to identify a specific decision and its observed result. Run
+`npm run cohorts:check` and read the [cohort catalog](./trace-cohort.md) before
+investigating so the source revision, run controls, earlier findings, and missing
+evidence are clear. Candidate audits
+show whether an action was absent, filtered, or offered but not selected. The next
+snapshot shows what the executed action actually did; a candidate score or reason
+alone cannot establish that outcome.
+
+Reproduce the smallest decision boundary with an offline fixture and the relevant
+sanity checks. Classify the issue as state analysis, candidate availability,
+scoring, model selection, validation, execution, or loop handling before changing
+behavior. A fixture can verify current planning logic against recorded inputs, but
+trace summaries are not complete game checkpoints and cannot prove a different
+action would have won.
+
+When a change needs actual gameplay evidence, evaluate a fixed source revision
+with stated mode, model, configuration, run budget, and stopping conditions. Use
+`npm run eval -- --smoke` for a browser check without a model call. Pass
+`--output /tmp/<report>.json` to retain a full evaluation report. Compare completed runs with matching
+controls and distinguish infrastructure failures from gameplay outcomes. When
+cataloging is in scope, reconcile with `npm run cohorts:check -- --write`, record
+evidence-backed findings, then check again. The catalog records findings and
+provenance; recordings and traces supply the underlying decisions. See
+[Candidate design](./candidate-design.md#failure-classification) for defect classes,
+[Agent evaluator](./evaluator.md) for run controls, and
+[Cohort workflow](./trace-cohort.md) for catalog maintenance.
+
+Keep exploratory fixtures separate from durable behavior changes. Apply the
+approval and commit boundaries of the specific workstream before live model runs
+or promotion; an offline regression establishes a local contract, while live runs
+test whether that contract improves actual play.
+
+Manual commits without an `Experiment:`, `Candidate:`, or `Promotion:` subject
+prefix are durable by default. Preserve them during the next integration into
+`main` unless a later decision explicitly marks one as disposable.
