@@ -1,0 +1,909 @@
+{
+  "limitations": "Sanitized recorded summaries; no model I/O, terrain checkpoint, or complete candidate metadata. Not an engine or model replay.",
+  "cases": [
+    {
+      "traceId": "c9e7f719-a0b2-4687-9cdd-04e0921b244e",
+      "stepIndex": 145,
+      "displayStep": 146,
+      "state": {
+        "activeDig": {},
+        "gameState": "running",
+        "godMode": false,
+        "gold": {
+          "complete": false,
+          "remainingCount": 3,
+          "visiblePositions": [
+            {
+              "x": 4,
+              "y": 1
+            },
+            {
+              "x": 7,
+              "y": 12
+            }
+          ]
+        },
+        "guardRisk": {
+          "nearbyGuards": [
+            {
+              "closing": true,
+              "distance": 4,
+              "hasGold": 0,
+              "id": 0,
+              "motion": "left",
+              "relativeX": "right",
+              "relativeY": "same",
+              "risk": "medium",
+              "x": 23,
+              "xOffset": 16,
+              "y": 14,
+              "yOffset": 0
+            },
+            {
+              "closing": false,
+              "distance": 6,
+              "hasGold": 0,
+              "id": 1,
+              "motion": "in_hole",
+              "relativeX": "right",
+              "relativeY": "below",
+              "risk": "low",
+              "x": 24,
+              "xOffset": 0,
+              "y": 15,
+              "yOffset": 0
+            },
+            {
+              "closing": false,
+              "distance": 16,
+              "hasGold": 6,
+              "id": 2,
+              "motion": "left",
+              "relativeX": "left",
+              "relativeY": "above",
+              "risk": "low",
+              "x": 14,
+              "xOffset": -8,
+              "y": 3,
+              "yOffset": 0
+            }
+          ],
+          "pressureGuard": {
+            "closing": true,
+            "distance": 4,
+            "hasGold": 0,
+            "id": 0,
+            "motion": "left",
+            "relativeX": "right",
+            "relativeY": "same",
+            "risk": "medium",
+            "x": 23,
+            "xOffset": 16,
+            "y": 14,
+            "yOffset": 0
+          },
+          "risk": "medium"
+        },
+        "ladder": {
+          "detail": "Nearest visible ladder `H` route is (27,14), 8 tiles to the right."
+        },
+        "movement": {
+          "canMoveDown": false,
+          "canMoveLeft": true,
+          "canMoveRight": true,
+          "canMoveUp": false,
+          "leftOpenDugHoleDistance": null,
+          "leftOpenHole": null,
+          "rightOpenDugHoleDistance": null,
+          "rightOpenHole": null
+        },
+        "primaryProgressTarget": {
+          "direction": "left",
+          "distance": 14,
+          "sameRow": false,
+          "source": "visible",
+          "tile": "$",
+          "x": 7,
+          "y": 12
+        },
+        "routeAccess": {
+          "available": false,
+          "digBlockedByGuard": false,
+          "dropThreat": null,
+          "followAction": null,
+          "followAvailable": null,
+          "followBlockedByGuard": false,
+          "reason": "same-row ladder is available; use ladder route before access digging",
+          "recommendedAction": null
+        },
+        "runner": {
+          "action": "left",
+          "x": 19,
+          "xOffset": 0,
+          "y": 14,
+          "yOffset": 0
+        },
+        "tick": 557
+      },
+      "candidates": [
+        {
+          "firstAction": {
+            "keyCode": 88,
+            "reason": "closing same-row guard can fall into dig_right; dig now while centered",
+            "ticks": 8
+          },
+          "id": "defensive_dig_dig_right",
+          "kind": "defensive_dig",
+          "lane": "safety",
+          "score": 112,
+          "target": null
+        },
+        {
+          "firstAction": {
+            "keyCode": 37,
+            "reason": "guard is on the right and closing; move left briefly, then reassess because the guard may follow and distance may not increase",
+            "ticks": 4
+          },
+          "id": "retreat_from_guard_left",
+          "kind": "retreat_from_guard",
+          "lane": "safety",
+          "score": 108,
+          "target": null
+        },
+        {
+          "firstAction": {
+            "keyCode": 37,
+            "reason": "visible ladder is 15 tiles to the left",
+            "ticks": 4
+          },
+          "id": "align_ladder_4_14_left",
+          "kind": "align_ladder",
+          "lane": "progress",
+          "score": 90,
+          "target": {
+            "tile": "H",
+            "x": 4,
+            "y": 14
+          }
+        }
+      ],
+      "selectedCandidateId": "retreat_from_guard_left",
+      "validation": {
+        "fallbackReason": null,
+        "fallbackUsed": false,
+        "knownCandidate": true,
+        "requestedCandidateId": "retreat_from_guard_left",
+        "selectedCandidateId": "retreat_from_guard_left"
+      },
+      "action": {
+        "keyCode": 37,
+        "reason": "guard is on the right and closing; move left briefly, then reassess because the guard may follow and distance may not increase",
+        "ticks": 4
+      }
+    },
+    {
+      "traceId": "c9e7f719-a0b2-4687-9cdd-04e0921b244e",
+      "stepIndex": 124,
+      "displayStep": 125,
+      "state": {
+        "activeDig": {},
+        "gameState": "running",
+        "godMode": false,
+        "gold": {
+          "complete": false,
+          "remainingCount": 3,
+          "visiblePositions": [
+            {
+              "x": 4,
+              "y": 1
+            },
+            {
+              "x": 7,
+              "y": 12
+            }
+          ]
+        },
+        "guardRisk": {
+          "nearbyGuards": [
+            {
+              "closing": false,
+              "distance": 3,
+              "hasGold": 0,
+              "id": 0,
+              "motion": "in_hole",
+              "relativeX": "right",
+              "relativeY": "above",
+              "risk": "low",
+              "x": 26,
+              "xOffset": 0,
+              "y": 13,
+              "yOffset": 0
+            },
+            {
+              "closing": false,
+              "distance": 4,
+              "hasGold": 0,
+              "id": 1,
+              "motion": "down",
+              "relativeX": "right",
+              "relativeY": "above",
+              "risk": "medium",
+              "x": 27,
+              "xOffset": 0,
+              "y": 13,
+              "yOffset": 19
+            },
+            {
+              "closing": false,
+              "distance": 15,
+              "hasGold": 13,
+              "id": 2,
+              "motion": "left",
+              "relativeX": "left",
+              "relativeY": "above",
+              "risk": "low",
+              "x": 20,
+              "xOffset": 16,
+              "y": 3,
+              "yOffset": 0
+            }
+          ],
+          "pressureGuard": {
+            "closing": false,
+            "distance": 4,
+            "hasGold": 0,
+            "id": 1,
+            "motion": "down",
+            "relativeX": "right",
+            "relativeY": "above",
+            "risk": "medium",
+            "x": 27,
+            "xOffset": 0,
+            "y": 13,
+            "yOffset": 19
+          },
+          "risk": "medium"
+        },
+        "ladder": {
+          "detail": "Nearest visible ladder `H` route is (27,14), 3 tiles to the right."
+        },
+        "movement": {
+          "canMoveDown": false,
+          "canMoveLeft": true,
+          "canMoveRight": true,
+          "canMoveUp": false,
+          "leftOpenDugHoleDistance": null,
+          "leftOpenHole": null,
+          "rightOpenDugHoleDistance": null,
+          "rightOpenHole": null
+        },
+        "primaryProgressTarget": {
+          "direction": "left",
+          "distance": 19,
+          "sameRow": false,
+          "source": "visible",
+          "tile": "$",
+          "x": 7,
+          "y": 12
+        },
+        "routeAccess": {
+          "available": false,
+          "digBlockedByGuard": false,
+          "dropThreat": null,
+          "followAction": null,
+          "followAvailable": null,
+          "followBlockedByGuard": false,
+          "reason": "same-row ladder is available; use ladder route before access digging",
+          "recommendedAction": null
+        },
+        "runner": {
+          "action": "left",
+          "x": 24,
+          "xOffset": -8,
+          "y": 14,
+          "yOffset": 0
+        },
+        "tick": 483
+      },
+      "candidates": [
+        {
+          "firstAction": {
+            "keyCode": 37,
+            "reason": "visible ladder is 20 tiles to the left",
+            "ticks": 4
+          },
+          "id": "align_ladder_4_14_left",
+          "kind": "align_ladder",
+          "lane": "progress",
+          "score": 90,
+          "target": {
+            "tile": "H",
+            "x": 4,
+            "y": 14
+          }
+        },
+        {
+          "firstAction": {
+            "keyCode": 39,
+            "reason": "visible ladder is 3 tiles to the right",
+            "ticks": 4
+          },
+          "id": "align_ladder_27_14_right",
+          "kind": "align_ladder",
+          "lane": "progress",
+          "score": 87,
+          "target": {
+            "tile": "H",
+            "x": 27,
+            "y": 14
+          }
+        }
+      ],
+      "selectedCandidateId": "align_ladder_27_14_right",
+      "validation": {
+        "fallbackReason": null,
+        "fallbackUsed": false,
+        "knownCandidate": true,
+        "requestedCandidateId": "align_ladder_27_14_right",
+        "selectedCandidateId": "align_ladder_27_14_right"
+      },
+      "action": {
+        "keyCode": 39,
+        "reason": "visible ladder is 3 tiles to the right",
+        "ticks": 4
+      }
+    },
+    {
+      "traceId": "3af28412-9f3b-4f59-872d-1a18b2d93d00",
+      "stepIndex": 145,
+      "displayStep": 146,
+      "state": {
+        "activeDig": {},
+        "gameState": "running",
+        "godMode": false,
+        "gold": {
+          "complete": false,
+          "remainingCount": 3,
+          "visiblePositions": [
+            {
+              "x": 4,
+              "y": 1
+            },
+            {
+              "x": 23,
+              "y": 3
+            },
+            {
+              "x": 7,
+              "y": 12
+            }
+          ]
+        },
+        "guardRisk": {
+          "nearbyGuards": [
+            {
+              "closing": true,
+              "distance": 4,
+              "hasGold": 0,
+              "id": 0,
+              "motion": "left",
+              "relativeX": "right",
+              "relativeY": "same",
+              "risk": "medium",
+              "x": 23,
+              "xOffset": 16,
+              "y": 14,
+              "yOffset": 0
+            },
+            {
+              "closing": false,
+              "distance": 6,
+              "hasGold": 0,
+              "id": 1,
+              "motion": "in_hole",
+              "relativeX": "right",
+              "relativeY": "below",
+              "risk": "low",
+              "x": 24,
+              "xOffset": 0,
+              "y": 15,
+              "yOffset": 0
+            },
+            {
+              "closing": false,
+              "distance": 10,
+              "hasGold": 0,
+              "id": 2,
+              "motion": "fall",
+              "relativeX": "left",
+              "relativeY": "above",
+              "risk": "low",
+              "x": 11,
+              "xOffset": 0,
+              "y": 12,
+              "yOffset": 18
+            }
+          ],
+          "pressureGuard": {
+            "closing": true,
+            "distance": 4,
+            "hasGold": 0,
+            "id": 0,
+            "motion": "left",
+            "relativeX": "right",
+            "relativeY": "same",
+            "risk": "medium",
+            "x": 23,
+            "xOffset": 16,
+            "y": 14,
+            "yOffset": 0
+          },
+          "risk": "medium"
+        },
+        "ladder": {
+          "detail": "Nearest visible ladder `H` route is (27,14), 8 tiles to the right."
+        },
+        "movement": {
+          "canMoveDown": false,
+          "canMoveLeft": true,
+          "canMoveRight": true,
+          "canMoveUp": false,
+          "leftOpenDugHoleDistance": null,
+          "leftOpenHole": null,
+          "rightOpenDugHoleDistance": null,
+          "rightOpenHole": null
+        },
+        "primaryProgressTarget": {
+          "direction": "left",
+          "distance": 14,
+          "sameRow": false,
+          "source": "visible",
+          "tile": "$",
+          "x": 7,
+          "y": 12
+        },
+        "routeAccess": {
+          "available": false,
+          "digBlockedByGuard": false,
+          "dropThreat": null,
+          "followAction": null,
+          "followAvailable": null,
+          "followBlockedByGuard": false,
+          "reason": "same-row ladder is available; use ladder route before access digging",
+          "recommendedAction": null
+        },
+        "runner": {
+          "action": "left",
+          "x": 19,
+          "xOffset": 0,
+          "y": 14,
+          "yOffset": 0
+        },
+        "tick": 557
+      },
+      "candidates": [
+        {
+          "firstAction": {
+            "keyCode": 88,
+            "reason": "guard pressure from right and dig_right is legal",
+            "ticks": 8
+          },
+          "id": "defensive_dig_dig_right",
+          "kind": "defensive_dig",
+          "lane": "safety",
+          "score": 112,
+          "target": null
+        },
+        {
+          "firstAction": {
+            "keyCode": 37,
+            "reason": "guard is on the right and closing; move left briefly, then reassess because the guard may follow and distance may not increase",
+            "ticks": 4
+          },
+          "id": "retreat_from_guard_left",
+          "kind": "retreat_from_guard",
+          "lane": "safety",
+          "score": 108,
+          "target": null
+        },
+        {
+          "firstAction": {
+            "keyCode": 37,
+            "reason": "visible ladder is 15 tiles to the left",
+            "ticks": 4
+          },
+          "id": "align_ladder_4_14_left",
+          "kind": "align_ladder",
+          "lane": "progress",
+          "score": 90,
+          "target": {
+            "tile": "H",
+            "x": 4,
+            "y": 14
+          }
+        }
+      ],
+      "selectedCandidateId": "align_ladder_4_14_left",
+      "validation": {
+        "fallbackReason": null,
+        "fallbackUsed": false,
+        "knownCandidate": true,
+        "requestedCandidateId": "align_ladder_4_14_left",
+        "selectedCandidateId": "align_ladder_4_14_left"
+      },
+      "action": {
+        "keyCode": 37,
+        "reason": "visible ladder is 15 tiles to the left",
+        "ticks": 4
+      }
+    },
+    {
+      "traceId": "06b410e7-21ac-4b39-a807-ab8e97d1dba9",
+      "stepIndex": 145,
+      "displayStep": 146,
+      "state": {
+        "activeDig": {},
+        "gameState": "running",
+        "godMode": false,
+        "gold": {
+          "complete": false,
+          "remainingCount": 3,
+          "visiblePositions": [
+            {
+              "x": 4,
+              "y": 1
+            },
+            {
+              "x": 23,
+              "y": 3
+            },
+            {
+              "x": 7,
+              "y": 12
+            }
+          ]
+        },
+        "guardRisk": {
+          "nearbyGuards": [
+            {
+              "closing": true,
+              "distance": 4,
+              "hasGold": 0,
+              "id": 0,
+              "motion": "left",
+              "relativeX": "right",
+              "relativeY": "same",
+              "risk": "medium",
+              "x": 23,
+              "xOffset": 16,
+              "y": 14,
+              "yOffset": 0
+            },
+            {
+              "closing": false,
+              "distance": 6,
+              "hasGold": 0,
+              "id": 1,
+              "motion": "in_hole",
+              "relativeX": "right",
+              "relativeY": "below",
+              "risk": "low",
+              "x": 24,
+              "xOffset": 0,
+              "y": 15,
+              "yOffset": 0
+            },
+            {
+              "closing": false,
+              "distance": 15,
+              "hasGold": 0,
+              "id": 2,
+              "motion": "fall",
+              "relativeX": "left",
+              "relativeY": "above",
+              "risk": "low",
+              "x": 9,
+              "xOffset": 0,
+              "y": 9,
+              "yOffset": -12
+            }
+          ],
+          "pressureGuard": {
+            "closing": true,
+            "distance": 4,
+            "hasGold": 0,
+            "id": 0,
+            "motion": "left",
+            "relativeX": "right",
+            "relativeY": "same",
+            "risk": "medium",
+            "x": 23,
+            "xOffset": 16,
+            "y": 14,
+            "yOffset": 0
+          },
+          "risk": "medium"
+        },
+        "ladder": {
+          "detail": "Nearest visible ladder `H` route is (27,14), 8 tiles to the right."
+        },
+        "movement": {
+          "canMoveDown": false,
+          "canMoveLeft": true,
+          "canMoveRight": true,
+          "canMoveUp": false,
+          "leftOpenDugHoleDistance": null,
+          "leftOpenHole": null,
+          "rightOpenDugHoleDistance": null,
+          "rightOpenHole": null
+        },
+        "primaryProgressTarget": {
+          "direction": "left",
+          "distance": 14,
+          "sameRow": false,
+          "source": "visible",
+          "tile": "$",
+          "x": 7,
+          "y": 12
+        },
+        "routeAccess": {
+          "available": false,
+          "digBlockedByGuard": false,
+          "dropThreat": null,
+          "followAction": null,
+          "followAvailable": null,
+          "followBlockedByGuard": false,
+          "reason": "same-row ladder is available; use ladder route before access digging",
+          "recommendedAction": null
+        },
+        "runner": {
+          "action": "left",
+          "x": 19,
+          "xOffset": 0,
+          "y": 14,
+          "yOffset": 0
+        },
+        "tick": 557
+      },
+      "candidates": [
+        {
+          "firstAction": {
+            "keyCode": 88,
+            "reason": "guard pressure from right and dig_right is legal",
+            "ticks": 8
+          },
+          "id": "defensive_dig_dig_right",
+          "kind": "defensive_dig",
+          "lane": "safety",
+          "score": 112,
+          "target": null
+        },
+        {
+          "firstAction": {
+            "keyCode": 37,
+            "reason": "guard is on the right and closing; move left briefly, then reassess because the guard may follow and distance may not increase",
+            "ticks": 4
+          },
+          "id": "retreat_from_guard_left",
+          "kind": "retreat_from_guard",
+          "lane": "safety",
+          "score": 108,
+          "target": null
+        },
+        {
+          "firstAction": {
+            "keyCode": 37,
+            "reason": "visible ladder is 15 tiles to the left",
+            "ticks": 4
+          },
+          "id": "align_ladder_4_14_left",
+          "kind": "align_ladder",
+          "lane": "progress",
+          "score": 90,
+          "target": {
+            "tile": "H",
+            "x": 4,
+            "y": 14
+          }
+        }
+      ],
+      "selectedCandidateId": "align_ladder_4_14_left",
+      "validation": {
+        "fallbackReason": null,
+        "fallbackUsed": false,
+        "knownCandidate": true,
+        "requestedCandidateId": "align_ladder_4_14_left",
+        "selectedCandidateId": "align_ladder_4_14_left"
+      },
+      "action": {
+        "keyCode": 37,
+        "reason": "visible ladder is 15 tiles to the left",
+        "ticks": 4
+      }
+    },
+    {
+      "traceId": "aec843a0-da62-4ff6-a1e6-e4eab4965b2e",
+      "stepIndex": 212,
+      "displayStep": 213,
+      "state": {
+        "activeDig": {},
+        "gameState": "running",
+        "godMode": false,
+        "gold": {
+          "complete": false,
+          "remainingCount": 3,
+          "visiblePositions": [
+            {
+              "x": 4,
+              "y": 1
+            },
+            {
+              "x": 23,
+              "y": 3
+            },
+            {
+              "x": 7,
+              "y": 12
+            }
+          ]
+        },
+        "guardRisk": {
+          "nearbyGuards": [
+            {
+              "closing": true,
+              "distance": 4,
+              "hasGold": 0,
+              "id": 0,
+              "motion": "right",
+              "relativeX": "left",
+              "relativeY": "same",
+              "risk": "medium",
+              "x": 11,
+              "xOffset": 8,
+              "y": 14,
+              "yOffset": 0
+            },
+            {
+              "closing": true,
+              "distance": 8,
+              "hasGold": 0,
+              "id": 1,
+              "motion": "left",
+              "relativeX": "right",
+              "relativeY": "same",
+              "risk": "low",
+              "x": 23,
+              "xOffset": 16,
+              "y": 14,
+              "yOffset": 0
+            },
+            {
+              "closing": false,
+              "distance": 17,
+              "hasGold": 0,
+              "id": 2,
+              "motion": "left",
+              "relativeX": "left",
+              "relativeY": "above",
+              "risk": "low",
+              "x": 11,
+              "xOffset": -8,
+              "y": 1,
+              "yOffset": 0
+            }
+          ],
+          "pressureGuard": {
+            "closing": true,
+            "distance": 4,
+            "hasGold": 0,
+            "id": 0,
+            "motion": "right",
+            "relativeX": "left",
+            "relativeY": "same",
+            "risk": "medium",
+            "x": 11,
+            "xOffset": 8,
+            "y": 14,
+            "yOffset": 0
+          },
+          "risk": "medium"
+        },
+        "ladder": {
+          "detail": "Nearest visible ladder `H` route is (4,14), 11 tiles to the left."
+        },
+        "movement": {
+          "canMoveDown": false,
+          "canMoveLeft": true,
+          "canMoveRight": true,
+          "canMoveUp": false,
+          "leftOpenDugHoleDistance": null,
+          "leftOpenHole": null,
+          "rightOpenDugHoleDistance": null,
+          "rightOpenHole": null
+        },
+        "primaryProgressTarget": {
+          "direction": "left",
+          "distance": 10,
+          "sameRow": false,
+          "source": "visible",
+          "tile": "$",
+          "x": 7,
+          "y": 12
+        },
+        "routeAccess": {
+          "available": false,
+          "digBlockedByGuard": false,
+          "dropThreat": null,
+          "followAction": null,
+          "followAvailable": null,
+          "followBlockedByGuard": false,
+          "reason": "same-row ladder is available; use ladder route before access digging",
+          "recommendedAction": null
+        },
+        "runner": {
+          "action": "right",
+          "x": 15,
+          "xOffset": 0,
+          "y": 14,
+          "yOffset": 0
+        },
+        "tick": 929
+      },
+      "candidates": [
+        {
+          "firstAction": {
+            "keyCode": 90,
+            "reason": "guard pressure from left and dig_left is legal",
+            "ticks": 8
+          },
+          "id": "defensive_dig_dig_left",
+          "kind": "defensive_dig",
+          "lane": "safety",
+          "score": 112,
+          "target": null
+        },
+        {
+          "firstAction": {
+            "keyCode": 39,
+            "reason": "guard is on the left and closing; move right briefly, then reassess because the guard may follow and distance may not increase",
+            "ticks": 4
+          },
+          "id": "retreat_from_guard_right",
+          "kind": "retreat_from_guard",
+          "lane": "safety",
+          "score": 108,
+          "target": null
+        },
+        {
+          "firstAction": {
+            "keyCode": 39,
+            "reason": "visible ladder is 12 tiles to the right",
+            "ticks": 4
+          },
+          "id": "align_ladder_27_14_right",
+          "kind": "align_ladder",
+          "lane": "progress",
+          "score": 90,
+          "target": {
+            "tile": "H",
+            "x": 27,
+            "y": 14
+          }
+        }
+      ],
+      "selectedCandidateId": "align_ladder_27_14_right",
+      "validation": {
+        "fallbackReason": null,
+        "fallbackUsed": false,
+        "knownCandidate": true,
+        "requestedCandidateId": "align_ladder_27_14_right",
+        "selectedCandidateId": "align_ladder_27_14_right"
+      },
+      "action": {
+        "keyCode": 39,
+        "reason": "visible ladder is 12 tiles to the right",
+        "ticks": 4
+      }
+    }
+  ]
+}
