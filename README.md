@@ -3,7 +3,7 @@
 Mini Runner is an LLM-driven game agent for
 [Lode Runner Total Recall](https://github.com/SimonHung/LodeRunner_TotalRecall), an HTML5
 remake of the classic 1983 game **Lode Runner**. The project preserves the original game as
-the authoritative executor while adding a constrained candidate agent, recording and replay
+the authoritative executor while adding a candidate agent, recording and replay
 tools, an agent evaluator, and a trace dashboard for decision-level debugging.
 
 ## Architecture
@@ -28,10 +28,6 @@ trace-dash.py             Streamlit and pandas agent-trace dashboard
 scripts/*                 Sanity checks, evaluator, and offline trace analytics
 __data1/                  Local recordings, traces, evaluation reports, and debug logs
 ```
-
-New features normally belong in the wrapper, backend, agent modules, or tooling. The legacy
-runtime remains the source of truth and should change only when legacy behavior itself must
-change.
 
 ## Getting Started
 
@@ -73,7 +69,7 @@ The browser URL can override the configured profile for runs started from that p
 http://localhost:8283/?profile=minimax
 ```
 
-### Run the application
+### Start Game
 
 Start the backend and frontend in separate terminals:
 
@@ -91,7 +87,7 @@ run. Use `Play`, `Prev`, `Next`, and `Delete` to inspect retained recordings.
 ## Trace Dashboard
 
 The trace dashboard is the primary agent-trace stepping and debugging tool. It lets you
-inspect retained recording and the decisions within them, connecting each run action to
+inspect retained recording and the decisions within them, connecting each run step to
 the state that produced it, the candidates the model could see, the requested choice, backend
 validation, the executed action, and the observed outcome. Existing stores can be inspected
 without running the game frontend or backend.
@@ -104,13 +100,13 @@ npm run dash
 
 Open [http://localhost:8601](http://localhost:8601). It reads `__data1` by default; use
 `AGENT_DATA_DIR` or the sidebar path to choose another folder. Press **Reload data** after the
-JSON changes. See [Trace dashboard](docs/trace-dashboard.md) for its views, fields, and retention.
+JSON changes. See [Trace dashboard](docs/trace-dashboard.md).
 
 ## Observability And Local Data
 
 The wrapper stores replayable demos in `__data1/recordings.json`. Agent recordings link to
 decision traces in `__data1/agent-traces.json` through `traceId`. See
-[Trace API and store](docs/backend-spec.md#trace-api-and-store) for stored data and retention.
+[Trace API and store](docs/backend-spec.md#trace-api-and-store) for stored data.
 
 Set `AGENT_DEBUG_LOG=1` to write the latest 10 raw model I/O turns to
 `__data1/agent-debug.log`. Raw prompts and model responses are excluded from normal traces.
@@ -124,43 +120,36 @@ To launch the trace notebook interface, run `npm run notebook` and open `http://
 
 ### Sanity checks
 
-Run the lightweight backend and frontend checks with:
+Run the backend and frontend quick checks with:
 
 ```bash
 npm test
 ```
 
 These checks use direct helpers and the Flask test client. They do not run the legacy game or call
-an LLM. See [Sanity tests](docs/sanity-tests.md) for coverage and when to run them.
+an LLM. See [Sanity tests](docs/sanity-tests.md).
 
 ### Agent evaluator
 
-Run repeatable normal-mode attempts against the real browser game and configured model:
+Run repeatable attempts against the real browser game and configured model:
 
 ```bash
-npm run eval -- --runs 10 --target 5
+npm run eval -- --runs 5
 ```
 
-`--target N` stops early after `N` successful runs; the evaluator performs at most the requested
-`--runs` attempts.
-
 Use `npm run eval -- --smoke` to verify the browser, wrapper, backend, and legacy runtime
-without calling the model. See [Agent evaluator](docs/evaluator.md) for profiles, reports,
-normal-mode enforcement, and exit statuses.
+without calling the model. See [Agent evaluator](docs/evaluator.md).
 
 ## Documentation
 
 - [Codebase overview](docs/codebase.md): architecture, boot flow, and module map.
 - [LLM agent](docs/llm-agent.md): snapshot flow, prompt, candidate selection, and loop filtering.
-- [Candidate design](docs/candidate-design.md): scoring, action coverage, failure classification,
-  and validation.
+- [Candidate design](docs/candidate-design.md): scoring, action coverage, and validation.
 - [Backend spec](docs/backend-spec.md): Flask APIs, JSON stores, model profiles, and logging.
-- [Trace dashboard](docs/trace-dashboard.md): run overview, trace stepping debugger, and candidate
-  analysis.
-- [Recording and playback](docs/record-playback.md): wrapper rail, run selection, pause/step
-  controls, and fullscreen behavior.
+- [Trace dashboard](docs/trace-dashboard.md): run signals, stepping debugger, and candidate analysis.
+- [Recording and playback](docs/record-playback.md): wrapper UI buttons, and run selection.
 - [Sanity tests](docs/sanity-tests.md): backend and frontend regression coverage.
-- [Agent evaluator](docs/evaluator.md): repeatable real-runtime normal-mode trials and reports.
+- [Agent evaluator](docs/evaluator.md): repeatable real-runtime trials and reports.
 - [Puzzle game](docs/puzzle-game.md): Lode Runner rules and puzzle-solving concepts.
 - [Legacy runtime](docs/legacy-runtime.md): original CreateJS architecture and features.
 

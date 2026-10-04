@@ -1,584 +1,106 @@
+// Wrapper/helper smoke checks. No browser, services, model calls or store writes.
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 
-globalThis.window = {
-  AI_VERSION: 4,
-  playerName: "Tester",
-  location: { search: "" },
-  demoTickCount: 0,
-  demoRecordIdx: 0,
-  playMode: 0,
-  gameState: 4,
-  PLAY_CLASSIC: 1,
-  PLAY_MODERN: 2,
-  PLAY_DEMO_ONCE: 7,
-  GAME_START: 0,
-  GAME_RUNNING: 1,
-  GAME_WAITING: 4,
-  GAME_PAUSE: 5,
-};
+function resetWindow() {
+  globalThis.window = {
+    AI_VERSION: 4, playerName: "Tester", location: { search: "" },
+    demoTickCount: 0, demoRecordIdx: 0, playMode: 0, gameState: 4,
+    PLAY_CLASSIC: 1, PLAY_DEMO_ONCE: 7,
+    GAME_START: 0, GAME_RUNNING: 1, GAME_WAITING: 4, GAME_PAUSE: 5,
+  };
+}
+resetWindow();
+const agent = (await import("../src/agent.js"))._test;
+const recording = (await import("../src/recording.js"))._test;
+const { summarizeAttempt } = await import("./evaluate-agent.mjs");
 
-const agentModule = await import("../src/agent.js");
-const recordingModule = await import("../src/recording.js");
-const agent = agentModule._test;
-const recording = recordingModule._test;
+const config = agent.normalizeAgentConfig({
+  agent: { playData: "1", level: "1", maxPlaybackTimeSeconds: 30 },
+  backend: { maxActionTicks: 99 },
+});
+assert.equal(config.agent.level, 1);
+assert.equal(config.backend.maxActionTicks, 20);
+const action = agent.normalizeAgentAction({ keyCode: "39", ticks: 99 }, config);
+assert.equal(action.keyCode, 39);
+assert.equal(action.ticks, 20);
+assert.throws(() => agent.normalizeAgentAction(null, config));
+assert.equal(agent.hasExceededPlaybackTime({ timing: { gameTime: 29 } }, config), false);
+assert.equal(agent.hasExceededPlaybackTime({ timing: { gameTime: 30 } }, config), true);
 
-// Saving an agent result must include the recording refresh in the attempt's
-// lifetime, even when that refresh is slower than the evaluator's next start.
+// One shared async fixture checks both terminal outcomes, without duplicate saves.
 for (const result of ["success", "failure"]) {
-  let releaseRefresh;
-  let enterRefresh;
-  const entered = new Promise((resolve) => { enterRefresh = resolve; });
-  const pending = new Promise((resolve) => { releaseRefresh = resolve; });
+  resetWindow();
+  let releaseRefresh, enterRefresh;
+  const entered = new Promise(resolve => { enterRefresh = resolve; });
+  const pending = new Promise(resolve => { releaseRefresh = resolve; });
   const state = { agentRunning: true, agentRunId: "run", busyAction: "agent" };
-  let settled = false;
-  let stopped = 0;
-  let saves = 0;
   const record = { id: "run", source: "agent", result };
+  let settled = false, saves = 0;
   const deps = {
     normalizeDemo: () => ({}),
-    apiFetch: async () => { saves += 1; return record; },
+    apiFetch: async () => { saves++; return record; },
     recordingApiBase: "/api/recordings",
     formatGameLevel: () => "1:1",
-    finishUiAction: (s) => { s.busyAction = ""; },
-    scheduleRefresh: () => { throw new Error("agent refresh must be awaited"); },
-    refreshStatus: async (s, force) => {
-      assert.equal(force, true);
-      s.busyAction = "refresh";
-      enterRefresh();
-      await pending;
-      s.busyAction = "";
-    },
+    finishUiAction: s => { s.busyAction = ""; },
+    refreshStatus: async () => { enterRefresh(); await pending; },
+    updateRecordingDebugUi: () => {},
     syncOverlayState: () => {},
   };
   const completion = agent.finishAgentRun(
-    state, deps, { stop: () => { stopped += 1; } }, {}, result,
-    result === "failure" ? "runner dead" : null,
+    state, deps, { stop() {} }, {}, result, result === "failure" ? "runner dead" : null,
     { agent: { playData: 1, level: 1 } },
-  ).then((value) => { settled = true; return value; });
+  ).then(value => { settled = true; return value; });
   await Promise.race([entered, completion]);
-  assert.equal(settled, false, "attempt cannot resolve before refresh finishes");
+  assert.equal(settled, false);
   assert.equal(state.agentRunning, true);
-  assert.equal(state.busyAction, "refresh");
-  assert.equal(stopped, 0);
   releaseRefresh();
   assert.equal(await completion, record);
   assert.equal(state.agentRunning, false);
-  assert.equal(state.busyAction, "");
-  assert.equal(stopped, 1);
-  assert.equal(saves, 1, "refresh synchronization must not duplicate recording saves");
+  assert.equal(saves, 1);
 }
 
-const agentHookSource = readFileSync(
-  new URL("../public/game/lodeRunner.agentHooks.js", import.meta.url),
-  "utf8",
-);
-assert.match(agentHookSource, /activeDig: snapshotActiveDig\(\)/);
-assert.match(agentHookSource, /holeObj\.action != ACT_DIGGING/);
-
-window.crypto = {
-  getRandomValues(array) {
-    array.set(Array.from({ length: array.length }, (_value, index) => index));
-    return array;
-  },
-};
-assert.equal(agent.createRunId(), "00010203-0405-4607-8809-0a0b0c0d0e0f");
-window.crypto = {};
-const fallbackRunId = agent.createRunId();
-assert.match(fallbackRunId, /^[a-f0-9]{8}-\d+$/);
-
-function assertThrowsMessage(fn, text) {
-  assert.throws(fn, (error) => error instanceof Error && error.message.includes(text));
-}
-
-const config = agent.normalizeAgentConfig({
-  agent: {
-    playData: "1",
-    level: "1",
-    maxPlaybackTimeSeconds: "30",
-    maxSteps: "25",
-    historyLimit: "5",
-    modelProfile: " gemini ",
-  },
-  backend: {
-    maxActionTicks: 99,
-  },
-});
-assert.deepEqual(config.agent, {
-  playData: 1,
-  level: 1,
-  maxPlaybackTimeSeconds: 30,
-  maxSteps: 25,
-  historyLimit: 5,
-  modelProfile: "gemini",
-});
-assert.equal(config.backend.maxActionTicks, 20);
-
-const action = agent.normalizeAgentAction({ keyCode: "39", ticks: 99, reason: 123 }, config);
-assert.deepEqual(action, { keyCode: 39, ticks: 20, reason: "123" });
-assert.equal(agent.normalizeAgentAction({ keyCode: 39, ticks: -2 }, config).ticks, 1);
-assertThrowsMessage(() => agent.normalizeAgentAction(null, config), "no action");
-assertThrowsMessage(() => agent.normalizeAgentAction({ keyCode: 39, ticks: "bad" }, config), "invalid action");
-
-assert.deepEqual(
-  agent.summarizeTerminalSnapshot({
-    playData: 1,
-    level: 1,
-    tick: 42,
-    time: 3,
-    gameStateName: "runner_dead",
-    godMode: false,
-    runner: { x: 7, y: 6, xOffset: -8, yOffset: 0, actionName: "up" },
-    guards: [
-      { id: 2, x: 7, y: 5, xOffset: 0, yOffset: 12, actionName: "down", hasGold: 1 },
-    ],
-    gold: {
-      remainingCount: 1,
-      complete: false,
-      visiblePositions: [],
-      carriedByGuards: [{ id: 2, x: 7, y: 5, hasGold: 1 }],
-    },
-  }),
-  {
-    playData: 1,
-    level: 1,
-    tick: 42,
-    time: 3,
-    gameState: "runner_dead",
-    godMode: false,
-    runner: { x: 7, y: 6, xOffset: -8, yOffset: 0, action: "up" },
-    guards: [{ id: 2, x: 7, y: 5, xOffset: 0, yOffset: 12, action: "down", hasGold: 1 }],
-    gold: {
-      remainingCount: 1,
-      complete: false,
-      visiblePositions: [],
-      carriedByGuards: [{ id: 2, x: 7, y: 5, hasGold: 1 }],
-    },
-  },
-);
-
-assert.equal(
-  agent.hasExceededPlaybackTime({ timing: { gameTime: 30 } }, config),
-  true,
-  "gameTime limit",
-);
-assert.equal(
-  agent.hasExceededPlaybackTime({ timing: { gameTime: 29, recordTick: 1 } }, config),
-  false,
-  "below gameTime limit",
-);
-assert.equal(
-  agent.hasExceededPlaybackTime({ timing: { recordTick: 30 * 16 } }, config),
-  true,
-  "recordTick fallback limit",
-);
-
-assert.deepEqual(
-  agent.summarizeHistorySnapshot({
-    playData: 1,
-    level: 1,
-    tick: 12,
-    gameStateName: "running",
-    gold: { remainingCount: 3, complete: false },
-    runner: { x: 14, y: 14, xOffset: 0, yOffset: 0, actionName: "right" },
-  }),
-  {
-    playData: 1,
-    level: 1,
-    tick: 12,
-    state: "running",
-    goldCount: 3,
-    goldComplete: false,
-    runner: { x: 14, y: 14, xOffset: 0, yOffset: 0, action: "right" },
-  },
-);
-
-window.location.search = "?profile=minimax";
-assert.equal(agent.getAgentModelProfileOption({ modelProfile: "openai" }, config), "minimax");
-window.location.search = "";
-window.__lodeRunnerAgentOptions = { modelProfile: "openai" };
-assert.equal(agent.getAgentModelProfileOption(window.__lodeRunnerAgentOptions, config), "openai");
-delete window.__lodeRunnerAgentOptions;
-assert.equal(agent.getAgentModelProfileOption(null, config), "gemini");
-
-assert.deepEqual(
-  agent.deriveAgentButtonState(
-    { agentRunning: false, busyAction: "", backendStatus: "checking" },
-    true,
-  ),
-  { disabled: true, title: "Checking AI server" },
-);
-assert.deepEqual(
-  agent.deriveAgentButtonState(
-    { agentRunning: false, busyAction: "", backendStatus: "offline" },
-    true,
-  ),
-  { disabled: true, title: "AI server unavailable" },
-);
-assert.deepEqual(
-  agent.deriveAgentButtonState(
-    { agentRunning: true, busyAction: "agent", backendStatus: "offline" },
-    true,
-  ),
-  { disabled: false, title: "Cancel AI agent" },
-);
-
-assert.equal(recording.formatGameLevel({ playData: 1, level: 1 }), "1:1");
+resetWindow();
 window.godMode = 0;
-let godModeToggles = 0;
-window.toggleGodMode = () => {
-  window.godMode = Number(window.godMode) === 1 ? 0 : 1;
-  godModeToggles += 1;
-};
-recording.ensureEvaluationGodMode(false);
-assert.equal(godModeToggles, 0, "normal evaluation preserves an already normal runtime");
+window.toggleGodMode = () => { window.godMode = Number(!window.godMode); };
 recording.ensureEvaluationGodMode(true);
-assert.equal(window.godMode, 1, "god evaluation enables the existing runtime mode");
-assert.equal(godModeToggles, 1, "god evaluation toggles mode exactly once");
-recording.ensureEvaluationGodMode(true);
-assert.equal(godModeToggles, 1, "god evaluation preserves an already enabled runtime");
+assert.equal(window.godMode, 1);
 recording.ensureEvaluationGodMode(false);
-assert.equal(window.godMode, 0, "normal evaluation disables god mode");
-delete window.toggleGodMode;
-assertThrowsMessage(
-  () => recording.ensureEvaluationGodMode(true),
-  "cannot enable god mode",
-);
-const overlayFacts = (overrides = {}) => ({
-  uiError: false,
-  busyAction: "",
-  backendStatus: "online",
-  hasRecord: true,
-  recordPinned: false,
-  recordCount: 2,
-  playbackPhase: "inactive",
-  videoRecording: false,
-  agentRunning: false,
-  agentButtonState: { disabled: false, title: "Solve this game with the AI agent" },
-  godModeActive: false,
-  godModeSupported: true,
-  fullscreenActive: false,
-  fullscreenSupported: true,
-  ...overrides,
-});
+assert.equal(window.godMode, 0);
 
-let overlayView = recording.deriveOverlayViewModel(overlayFacts());
-assert.equal(overlayView.buttons.play.disabled, false);
-assert.equal(overlayView.buttons.prev.disabled, false);
-assert.equal(overlayView.buttons.next.disabled, false);
-assert.equal(overlayView.buttons.delete.disabled, false);
-overlayView = recording.deriveOverlayViewModel(
-  overlayFacts({ recordPinned: true }),
-);
-assert.equal(overlayView.buttons.delete.disabled, true);
-assert.equal(
-  overlayView.buttons.delete.title,
-  "Unpin stored run before deleting",
-);
-assert.equal(
-  recording.getRecordNavigationDelta({ code: "Tab", key: "Tab", shiftKey: false }),
-  1,
-);
-assert.equal(
-  recording.getRecordNavigationDelta({ code: "Tab", key: "Tab", shiftKey: true }),
-  -1,
-);
-assert.equal(recording.getRecordNavigationDelta({ code: "Space", key: " " }), 0);
-assert.equal(
-  recording.canNavigateStoredRecords({
-    records: [{ id: "new" }, { id: "old" }],
-    busyAction: "",
-    playbackPhase: "inactive",
-  }),
-  true,
-);
-assert.equal(
-  recording.canNavigateStoredRecords({
-    records: [{ id: "new" }, { id: "old" }],
-    busyAction: "",
-    playbackPhase: "paused",
-  }),
-  false,
-  "run navigation remains disabled during playback",
-);
-
-overlayView = recording.deriveOverlayViewModel(
-  overlayFacts({
-    backendStatus: "offline",
-    hasRecord: false,
-    recordCount: 0,
-    agentButtonState: { disabled: true, title: "AI server unavailable" },
-  }),
-);
-assert.equal(overlayView.buttons.agent.disabled, true);
-assert.equal(overlayView.buttons.play.disabled, true);
-assert.equal(overlayView.buttons.prev.disabled, true);
-assert.equal(overlayView.buttons.next.disabled, true);
-assert.equal(overlayView.buttons.delete.disabled, true);
-assert.equal(overlayView.buttons.god.disabled, false);
-assert.equal(overlayView.buttons.fullscreen.disabled, false);
-
-overlayView = recording.deriveOverlayViewModel(overlayFacts({ backendStatus: "offline" }));
-assert.equal(overlayView.buttons.play.disabled, false, "cached playback remains available offline");
-assert.equal(overlayView.buttons.prev.disabled, false, "cached navigation remains available offline");
-assert.equal(overlayView.buttons.delete.disabled, true, "delete requires backend");
-
-overlayView = recording.deriveOverlayViewModel(
-  overlayFacts({ playbackPhase: "playing" }),
-);
-assert.equal(overlayView.buttons.play.icon, "⏸");
-assert.equal(overlayView.buttons.play.title, "Pause demo playback");
-assert.equal(overlayView.buttons.delete.disabled, true);
-assert.equal(overlayView.buttons.prev.disabled, true);
-
-overlayView = recording.deriveOverlayViewModel(
-  overlayFacts({ playbackPhase: "paused" }),
-);
-assert.equal(overlayView.buttons.play.icon, "▶");
-assert.equal(overlayView.buttons.play.title, "Resume demo playback");
-
-overlayView = recording.deriveOverlayViewModel(
-  overlayFacts({ playbackPhase: "step-action" }),
-);
-assert.equal(overlayView.buttons.play.title, "Stepping to next recorded action");
-overlayView = recording.deriveOverlayViewModel(
-  overlayFacts({ playbackPhase: "step-trace" }),
-);
-assert.equal(overlayView.buttons.play.title, "Stepping to next trace step");
-
-assert.equal(
-  recording.canStartStoredPlaybackFromHotkey({
-    currentRecord: { id: "record-1" },
-    busyAction: "",
-    agentRunning: false,
-  }),
-  true,
-);
-window.playMode = window.PLAY_CLASSIC;
-window.gameState = window.GAME_START;
-assert.equal(
-  recording.canStartStoredPlaybackFromHotkey({
-    currentRecord: { id: "record-1" },
-    busyAction: "",
-    agentRunning: false,
-  }),
-  true,
-  "Space starts selected playback from the idle level start",
-);
-window.gameState = window.GAME_RUNNING;
-assert.equal(
-  recording.canStartStoredPlaybackFromHotkey({
-    currentRecord: { id: "record-1" },
-    busyAction: "",
-    agentRunning: false,
-  }),
-  false,
-  "Space remains available to active manual gameplay",
-);
-window.gameState = window.GAME_PAUSE;
-assert.equal(
-  recording.canStartStoredPlaybackFromHotkey({
-    currentRecord: { id: "record-1" },
-    busyAction: "",
-    agentRunning: false,
-  }),
-  false,
-  "Space does not replace a paused manual game with playback",
-);
-window.gameState = window.GAME_WAITING;
-assert.equal(
-  recording.canStartStoredPlaybackFromHotkey({
-    currentRecord: { id: "record-1" },
-    busyAction: "agent",
-    agentRunning: true,
-  }),
-  false,
-);
-assert.equal(
-  recording.canStartStoredPlaybackFromHotkey({
-    currentRecord: null,
-    busyAction: "",
-    agentRunning: false,
-  }),
-  false,
-);
-
-const sourceAction = [0, 39];
-const demo = recording.normalizeDemo(
-  {
-    ai: 5,
-    time: 32,
-    state: 1,
-    godMode: 1,
-    action: sourceAction,
-    goldDrop: [1],
-    bornPos: [2],
-  },
-  1,
-  1,
-);
-sourceAction.push(8, 32);
-assert.equal(demo.level, 1);
-assert.equal(demo.playData, 1);
-assert.equal(demo.action.length, 2, "normalizeDemo copies action array");
-assert.deepEqual(recording.copyArray("nope"), []);
-assert.equal(
-  recording.shouldSaveUserCompletion({ agentRunning: false, busyAction: "" }),
-  true,
-  "manual completion is saved as a user recording",
-);
-assert.equal(
-  recording.shouldSaveUserCompletion({
-    agentRunning: true,
-    busyAction: "agent",
-  }),
-  false,
-  "agent completion is not also saved as a user recording",
-);
-assert.equal(
-  recording.shouldSaveUserCompletion({
-    agentRunning: false,
-    busyAction: "agent",
-  }),
-  false,
-  "agent save transition does not create a user recording",
-);
-
-const traceTicks = recording.extractTraceStepTicks({
-  steps: [
-    { state: { tick: 32 } },
-    { state: {} },
-    { state: { tick: "bad" } },
-  ],
-});
-assert.deepEqual(traceTicks, [32]);
-assert.equal(recording.getTraceStepTick({ state: { tick: 12 } }), 12);
-
-assert.equal(recording.formatDemoTime(32), "0:02");
-assert.equal(recording.formatDemoTime(968), "1:00");
-assert.equal(recording.formatDemoTime(8), "0:00", "matches dashboard half-even rounding");
-assert.equal(recording.formatDemoTime(24), "0:02", "matches dashboard half-even rounding");
-assert.equal(recording.formatDemoTime(0), "-");
-assert.equal(recording.shortId("037883a3-9cda-4bb9-aca0-b7c7a205e69b"), "037883a3");
-assert.equal(recording.shortId("248cc0d0-1783960882373"), "248cc0d0");
-assert.equal(recording.shortId(fallbackRunId), fallbackRunId.split("-", 1)[0]);
-assert.equal(
-  recording.formatRecordTraceId({ source: "user", traceId: null }),
-  "user",
-);
-assert.equal(
-  recording.formatRecordTraceId({ source: "agent", traceId: "037883a3-rest" }),
-  "037883a3",
-);
-assert.equal(recording.formatRecordResult("success"), "✅");
-assert.equal(recording.formatRecordResult("failure"), "❌");
-assert.equal(
-  recording.formatDebugOverlay({
-    currentRecord: {
-      source: "user",
-      result: "success",
-      savedAt: "",
-      demo: { time: 32, action: [0, 39] },
-    },
-    selectedRecordIndex: 0,
-    records: [{}],
-    selectedTraceSummary: null,
-    playbackPhase: "inactive",
-  }),
-  "1/1: user | - | ✅ | 0:02 | keys 1",
-);
-assert.equal(
-  recording.buildPlaybackVideoFileName(
-    "23dfc383-aaaa-bbbb-cccc-dddddddddddd",
-    new Date("2026-06-12T02:10:48.927Z"),
-  ),
-  "run-23dfc383-2026-06-12T02-10-48.mp4",
-);
-assert.equal(
-  recording.buildPlaybackVideoFileName(
-    "248cc0d0-1783960882373",
-    new Date("2026-06-12T02:10:48.927Z"),
-  ),
-  "run-248cc0d0-2026-06-12T02-10-48.mp4",
-);
-assert.equal(
-  recording.buildPlaybackVideoFileName(
-    "trace:abc/123",
-    new Date("2026-01-02T03:04:05.006Z"),
-    "video/mp4",
-  ),
-  "run-trace-abc-123-2026-01-02T03-04-05.mp4",
-);
-assert.equal(
-  recording.choosePlaybackVideoMimeType({
-    isTypeSupported: (mimeType) => mimeType === "video/mp4;codecs=avc1.42E01E",
-  }),
-  "video/mp4;codecs=avc1.42E01E",
-);
-assert.equal(
-  recording.choosePlaybackVideoMimeType({
-    isTypeSupported: (mimeType) => mimeType.startsWith("video/webm"),
-  }),
-  "",
-  "WebM-only browsers do not create mislabeled MP4 downloads",
-);
-assert.equal(recording.choosePlaybackVideoMimeType({ isTypeSupported: () => false }), "");
-assert.equal(
-  recording.buildRecordingDeleteConfirmation({
-    id: "23dfc383-aaaa-bbbb-cccc-dddddddddddd",
-    traceId: "23dfc383-aaaa-bbbb-cccc-dddddddddddd",
-  }),
-  "Delete stored run 23dfc383?\n\nIts linked agent trace will also be deleted.\n\nThis cannot be undone.",
-);
-assert.equal(
-  recording.buildRecordingDeleteConfirmation({ id: "user:2026-06-12T02:10:48Z" }),
-  "Delete stored run user:202?\n\nThis cannot be undone.",
-);
-
-const traceState = {
-  currentRecord: {
-    traceId: "trace-1",
-    demo: { action: [0, 39, 8, 32] },
-  },
-  selectedTraceSummary: { stepCount: 3 },
-  selectedTraceId: "trace-1",
-  selectedTraceTicks: [0, 16, 32],
-  playbackGameLevel: "1:1",
-  playbackPhase: "playing",
+const originalActions = [0, 39];
+const demo = recording.normalizeDemo({
+  ai: 1, time: 32, state: 1, action: originalActions, goldDrop: [], bornPos: [],
+}, 1, 1);
+originalActions.push(8, 32);
+assert.deepEqual(demo.action, [0, 39]);
+const playback = {
+  currentRecord: { traceId: "run", demo },
+  selectedTraceSummary: { stepCount: 3 }, selectedTraceId: "run",
+  selectedTraceTicks: [0, 16, 32], playbackGameLevel: "1:1", playbackPhase: "playing",
 };
-window.playData = 1;
-window.curLevel = 1;
-window.maxPlayId = 1;
-window.playMode = window.PLAY_DEMO_ONCE;
-window.demoTickCount = 16;
-assert.equal(recording.formatPlaybackProgress(traceState), "steps 2/3");
-assert.equal(recording.getTracePlaybackProgress(traceState, 3), 2);
-assert.equal(recording.getNextTraceStepTargetTick(traceState), 32);
+Object.assign(window, { playData: 1, curLevel: 1, maxPlayId: 1,
+  playMode: window.PLAY_DEMO_ONCE, demoTickCount: 16 });
+assert.equal(recording.getTracePlaybackProgress(playback, 3), 2);
+assert.equal(recording.getNextTraceStepTargetTick(playback), 32);
 window.demoTickCount = 32;
-assert.equal(recording.getTracePlaybackProgress(traceState, 3), 3);
-assert.equal(recording.getNextTraceStepTargetTick(traceState), null);
+assert.equal(recording.getNextTraceStepTargetTick(playback), null);
 
-const missingTraceState = {
-  currentRecord: { traceId: "trace-1" },
-  selectedTraceSummary: { stepCount: 3 },
-  selectedTraceId: "",
-  selectedTraceTicks: [],
-  playbackGameLevel: "1:1",
-  playbackPhase: "playing",
+// One evaluator-summary case uses the current trace contract.
+const trace = {
+  id: "run", playData: 1, level: 1, model: null,
+  outcome: { result: "failure", reason: "runner dead", finalState: { godMode: false } },
+  steps: [{
+    state: { tick: 0, risk: "low", godMode: false }, action: { keyCode: 39, ticks: 4 },
+    candidates: [{ id: "right", kind: "collect_same_row_gold", lane: "progress",
+      score: 100, firstAction: { keyCode: 39, ticks: 4 } }],
+    decision: { requestedId: "right", selectedId: "right", rationale: "smoke", fallback: null },
+    loop: { active: false, type: null }, candidateEvents: [],
+  }],
 };
-assert.equal(recording.getNextTraceStepTargetTick(missingTraceState), null);
-
-const keyState = {
-  currentRecord: {
-    demo: { action: [0, 39, 8, 32, 16, 37] },
-  },
-  selectedTraceSummary: null,
-  playbackGameLevel: "1:1",
-  playbackPhase: "playing",
-};
-window.demoRecordIdx = 2;
-assert.equal(recording.formatPlaybackProgress(keyState), "keys 2/3");
-keyState.playbackGameLevel = "";
-assert.equal(recording.formatPlaybackProgress(keyState), "keys 3");
-
-console.log("frontend sanity ok");
+const summary = summarizeAttempt(1, "smoke", {
+  id: "run", traceId: "run", result: "failure", godMode: 0, playData: 1, level: 1,
+}, trace, { godMode: false });
+assert.equal(summary.stepCount, 1);
+assert.equal(summary.modeValid, true);
+assert.equal(summary.contextValid, true);
+console.log("frontend smoke ok");

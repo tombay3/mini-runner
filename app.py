@@ -27,6 +27,7 @@ from agent.logging_utils import (
     log_event,
     normalize_flask_logger,
 )
+from agent.traces import summarize_state
 
 
 if "--debug" in sys.argv:
@@ -43,7 +44,7 @@ normalize_flask_logger(app)
 STORE_PATH = Path(__file__).resolve().parent / "__data1" / "recordings.json"
 TRACE_STORE_PATH = Path(__file__).resolve().parent / "__data1" / "agent-traces.json"
 STORE_VERSION = 1
-TRACE_STORE_VERSION = 3
+TRACE_STORE_VERSION = 4
 TRACE_RUN_LIMIT = 10
 RECORDING_RUN_LIMIT = 10
 _store_lock = Lock()
@@ -265,11 +266,37 @@ def delete_trace_run(trace_id: str | None) -> bool:
 
 
 def load_trace_store() -> dict[str, Any]:
-    data = load_json_store(TRACE_STORE_PATH, empty_trace_store)
-    data.setdefault("version", TRACE_STORE_VERSION)
-    data.setdefault("updatedAt", None)
-    if not isinstance(data.get("runs"), dict):
-        data["runs"] = {}
+    if not TRACE_STORE_PATH.exists():
+        return empty_trace_store()
+    with TRACE_STORE_PATH.open(encoding="utf-8") as handle:
+        data = json.load(handle)
+    if (not isinstance(data, dict) or type(data.get("version")) is not int
+            or data["version"] != TRACE_STORE_VERSION or not isinstance(data.get("runs"), dict)):
+        raise ValueError("expected a v4 trace store; reset stores before starting the backend")
+    for run in data["runs"].values():
+        if not isinstance(run, dict) or not isinstance(run.get("steps"), list):
+            raise ValueError("malformed v4 trace run")
+        for step in run["steps"]:
+            if (not isinstance(step, dict) or not isinstance(step.get("decision"), dict)
+                    or not isinstance(step.get("state"), dict)
+                    or not isinstance(step.get("candidates"), list)
+                    or not isinstance(step.get("candidateEvents"), list)
+                    or not isinstance(step.get("action"), dict)
+                    or not isinstance(step.get("loop"), dict)
+                    or any(key in step for key in ("candidateAudit", "loopMonitor", "modelSelection", "validation", "stepIndex"))):
+                raise ValueError("malformed v4 trace decision")
+            state = step["state"]
+            if any(key in state and not isinstance(state[key], dict)
+                   for key in ("primaryProgressTarget", "threat", "movement", "route")):
+                raise ValueError("malformed v4 trace model state context")
+            if "suppressedCount" in step["loop"] and (
+                    type(step["loop"]["suppressedCount"]) is not int or step["loop"]["suppressedCount"] < 0):
+                raise ValueError("malformed v4 trace model loop context")
+            for candidate in step["candidates"]:
+                if not isinstance(candidate, dict) or any(
+                        key in candidate and not isinstance(candidate[key], list)
+                        for key in ("intents", "targets", "reasons")):
+                    raise ValueError("malformed v4 trace model candidate context")
     return data
 
 
@@ -361,12 +388,7 @@ def validate_record_id(value: Any) -> str | None:
 def trace_model_summary(planner: dict[str, Any] | None) -> dict[str, Any] | None:
     if not isinstance(planner, dict):
         return None
-    summary = {
-        key: planner.get(key)
-        for key in ("modelProfile", "provider", "model", "modelSource")
-        if planner.get(key) is not None
-    }
-    return summary or None
+    return {"profile": planner.get("modelProfile"), "provider": planner.get("provider"), "name": planner.get("model")}
 
 
 def trace_config_summary(planner: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -416,8 +438,8 @@ def summarize_trace_run(trace_id: str, run: dict[str, Any]) -> dict[str, Any]:
         "level": run.get("level"),
         "createdAt": run.get("createdAt"),
         "updatedAt": run.get("updatedAt"),
-        "stepCount": run.get("stepCount", 0),
-        "latestAction": run.get("latestAction"),
+        "stepCount": len(run["steps"]),
+        "latestAction": run["steps"][-1]["action"] if run["steps"] else None,
         "model": run.get("model"),
     }
 
@@ -438,8 +460,8 @@ def summarize_record_trace(
         "traceId": trace_id,
         "createdAt": run.get("createdAt"),
         "updatedAt": run.get("updatedAt"),
-        "stepCount": run.get("stepCount", 0),
-        "latestAction": run.get("latestAction"),
+        "stepCount": len(run["steps"]),
+        "latestAction": run["steps"][-1]["action"] if run["steps"] else None,
         "model": run.get("model"),
     }
 
@@ -464,6 +486,15 @@ def find_latest_trace_run(
     return summarize_trace_run(*latest)
 
 
+def assert_trace_settings(run: dict[str, Any] | None, model: Any, config: Any) -> None:
+    if run is None:
+        return
+    if run.get("outcome") is not None:
+        raise AgentRequestError("run is finalized; start a new run")
+    if run.get("model") != model or run.get("config") != config:
+        raise AgentRequestError("model or backend controls changed; start a new run")
+
+
 def append_trace_step(run_id: str, step_trace: dict[str, Any]) -> dict[str, Any]:
     now = utc_now()
     pinned_trace_ids = load_pinned_trace_ids()
@@ -480,22 +511,16 @@ def append_trace_step(run_id: str, step_trace: dict[str, Any]) -> dict[str, Any]
                 "level": step_trace["level"],
                 "model": step_trace.get("model"),
                 "config": step_trace.get("config"),
+                "outcome": None,
                 "steps": [],
             }
             store["runs"][run_id] = run
-        step_index = len(run["steps"])
+        assert_trace_settings(run, step_trace.get("model"), step_trace.get("config"))
         stored_step = dict(step_trace)
-        stored_step.pop("model", None)
-        stored_step.pop("config", None)
-        stored_step["stepIndex"] = step_index
+        for key in ("model", "config", "playData", "level"):
+            stored_step.pop(key, None)
         run["steps"].append(stored_step)
         run["updatedAt"] = now
-        run["stepCount"] = len(run["steps"])
-        run["latestAction"] = stored_step.get("action")
-        if run.get("model") is None and step_trace.get("model") is not None:
-            run["model"] = step_trace.get("model")
-        if run.get("config") is None and step_trace.get("config") is not None:
-            run["config"] = step_trace.get("config")
 
         prune_trace_runs(store, pinned_trace_ids)
         store["updatedAt"] = now
@@ -525,10 +550,8 @@ def finalize_trace_run(
                 "updatedAt": now,
                 "playData": play_data,
                 "level": level,
-                "model": model,
+                "model": None,
                 "config": None,
-                "stepCount": 0,
-                "latestAction": None,
                 "steps": [],
             }
             store["runs"][trace_id] = run
@@ -537,7 +560,7 @@ def finalize_trace_run(
         run["outcome"] = {
             "result": result,
             "reason": reason,
-            "finalState": final_snapshot,
+            "finalState": summarize_state(final_snapshot) if isinstance(final_snapshot, dict) else None,
         }
         store["updatedAt"] = now
         prune_trace_runs(store, pinned_trace_ids)
@@ -738,6 +761,9 @@ def next_agent_action():
     try:
         snapshot, history, options = validate_agent_request(payload)
         run_id = options.get("runId") or f"trace-{utc_now()}"
+        with _trace_store_lock:
+            existing_run = load_trace_store()["runs"].get(run_id)
+        options["traceGuard"] = lambda model, config: assert_trace_settings(existing_run, model, config)
         plan = plan_next_action(snapshot, history, options)
     except AgentRequestError as exc:
         log_event(
@@ -796,7 +822,7 @@ def next_agent_action():
         model=plan["planner"].get("model"),
         model_profile=plan["planner"].get("modelProfile"),
         candidate_id=plan.get("candidateId"),
-        step_count=run.get("stepCount"),
+        step_count=len(run["steps"]),
     )
 
     return jsonify(
@@ -804,7 +830,7 @@ def next_agent_action():
             "action": plan["action"],
             "planner": plan["planner"],
             "traceId": run_id,
-            "stepCount": run.get("stepCount"),
+            "stepCount": len(run["steps"]),
             "candidateId": plan.get("candidateId"),
         }
     )
@@ -817,7 +843,7 @@ def get_agent_trace(trace_id: str):
         run = store["runs"].get(trace_id)
     if run is None:
         return jsonify({"error": "trace not found"}), 404
-    return jsonify(run)
+    return jsonify({"version": TRACE_STORE_VERSION, "run": run})
 
 
 @app.get("/api/agent/runs/<play_data>/<level>")
@@ -849,6 +875,12 @@ def delete_recording(play_data: str, level: str):
 
     selected_trace_id = request.args.get("traceId") or None
     selected_record_id = request.args.get("recordId") or selected_trace_id
+    confirmation = request.get_json(silent=True)
+    confirm_pinned_deletion = (
+        bool(selected_record_id)
+        and isinstance(confirmation, dict)
+        and confirmation.get("confirmPinnedDeletion") is True
+    )
     deleted_trace_id = None
     latest_record = None
     with _store_lock:
@@ -869,11 +901,11 @@ def delete_recording(play_data: str, level: str):
             else:
                 record = find_latest_recording(store, play_data_key, level_key)
                 record_key = record.get("id") if isinstance(record, dict) else None
-            if isinstance(record, dict) and record.get("pinned") is True:
+            if isinstance(record, dict) and record.get("pinned") is True and not confirm_pinned_deletion:
                 return (
                     jsonify(
                         {
-                            "error": "pinned recording must be unpinned before deletion",
+                            "error": "pinned recording deletion requires explicit confirmation",
                             "pinned": True,
                             "recordId": record.get("id"),
                             "traceId": record.get("traceId"),
@@ -903,7 +935,7 @@ def delete_recording(play_data: str, level: str):
 
 if __name__ == "__main__":
     app.run(
-        host="localhost",
+        host="0.0.0.0",
         port=8485,
         use_reloader=True,
         use_debugger=False,

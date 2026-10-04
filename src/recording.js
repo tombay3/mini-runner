@@ -464,6 +464,7 @@ async function refreshStatus(state, force = false, preferredRecordId = null) {
   try {
     const result = await apiFetch(
       `${API_BASE}/${context.playData}/${context.level}/records`,
+      { cache: "no-store" },
     );
     setRecordList(
       state,
@@ -538,9 +539,13 @@ async function loadSelectedTraceTicks(state, record) {
 
   state.selectedTraceLoadId = traceId;
   try {
-    const trace = await apiFetch(
+    const response = await apiFetch(
       `/api/agent/traces/${encodeURIComponent(traceId)}`,
     );
+    if (response?.version !== 4 || !Array.isArray(response.run?.steps)) {
+      throw new Error("Expected a v4 trace response");
+    }
+    const trace = response.run;
     if (
       state.selectedTraceLoadId !== traceId ||
       state.currentRecord?.traceId !== traceId
@@ -580,11 +585,20 @@ function clearSelectedTraceTicks(state) {
   state.selectedTraceLoadId = "";
 }
 
-function selectAdjacentRecord(state, delta) {
+async function selectAdjacentRecord(state, delta) {
   if (!canNavigateStoredRecords(state)) {
     return;
   }
+  const gameLevel = getCurrentGameLevel();
+  const previousRecordId = state.currentRecord?.id;
+  await refreshStatus(state, true);
+  if (state.uiError || gameLevel !== getCurrentGameLevel()) {
+    return;
+  }
   const count = state.records.length;
+  if (!count || !state.records.some((record) => record.id === previousRecordId)) {
+    return;
+  }
   state.selectedRecordIndex =
     (state.selectedRecordIndex + delta + count) % count;
   state.playbackGameLevel = "";
@@ -645,6 +659,9 @@ async function playOrToggleCurrentRecording(
 }
 
 async function deleteCurrentRecording(state) {
+  if (state.busyAction || state.agentRunning || isWrapperPlaybackActive(state)) {
+    return;
+  }
   const context = getCurrentContext();
   if (!context) {
     clearPlaybackDebugState(state);
@@ -656,11 +673,17 @@ async function deleteCurrentRecording(state) {
     syncOverlayState(state);
     return;
   }
-  const record = state.currentRecord;
-  if (record?.pinned === true) {
-    syncOverlayState(state);
+  const selectedRecordId = state.currentRecord?.id;
+  if (!selectedRecordId) {
     return;
   }
+  const gameLevel = getCurrentGameLevel();
+  await refreshStatus(state, true, selectedRecordId);
+  if (state.uiError || gameLevel !== getCurrentGameLevel() ||
+      state.currentRecord?.id !== selectedRecordId) {
+    return;
+  }
+  const record = state.currentRecord;
   if (!record || !confirmRecordingDelete(record)) {
     return;
   }
@@ -678,6 +701,8 @@ async function deleteCurrentRecording(state) {
       `${API_BASE}/${context.playData}/${context.level}${query}`,
       {
         method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ confirmPinnedDeletion: record.pinned === true }),
       },
     );
     await refreshStatus(
@@ -703,7 +728,10 @@ function buildRecordingDeleteConfirmation(record) {
   const linkedTraceWarning = record?.traceId
     ? "\n\nIts linked agent trace will also be deleted."
     : "";
-  return `Delete stored run ${runId}?${linkedTraceWarning}\n\nThis cannot be undone.`;
+  const pinnedWarning = record?.pinned === true
+    ? "\n\nThis run is PINNED to protect it from removal. Deleting it will permanently remove that protected recording."
+    : "";
+  return `Delete ${record?.pinned === true ? "pinned" : "stored"} run ${runId}?${pinnedWarning}${linkedTraceWarning}\n\nThis cannot be undone.`;
 }
 
 function getRecordAfterDelete(state) {
@@ -904,7 +932,8 @@ function getRecordNavigationDelta(event) {
 function canNavigateStoredRecords(state) {
   return Boolean(
     Array.isArray(state.records) &&
-    state.records.length > 1 &&
+    state.backendStatus === "online" &&
+    !state.agentRunning &&
     !state.busyAction &&
     state.playbackPhase === "inactive",
   );
@@ -1584,7 +1613,8 @@ function deriveOverlayViewModel(facts) {
   const playbackPhase = facts.playbackPhase;
   const playbackActive = playbackPhase !== "inactive";
   const playbackPaused = playbackPhase === "paused";
-  const canNavigateRecords = facts.recordCount > 1 && !busy && !playbackActive;
+  const canNavigateRecords = facts.backendStatus === "online" &&
+    !facts.agentRunning && !busy && !playbackActive;
   const playTitle =
     playbackPhase === "step-action"
       ? "Stepping to next recorded action"
@@ -1599,15 +1629,13 @@ function deriveOverlayViewModel(facts) {
               : "No stored recording for this level";
   const deleteTitle = !facts.hasRecord
     ? "No stored recording to delete"
-    : facts.recordPinned
-      ? "Unpin stored run before deleting"
-      : playbackActive
+    : playbackActive
         ? "Stop playback before deleting"
         : facts.backendStatus === "checking"
           ? "Checking server before deleting"
           : facts.backendStatus !== "online"
             ? "Server unavailable; cannot delete"
-            : "Delete stored recording";
+            : facts.recordPinned ? "Delete pinned recording (confirmation required)" : "Delete stored recording";
 
   return {
     attributes: {
@@ -1633,7 +1661,7 @@ function deriveOverlayViewModel(facts) {
         title: playbackActive
           ? "Stop playback before selecting another run"
           : canNavigateRecords
-            ? "Previous stored run"
+            ? "Refresh runs and select previous stored run"
             : "No previous stored run",
       },
       next: {
@@ -1641,13 +1669,12 @@ function deriveOverlayViewModel(facts) {
         title: playbackActive
           ? "Stop playback before selecting another run"
           : canNavigateRecords
-            ? "Next stored run"
+            ? "Refresh runs and select next stored run"
             : "No next stored run",
       },
       delete: {
         disabled:
           !facts.hasRecord ||
-          facts.recordPinned ||
           busy ||
           playbackActive ||
           facts.backendStatus !== "online",

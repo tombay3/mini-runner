@@ -4,6 +4,7 @@ import json
 from typing import Any
 
 from .config import LLM_GAME_RULES_PATH
+from .loop_tools import assess_repeated_candidate_progress, candidate_target
 
 
 ACTION_NAMES = {
@@ -33,6 +34,7 @@ def build_agent_prompt(
     candidates: list[dict[str, Any]],
     analysis: dict[str, Any],
     include_reasoning: bool = False,
+    history: list[dict[str, Any]] | None = None,
 ) -> str:
     response_format = (
         '{"candidateId":"candidate_id_here","reasoning":"brief rationale"}'
@@ -59,8 +61,102 @@ def build_agent_prompt(
             rationale_instruction,
             "Agent rules:\n" + read_agent_rules(),
             format_decision_context(snapshot, candidates, analysis),
+            format_recent_progress(history),
         ] if item is not None]
     )
+
+
+def format_recent_progress(history: list[dict[str, Any]] | None) -> str | None:
+    if not isinstance(history, list) or not history:
+        return None
+    return (
+        "Recent progress (last 8 history entries; valid JSON):\n"
+        "null means unknown. goldCountDelta and distanceChange are after minus before; "
+        "negative values mean fewer remaining gold or a closer candidate target. "
+        "Target distance uses tiles only. Offset motion, including centering, can occur "
+        "without tile motion or decreasing target distance. These observations do not "
+        "establish guard safety; current threat and execution gates remain separate.\n"
+        + json.dumps(build_recent_progress(history), sort_keys=True, separators=(",", ":"))
+    )
+
+
+def _history_int(value: Any) -> int | None:
+    # Bound malformed scalar input without coercing missing/invalid observations.
+    return value if type(value) is int and abs(value) <= 1_000_000_000 else None
+
+
+def _history_runner(state: Any) -> dict[str, int | None]:
+    runner = _dict(_dict(state).get("runner"))
+    return {field: _history_int(runner.get(field)) for field in ("x", "y", "xOffset", "yOffset")}
+
+
+def _motion(before: dict, after: dict, fields: tuple[str, str]) -> bool | None:
+    if any(before[field] is None or after[field] is None for field in fields):
+        return None
+    return any(before[field] != after[field] for field in fields)
+
+
+def _target_progress(recent: list[dict], candidate_id: str | None) -> dict[str, Any]:
+    target = candidate_target(candidate_id)
+    result = {
+        "target": target,
+        "startDistance": None, "endDistance": None, "distanceChange": None,
+        "madeProgress": None, "targetReached": None,
+    }
+    if not target or not recent or any(_history_int(value) is None for value in target):
+        result["target"] = None
+        return result
+    start = recent[0]["before"]["runner"]
+    end = recent[-1]["after"]["runner"]
+    if any(runner[field] is None for runner in (start, end) for field in ("x", "y")):
+        return result
+    # The existing helper's missing-data defaults are not evidence of no progress.
+    progress = assess_repeated_candidate_progress(recent, candidate_id)
+    result.update(progress)
+    result["distanceChange"] = progress["endDistance"] - progress["startDistance"]
+    return result
+
+
+def build_recent_progress(history: list[dict[str, Any]] | None) -> dict[str, Any]:
+    """Pure, bounded prompt context; never feeds candidate or safety validation."""
+    recent = []
+    entries = []
+    for raw in history[-8:] if isinstance(history, list) else []:
+        item = _dict(raw)
+        candidate_id = item.get("candidateId")
+        if not isinstance(candidate_id, str) or not candidate_id or len(candidate_id) > 160:
+            candidate_id = None
+        before = _history_runner(item.get("before"))
+        after = _history_runner(item.get("after"))
+        observed = {"candidateId": candidate_id, "before": {"runner": before}, "after": {"runner": after}}
+        recent.append(observed)
+        before_gold = _history_int(_dict(item.get("before")).get("goldCount"))
+        after_gold = _history_int(_dict(item.get("after")).get("goldCount"))
+        entries.append({
+            "candidateId": candidate_id,
+            "keyCode": _history_int(item.get("keyCode")),
+            "ticks": _history_int(item.get("ticks")),
+            "before": before, "after": after,
+            "tileMotion": _motion(before, after, ("x", "y")),
+            "offsetMotion": _motion(before, after, ("xOffset", "yOffset")),
+            "goldCountDelta": after_gold - before_gold
+            if before_gold is not None and after_gold is not None else None,
+        })
+    repeated_id = recent[-1]["candidateId"] if recent else None
+    tail = []
+    if repeated_id is not None:
+        for item in reversed(recent):
+            if item["candidateId"] != repeated_id:
+                break
+            tail.append(item)
+        tail.reverse()
+    return {
+        "entries": entries,
+        "repeatedCandidate": {
+            "candidateId": repeated_id, "entryCount": len(tail),
+            **_target_progress(tail, repeated_id),
+        },
+    }
 
 
 def format_decision_context(

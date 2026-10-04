@@ -25,12 +25,58 @@ All three files are local to `__data1/`; the catalog is transient and does not n
 Pin changes require no catalog update. Unpinned traces remain subject to rolling retention.
 The dashboard reads the recording and trace stores, not the cohort catalog.
 
+## Create a cohort
+
+Start with one concrete question, such as whether a change reduces repeated waits without losing
+gold progress. Use existing Classic 1:1 traces first. Create separate cohorts for baseline and
+changed code when comparing them; keep mode, model, and controls matched or explain differences.
+
+1. Run `npm run cohorts:check`. If the catalog is missing, initialize it with
+   `npm run cohorts:check -- --write`. This creates an empty catalog; traces still need review.
+2. Choose a stable cohort ID, such as `20261007-wait-review-baseline`. Add its title, question,
+   and full trace IDs under `cohorts`. Every ID must exist in `agent-traces.json`.
+3. Review each trace and add or update its entry under `traces`. Use the recorded launch manifest
+   or existing catalog evidence for provenance; never use current HEAD as a substitute.
+   Preserve earlier findings and list every applicable cohort in the trace's `cohortIds`.
+4. Record observations with display-step numbers (starting at 1) or exact game ticks. Separate
+   observed behavior from suspected causes; state sample size and missing evidence. Update the
+   cohort's `result` with the conclusion, or say the review is incomplete.
+5. Update `updatedAt`, then run `npm run cohorts:check` again. Resolve stale links and report
+   unreviewed traces. `--write` performs mechanical cleanup, not interpretation or cohort creation.
+
+An empty catalog is:
+
+```json
+{"version": 1, "updatedAt": null, "cohorts": {}, "traces": {}}
+```
+
+Catalog fields follow this convention; the checker validates only part of it:
+
+| Location | Fields |
+| --- | --- |
+| Root | `version: 1`, `updatedAt` (UTC timestamp), `cohorts`, `traces`; `policy` is maintained by reconciliation |
+| `cohorts[cohortId]` | `title`, `question`, `traceIds` (full IDs), `result` (concise conclusion and evidence limits) |
+| `traces[traceId]` | `reviewedAt`, `sourceRevision`, `sourceState` (`clean`, `dirty`, or `unknown`), `sourceFingerprint`, `context`, `outcome`, `classification`, `cohortIds`, `evidenceLimit` |
+| Optional trace findings | `findings` (brief observations with steps/ticks), `compareWith` (full trace IDs) |
+
+`sourceRevision` and `sourceFingerprint` belong to reviewed catalog evidence, not trace fields.
+Experiment launchers should capture the revision and local-change fingerprint in a manifest
+before running. Cataloging is not automatic: without recorded evidence, use null values and
+`sourceState: "unknown"`, and explain uncertainty in `evidenceLimit`. `context` records level,
+mode, model and relevant controls; `outcome` summarizes
+the recorded result, decision count, terminal tick, and remaining gold where available. These are
+review notes, not replacements for the original trace. Do not duplicate pin state in the catalog.
+
+Keep membership consistent in both directions: a cohort's `traceIds` and each trace's `cohortIds`.
+The checker does not enforce that agreement or verify provenance, findings, or comparison fairness;
+the reviewing agent must check them. Cataloging does not authorize fresh runs or gameplay changes.
+
 ## Maintenance
 
-- `npm run cohorts:check` — read-only; reports stale links and uncataloged traces, exiting nonzero
-  when attention is needed.
-- `npm run cohorts:check -- --write` — removes duplicated retention metadata and references to
-  missing traces. Writes only the catalog and saves its previous version as `.bak`.
+- `npm run cohorts:check` — read-only; reports a missing catalog, stale links, and uncataloged
+  traces. Exits nonzero when attention is needed.
+- `npm run cohorts:check -- --write` — cleans existing links
+  and retention metadata. Backs up an existing catalog as `.bak`; does not review traces.
 
 Both commands respect `AGENT_DATA_DIR`. Do not reconcile while another task edits the catalog.
 
@@ -97,6 +143,10 @@ scope again rather than relying on shared chat memory.
 > still needing review, and do not change recordings, traces, or pin states.
 
 ### Review A New Run And Catalog It
+
+> Create a cohort to investigate `<question>` using `<trace IDs>`. Follow the creation convention
+> above, review recorded provenance and controls, and record findings with steps/ticks and evidence
+> limits. Update the catalog and check it afterward. Do not change gameplay or start new runs.
 
 > Review `<trace ID>` against its relevant baselines. Verify provenance and controls, identify the
 > strongest findings with display-step references, and update its cohort entry and membership.

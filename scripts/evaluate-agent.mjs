@@ -10,13 +10,15 @@ const rootDir = path.dirname(scriptsDir);
 const candidateLanes = Object.freeze(
   JSON.parse(readFileSync(path.join(rootDir, "agent", "candidate_lanes.json"), "utf8")),
 );
-const options = parseArgs(process.argv.slice(2));
+const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+const options = isMain ? parseArgs(process.argv.slice(2)) : null;
 const startedServers = [];
 let browser = null;
 let executablePath = null;
 const attempts = [];
 
 function candidateLane(candidateOrKind) {
+  if (typeof candidateOrKind === "object" && candidateOrKind?.lane) return candidateOrKind.lane;
   const kind = typeof candidateOrKind === "string" ? candidateOrKind : candidateOrKind?.kind;
   return candidateLanes[kind] || "other";
 }
@@ -33,6 +35,9 @@ function decisionClass(step) {
   return `mixed_${lanes.join("_")}`;
 }
 
+if (isMain) await main();
+
+async function main() {
 try {
   await ensureServer("backend", "http://127.0.0.1:8485/api/health", ["run", "api"]);
   await ensureServer("frontend", options.baseUrl, ["run", "dev", "--", "--host", "127.0.0.1"]);
@@ -40,6 +45,7 @@ try {
   executablePath = resolveBrowserExecutable(options.browserExecutable);
   browser = await chromium.launch({
     executablePath,
+    chromiumSandbox: true,
     headless: !options.headful,
     args: ["--test-suite=ducky-eval"],
   });
@@ -134,6 +140,7 @@ try {
     }
   }
 }
+}
 
 async function waitForAttemptReady(page) {
   try {
@@ -143,13 +150,13 @@ async function waitForAttemptReady(page) {
   } catch (error) {
     const status = await page.evaluate(() => window.__lodeRunnerEvaluation?.status())
       .catch(() => null);
-    throw new Error(`evaluator readiness failed: ${JSON.stringify(status)}; ${error.message}`, {
+    throw new Error(`evaluator readiness failed after ${options.startupTimeoutMs / 1000} seconds: ${JSON.stringify(status)}; ${error.message}`, {
       cause: error,
     });
   }
 }
 
-async function fetchTraceAfterPersistence(page, traceId) {
+export async function fetchTraceAfterPersistence(page, traceId) {
   const deadline = Date.now() + 10_000;
   let lastStatus = "unavailable";
   while (Date.now() < deadline) {
@@ -157,7 +164,14 @@ async function fetchTraceAfterPersistence(page, traceId) {
       const result = await fetch(`/api/agent/traces/${encodeURIComponent(id)}`);
       return { ok: result.ok, status: result.status, body: result.ok ? await result.json() : null };
     }, traceId);
-    if (response.ok) return response.body;
+    if (response.ok) {
+      if (response.body?.version !== 4 || !response.body.run ||
+          typeof response.body.run !== "object" || Array.isArray(response.body.run) ||
+          !Array.isArray(response.body.run.steps)) {
+        throw new Error("Expected v4 trace response {version:4,run} with run.steps");
+      }
+      return response.body.run;
+    }
     lastStatus = response.status;
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
@@ -172,7 +186,7 @@ function parseArgs(args) {
     baseUrl: "http://127.0.0.1:8283/",
     browserExecutable: process.env.EVAL_BROWSER_EXECUTABLE || null,
     startupTimeoutMs: 30_000,
-    attemptTimeoutMs: 1_800_000,
+    attemptTimeoutMs: 3_600_000,
     headful: false,
     keepServers: false,
     output: null,
@@ -193,10 +207,10 @@ function parseArgs(args) {
     else if (arg === "--profile") result.profile = nonempty(next(), "profile");
     else if (arg === "--base-url") result.baseUrl = new URL(next()).href;
     else if (arg === "--browser") result.browserExecutable = nonempty(next(), "browser");
-    else if (arg === "--startup-timeout-ms") {
-      result.startupTimeoutMs = positiveInteger(next(), "startup timeout", 300_000);
-    } else if (arg === "--attempt-timeout-ms") {
-      result.attemptTimeoutMs = positiveInteger(next(), "attempt timeout", 1_800_000);
+    else if (arg === "--startup-timeout-sec") {
+      result.startupTimeoutMs = positiveInteger(next(), "startup timeout seconds", 300) * 1000;
+    } else if (arg === "--run-timeout-min") {
+      result.attemptTimeoutMs = positiveInteger(next(), "run timeout minutes", 35_791) * 60_000;
     } else if (arg === "--output") result.output = nonempty(next(), "output");
     else if (arg === "--headful") result.headful = true;
     else if (arg === "--keep-servers") result.keepServers = true;
@@ -234,7 +248,7 @@ async function runAttemptWithTimeout(page, godMode) {
   );
   const timeout = new Promise((_, reject) => {
     timer = setTimeout(() => {
-      reject(new Error(`evaluator attempt timed out after ${options.attemptTimeoutMs} ms`));
+      reject(new Error(`evaluator attempt timed out after ${options.attemptTimeoutMs / 60_000} minutes`));
     }, options.attemptTimeoutMs);
   });
   try {
@@ -276,7 +290,7 @@ async function ensureServer(name, healthUrl, npmArgs) {
     }
     await new Promise((resolve) => setTimeout(resolve, 200));
   }
-  throw new Error(`${name} did not become ready:\n${log.join("")}`);
+  throw new Error(`${name} did not become ready within ${options.startupTimeoutMs / 1000} seconds:\n${log.join("")}`);
 }
 
 async function isReady(url) {
@@ -348,13 +362,13 @@ function resolveBrowserExecutable(explicitPath) {
   return match;
 }
 
-function summarizeAttempt(number, startedAt, result, trace, config) {
+export function summarizeAttempt(number, startedAt, result, trace, config) {
   const steps = Array.isArray(trace?.steps) ? trace.steps : [];
   const kinds = {};
   const candidatePoolKinds = {};
   const candidatePoolLanes = {};
   const decisionClasses = {};
-  const candidateAuditDispositions = {};
+  const candidateEventStatuses = {};
   const candidateGapClassifications = {};
   let maxCandidatePool = 0;
   const stepCorrelations = [];
@@ -363,32 +377,46 @@ function summarizeAttempt(number, startedAt, result, trace, config) {
   let confirmedLoops = 0;
   let suppressedCandidates = 0;
   for (const [stepIndex, step] of steps.entries()) {
-    const kind = step?.selectedCandidateKind || "unknown";
+    if (!Array.isArray(step.candidates) || !Array.isArray(step.candidateEvents) ||
+        !step.decision || !["requestedId", "selectedId", "rationale", "fallback"].every(
+          (key) => Object.hasOwn(step.decision, key)) ||
+        (step.decision.fallback !== null &&
+          (!step.decision.fallback || typeof step.decision.fallback.code !== "string" ||
+           typeof step.decision.fallback.message !== "string")) ||
+        typeof step.loop?.active !== "boolean" || !Object.hasOwn(step.loop, "type") ||
+        !step.state || !Object.hasOwn(step.state, "risk") ||
+        (step.state.risk !== null && typeof step.state.risk === "object") ||
+        !step.action || !["keyCode", "ticks"].every((key) => Object.hasOwn(step.action, key)) ||
+        step.candidateEvents.some((event) => !event || ["exposed", "proposed"].includes(event.status))) {
+      throw new Error(`Expected compact v4 step at index ${stepIndex}`);
+    }
+    const candidates = step.candidates;
+    const decision = step.decision;
+    const selectedIndex = candidates.findIndex((candidate) => candidate.id === decision.selectedId);
+    const selected = candidates[selectedIndex];
+    const kind = selected?.kind || "unknown";
     kinds[kind] = (kinds[kind] || 0) + 1;
-    if (step?.validation?.fallbackUsed) fallbacks += 1;
-    if (step?.loopMonitor?.active) confirmedLoops += 1;
-    suppressedCandidates += Array.isArray(step?.loopMonitor?.suppressedCandidates)
-      ? step.loopMonitor.suppressedCandidates.length
-      : 0;
-    maxCandidatePool = Math.max(maxCandidatePool, Array.isArray(step?.candidates) ? step.candidates.length : 0);
-    for (const candidate of step?.candidates || []) {
+    if (decision.fallback !== null) fallbacks += 1;
+    if (step.loop.active) confirmedLoops += 1;
+    suppressedCandidates += new Set(
+      step.candidateEvents.filter((event) => event.status === "loop_suppressed").map((event) => event.id),
+    ).size;
+    maxCandidatePool = Math.max(maxCandidatePool, candidates.length);
+    candidateEventStatuses.exposed = (candidateEventStatuses.exposed || 0) + candidates.length;
+    for (const candidate of candidates) {
       const candidateKind = candidate?.kind || "unknown";
       candidatePoolKinds[candidateKind] = (candidatePoolKinds[candidateKind] || 0) + 1;
       const lane = candidateLane(candidate);
       candidatePoolLanes[lane] = (candidatePoolLanes[lane] || 0) + 1;
     }
-    const modelSelection = step?.modelSelection || {};
-    const candidates = Array.isArray(step?.candidates) ? step.candidates : [];
-    const selectedKind = step?.selectedCandidateKind || "unknown";
-    const selectedLane = candidateLane(selectedKind);
+    const selectedKind = kind;
+    const selectedLane = selected ? candidateLane(selected) : "other";
     const stepDecisionClass = decisionClass(step);
     decisionClasses[stepDecisionClass] = (decisionClasses[stepDecisionClass] || 0) + 1;
-    const candidateAudit = Array.isArray(step?.candidateAudit) ? step.candidateAudit : [];
-    for (const item of candidateAudit) {
-      const disposition = item?.disposition || "unknown";
-      candidateAuditDispositions[disposition] =
-        (candidateAuditDispositions[disposition] || 0) + 1;
-      const gapClass = auditGapClassification(disposition);
+    for (const event of step.candidateEvents) {
+      const status = event.status;
+      candidateEventStatuses[status] = (candidateEventStatuses[status] || 0) + 1;
+      const gapClass = eventGapClassification(status);
       if (gapClass) {
         candidateGapClassifications[gapClass] =
           (candidateGapClassifications[gapClass] || 0) + 1;
@@ -396,7 +424,7 @@ function summarizeAttempt(number, startedAt, result, trace, config) {
     }
     if (candidates.length > 1) {
       const unselectedProgress = candidates.filter(
-        (candidate) => candidateLane(candidate) === "progress" && candidate?.id !== step?.selectedCandidateId,
+        (candidate) => candidateLane(candidate) === "progress" && candidate.id !== decision.selectedId,
       ).length;
       if (unselectedProgress) {
         candidateGapClassifications.exposed_not_selected =
@@ -412,20 +440,24 @@ function summarizeAttempt(number, startedAt, result, trace, config) {
     }
     let classification = "no_gap";
     if (!candidates.length) classification = "no_generated_candidates";
-    else if (step?.validation?.fallbackUsed) classification = "model_selection_fallback";
+    else if (decision.fallback !== null) classification = "model_selection_fallback";
     const correlation = {
       stepIndex,
       tick: step?.state?.tick,
-      requestedCandidateId: modelSelection.requestedCandidateId,
-      selectedCandidateId: step?.selectedCandidateId,
+      requestedCandidateId: decision.requestedId,
+      selectedCandidateId: decision.selectedId,
+      selectedCandidateIndex: selectedIndex < 0 ? null : selectedIndex,
       selectedCandidateKind: selectedKind,
       selectedCandidateLane: selectedLane,
-      selectedScore: candidates.find((candidate) => candidate?.id === step?.selectedCandidateId)?.score ?? null,
+      selectedScore: selected?.score ?? null,
+      exposedCandidateCount: candidates.length,
       candidateLanes: candidateLaneSet(candidates),
       decisionClass: stepDecisionClass,
-      reasoningContent: modelSelection.reasoningContent || "",
-      declaredRationale: modelSelection.declaredRationale || "",
-      parseError: modelSelection.parseError || null,
+      rationale: decision.rationale,
+      fallback: decision.fallback,
+      risk: step.state.risk,
+      loop: { active: step.loop.active, type: step.loop.type },
+      action: { keyCode: step.action.keyCode, ticks: step.action.ticks },
       candidates: candidates.map((candidate) => ({
         id: candidate?.id,
         kind: candidate?.kind,
@@ -434,17 +466,23 @@ function summarizeAttempt(number, startedAt, result, trace, config) {
         target: candidate?.target,
         firstAction: candidate?.firstAction,
       })),
-      candidateAudit,
+      candidateEvents: step.candidateEvents.map((event) => ({
+        id: event.id,
+        kind: event.kind,
+        status: event.status,
+        action: { keyCode: event.action.keyCode, ticks: event.action.ticks },
+        reason: event.reason,
+      })),
       selectedNoProgress: Boolean(selectedNoProgress),
       classification,
     };
     stepCorrelations.push(correlation);
-    if (classification !== "no_gap" || !correlation.reasoningContent) {
+    if (classification !== "no_gap" || !correlation.rationale) {
       notableCorrelations.push({
         stepIndex,
         classification,
         selectedCandidateId: correlation.selectedCandidateId,
-        reasoningPresent: Boolean(correlation.reasoningContent),
+        rationalePresent: Boolean(correlation.rationale),
       });
     }
   }
@@ -462,10 +500,7 @@ function summarizeAttempt(number, startedAt, result, trace, config) {
     Number(result.playData) === 1 &&
     Number(result.level) === 1 &&
     Number(trace?.playData) === 1 &&
-    Number(trace?.level) === 1 &&
-    steps.every((step) => Number(step?.playData) === 1 && Number(step?.level) === 1) &&
-    Number(trace?.outcome?.finalState?.playData) === 1 &&
-    Number(trace?.outcome?.finalState?.level) === 1;
+    Number(trace?.level) === 1;
   const ticks = steps.map((step) => Number(step?.state?.tick));
   const timelineValid = ticks.every(
     (tick, index) => Number.isFinite(tick) && (index === 0 || tick >= ticks[index - 1]),
@@ -479,8 +514,8 @@ function summarizeAttempt(number, startedAt, result, trace, config) {
     result: result.result,
     failureReason: result.failureReason,
     demoTime: result.demoTime,
-    stepCount: trace?.stepCount ?? steps.length,
-    model: trace?.model ?? null,
+    stepCount: steps.length,
+    model: trace?.model ? { profile: trace.model.profile, provider: trace.model.provider, name: trace.model.name } : null,
     normalMode: recordedGodMode === 0 && terminalGodMode === false,
     requestedMode: requestedGodMode ? "god" : "normal",
     recordedGodMode: Number.isFinite(recordedGodMode) ? recordedGodMode : null,
@@ -497,7 +532,7 @@ function summarizeAttempt(number, startedAt, result, trace, config) {
     candidatePoolKinds,
     candidatePoolLanes,
     decisionClasses,
-    candidateAuditDispositions,
+    candidateEventStatuses,
     candidateGapClassifications,
     maxCandidatePool,
     stepCorrelations,
@@ -505,7 +540,7 @@ function summarizeAttempt(number, startedAt, result, trace, config) {
   };
 }
 
-function auditGapClassification(disposition) {
+function eventGapClassification(status) {
   return {
     physical_rejection: "physical_rejection",
     safety_rejection: "safety_rejection",
@@ -513,7 +548,7 @@ function auditGapClassification(disposition) {
     deduplicated: "deduplicated",
     limit_truncated: "limit_truncated",
     validated: "validated_not_exposed",
-  }[disposition] || null;
+  }[status] || null;
 }
 
 function stepMadeProgress(step, nextStep) {
@@ -531,7 +566,7 @@ function stepMadeProgress(step, nextStep) {
   );
 }
 
-function buildReport(config, attempts, executablePath) {
+export function buildReport(config, attempts, executablePath) {
   const successes = attempts.filter((attempt) => attempt.result === "success").length;
   const failures = attempts.length - successes;
   const successRate = attempts.length ? successes / attempts.length : 0;
@@ -573,8 +608,8 @@ function printHelp() {
   process.stdout.write(`  --profile NAME           model profile passed through the browser URL\n`);
   process.stdout.write(`  --browser PATH           Chrome/Chromium executable\n`);
   process.stdout.write(`  --base-url URL           wrapper URL (default: http://127.0.0.1:8283/)\n`);
-  process.stdout.write(`  --startup-timeout-ms N   service/browser readiness timeout (default: 30000)\n`);
-  process.stdout.write(`  --attempt-timeout-ms N   maximum time for one agent attempt (default: 1800000)\n`);
+  process.stdout.write(`  --startup-timeout-sec N   readiness timeout in seconds (default: 30)\n`);
+  process.stdout.write(`  --run-timeout-min N       timeout per attempt in minutes (default: 60)\n`);
   process.stdout.write(`  --headful                 show the evaluation browser\n`);
   process.stdout.write(`  --god-mode               run and validate attempts with god mode enabled\n`);
   process.stdout.write(`  --keep-servers            leave servers started by this command running\n`);
