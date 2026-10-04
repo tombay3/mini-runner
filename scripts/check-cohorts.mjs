@@ -2,8 +2,11 @@ import { readFileSync, writeFileSync, renameSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
-// Mechanical reconciliation only: never infer provenance or diagnostic labels.
+// Check catalog links; reconciliation never infers provenance or diagnostic labels.
 export function reconcileCohorts(catalog, store) {
+  if (store?.version !== 4) {
+    throw new Error("Expected v4 trace store {version:4,runs}");
+  }
   if (!catalog?.traces || !catalog?.cohorts || !store?.runs ||
       [catalog.traces, catalog.cohorts, store.runs].some(
         (value) => typeof value !== "object" || Array.isArray(value))) {

@@ -161,9 +161,10 @@ function createFallbackStatus() {
 }
 
 async function loadLegacyScripts() {
-  for (const src of legacyScripts) {
-    await loadScript(src);
-  }
+  // Dynamic scripts with async=false execute in insertion order. Queue every
+  // request before awaiting so Chromium can download them in parallel without
+  // changing the legacy runtime's dependency order.
+  await Promise.all(legacyScripts.map((src) => loadScript(src)));
 }
 
 function loadScript(src) {

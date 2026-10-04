@@ -39,9 +39,12 @@ substantial provider time and quota.
 `--target N` stops after `N` successes or when `--runs` is exhausted. Runs and target values are
 positive integers with a maximum of 100.
 
+Each attempt has a 60-minute wall-clock timeout by default. Override it with
+`--run-timeout-min N`. For example, `--run-timeout-min 120` allows two hours.
+
 An attempt finishes only after its saved recording has been refreshed in the wrapper.
-The evaluator checks readiness before every attempt, using `--startup-timeout-ms`
-as the timeout, and includes wrapper status when that check fails. It does not retry
+The evaluator checks readiness before every attempt, using `--startup-timeout-sec N`
+(default 30, maximum 300), and includes wrapper status when that check fails. It does not retry
 an attempt merely because the wrapper is busy.
 
 Normal mode remains the default. `--god-mode` enables god mode through the existing runtime toggle

@@ -84,6 +84,12 @@ Candidate lanes, filtering, scoring, validation, and failure diagnosis are defin
 `agent/prompt.py` combines the gameplay rules, compact state, and candidate list. The required
 response is JSON with a `candidateId`. OpenAI profiles may also return a short rationale.
 
+The model also receives a summary of the last eight history entries: movement, centering,
+gold changes and repeated-target progress. Missing observations remain unknown. This context
+does not change candidate generation or safety validation; its structured form is retained as
+`recentProgress` in the trace. At medium cross-row guard risk, the prompt no longer mandates
+the higher-scored horizontal ladder choice; execution gates and safety guidance still apply.
+
 The rationale is diagnostic output, not hidden reasoning. Debug logging can correlate it with the
 offered candidates, scores, safety lane, and fallback; see [Logging and debug I/O](./backend-spec.md#logging-and-debug-io).
 
@@ -104,8 +110,9 @@ off.
 `public/agent-config.json` holds non-secret runtime and experiment settings. Provider credentials
 stay in `.env` or `.env.local`; see [Public agent config](./backend-spec.md#public-agent-config).
 
-Each trace step records compact state, candidates, selection, validation, loop data, and candidate
-audit. Agent recording IDs match trace IDs. See [Trace API and store](./backend-spec.md#trace-api-and-store)
+V4 traces record compact state, exposed candidates, decision/fallback, action, loop status,
+and nonexposed candidate events. Agent recording IDs match trace IDs.
+See [Trace API and store](./backend-spec.md#trace-api-and-store)
 for data fields and [Agent evaluator](./evaluator.md) for evaluation and retention.
 
 ## Development experiment workflow

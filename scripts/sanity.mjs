@@ -18,8 +18,9 @@ if (!existsSync(pythonPath)) {
 }
 
 run(pythonPath, [path.join(scriptsDir, "sanity_backend.py")]);
+run(pythonPath, [path.join(scriptsDir, "sanity_candidates.py")]);
 run(process.execPath, [path.join(scriptsDir, "sanity_frontend.mjs")]);
-run(process.execPath, [path.join(scriptsDir, "sanity_cohorts.mjs")]);
+run(process.execPath, [path.join(scriptsDir, "sanity_traces.mjs")]);
 
 function run(command, args) {
   const result = spawnSync(command, args, {

@@ -538,9 +538,13 @@ async function loadSelectedTraceTicks(state, record) {
 
   state.selectedTraceLoadId = traceId;
   try {
-    const trace = await apiFetch(
+    const response = await apiFetch(
       `/api/agent/traces/${encodeURIComponent(traceId)}`,
     );
+    if (response?.version !== 4 || !Array.isArray(response.run?.steps)) {
+      throw new Error("Expected a v4 trace response");
+    }
+    const trace = response.run;
     if (
       state.selectedTraceLoadId !== traceId ||
       state.currentRecord?.traceId !== traceId

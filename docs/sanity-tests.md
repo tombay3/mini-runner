@@ -1,79 +1,57 @@
 # Sanity Tests
 
-## Summary
-`npm test` is the fast regression check for wrapper and Flask changes. It exercises direct
-functions and the Flask test client; it does not run the legacy game, browser automation, or an
-LLM call.
+## Purpose
 
-Use `npm run eval -- --smoke` for the separate real-browser boot check, or
-`npm run eval` for actual model-driven normal-mode trials. See
-[Agent evaluator](./evaluator.md).
+`npm test` is a fast **smoke check**, not a comprehensive gameplay regression suite.
+It exercises local functions and the Flask test client without starting services, a browser,
+the legacy engine or a model call. Small synthetic fixtures check that the main paths still work.
 
-```bash
+```sh
 npm test
 ```
 
-The command runs:
+The existing launcher uses the project virtual environment directly:
+`.venv/bin/python` on Linux/macOS or `.venv/Scripts/python.exe` on Windows.
+A missing environment produces setup guidance; it does not fall back to system Python.
 
-```bash
-node scripts/sanity.mjs
-```
+## Backend smoke
 
-The launcher uses the project virtual environment directly, so shell activation is not required:
+`scripts/sanity_backend.py` shares a temporary recording/trace-store setup. It checks:
 
-- macOS/Linux: `.venv/bin/python`
-- Windows: `.venv/Scripts/python.exe`
+- health and supported-context request validation;
+- one trace write/read and recording save/finalize/list lifecycle;
+- pin/unpin, pinned deletion protection and linked-trace deletion;
+- pinned retention plus the ten newest unpinned runs.
 
-If `.venv` is missing, the launcher exits with setup guidance instead of falling back to a
-system Python that may not have Flask or other project dependencies installed.
+It never writes to real `__data1`. Trace shape is checked through stored/API output, not source-code inspection.
 
-## Backend Coverage
-`scripts/sanity_backend.py` uses Flask `app.test_client()` and redirects recording/trace stores into a temporary directory. It does not write to real `__data1`.
+## Candidate smoke
 
-Notable checks:
+`scripts/sanity_candidates.py` runs ordinary-progress, guarded and post-gold exit fixtures through
+the same output check: a nonempty bounded pool, unique IDs, finite scores, valid key/tick actions,
+unchanged input and basic trace serialization. It does not assert exact scores or tactical choices.
 
-- `GET /api/health` returns a healthy response.
-- Recording save/list/delete behavior works against the flat `records` store.
-- User recordings and agent recordings are normalized differently; agent recordings require `traceId`.
-- Deleting an agent recording also deletes its linked trace run.
-- Saving an agent recording finalizes its linked trace with result, reason, and compact
-  terminal runner/guard state.
-- Recording retention keeps all pins plus the newest 10 unpinned entries; trace retention keeps
-  traces linked by recording pins plus the newest 10 other traces.
-- New records start unpinned, same-id saves preserve a pin, pinned deletion returns `409`, and
-  trace objects never duplicate pin state.
-- Invalid recording payloads and invalid agent request payloads are rejected with request errors.
+## Frontend/helper smoke
 
-## Frontend Coverage
-`scripts/sanity_frontend.mjs` imports `_test` helper exports from `src/agent.js` and `src/recording.js`. It stubs only the minimal `window` state needed for pure helper behavior.
+`scripts/sanity_frontend.mjs` uses the existing helper exports and a small resettable fake window.
+It checks config/action limits, game-time limits, completion waiting for its recording refresh,
+basic mode switching, non-mutating demo normalization, trace playback alignment and one evaluator summary.
 
-Notable checks:
+## Trace data check
 
-- Public agent config normalization clamps limits and preserves model profile selection.
-- Agent actions are validated and tick counts are clamped.
-- AI playback time limits use legacy game time, with `recordTick` fallback.
-- History snapshots are summarized into compact runner/gold state.
-- Terminal snapshots preserve compact runner, guard, and gold state for outcome diagnosis.
-- Model profile precedence is URL `?profile=...`, then `window.__lodeRunnerAgentOptions`, then public config.
-- Stored demos are normalized without mutating source arrays.
-- Playback progress aligns agent traces by trace step ticks and user demos by recorded key events.
-- Overlay state derives button availability from backend status, cached recordings, busy actions,
-  and the current playback phase.
-- AI button state distinguishes server checking, server offline, supported context, and an active
-  cancellable run.
-- Playback video filenames and MIME selection stay stable for browser tab recording.
+`scripts/sanity_traces.mjs` remains a separate read-only check of the four local data files:
+recording/trace structure and ID links, cohort links and readable debug-log format.
+Missing files are reported as uninitialized; uncataloged traces are warnings.
+It respects `AGENT_DATA_DIR`; run it while data writers are idle.
 
-## When To Run
-Run `npm test` after changes to:
+## Coverage boundaries and validation
 
-- recording APIs or JSON store handling;
-- wrapper playback controls, overlay state, or video recording helpers;
-- agent browser loop configuration and action normalization;
-- trace loading, trace progress, or selected-run navigation.
+The smoke suite intentionally omits detailed guard/loop/scoring regressions, prompt/UI wording,
+formatting variants and configuration-shape assertions. Passing it does not establish safety,
+completion reliability or protection against every previously observed gameplay bug.
+Add a focused reproducer when investigating a concrete defect rather than rebuilding a large matrix.
 
-For release-style checks, also run:
-
-```bash
-npm run build
-git diff --check
-```
+After implementation changes, run `npm test`, relevant Python compilation, `npm run build`
+for browser-wrapper changes and `git diff --check`. For a separate real-browser boot check, use
+`npm run eval -- --smoke`; actual model-driven trials require their own approval and budget.
+See [Evaluator](evaluator.md). No browser or paid runs are part of the default smoke suite.

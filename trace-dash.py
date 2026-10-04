@@ -65,19 +65,19 @@ def _safe_number(value: Any) -> int | float | None:
 
 def _step_event_flags(step: dict) -> dict[str, bool]:
     step = _as_dict(step)
-    validation = _as_dict(step.get("validation"))
-    loop = _as_dict(step.get("loopMonitor"))
+    decision = _as_dict(step.get("decision"))
+    loop = _as_dict(step.get("loop"))
     candidates = _as_dict_list(step.get("candidates"))
-    requested_id = validation.get("requestedCandidateId") or ""
-    selected_id = step.get("selectedCandidateId", "")
-    suppressed_ids = [
+    requested_id = decision.get("requestedId") or ""
+    selected_id = decision.get("selectedId", "")
+    suppressed_ids = {
         str(item.get("id", ""))
-        for item in _as_list(loop.get("suppressedCandidates"))
-        if isinstance(item, dict) and item.get("id")
-    ]
+        for item in _as_dict_list(step.get("candidateEvents"))
+        if item.get("status") == "loop_suppressed"
+    }
     candidate_replaced = bool(requested_id and str(requested_id) != str(selected_id))
     candidate_suppressed = bool(suppressed_ids)
-    fallback_used = bool(validation.get("fallbackUsed", False))
+    fallback_used = decision.get("fallback") is not None
     return {
         "lower_score_request": _is_meaningful_lower_score_request(
             candidates, str(requested_id)
@@ -116,6 +116,9 @@ def load_data(folder: str):
 
     recordings_raw = _as_dict(recordings_raw)
     traces_raw = _as_dict(traces_raw)
+    if type(traces_raw.get("version")) is not int or traces_raw["version"] != 4:
+        errors.append("agent-traces.json: expected trace store version 4")
+        traces_raw = {"version": 4, "runs": {}}
     runs_df, steps_df = _build_dataframes(recordings_raw, traces_raw)
     errors.extend(steps_df.attrs.get("coercion_errors", []))
     meta = {
@@ -129,6 +132,8 @@ def load_data(folder: str):
 def _build_dataframes(recordings_raw: dict, traces_raw: dict):
     recordings_raw = _as_dict(recordings_raw)
     traces_raw = _as_dict(traces_raw)
+    if type(traces_raw.get("version")) is not int or traces_raw["version"] != 4:
+        raise ValueError("expected trace store version 4")
     records = _as_dict(recordings_raw.get("records"))
     trace_runs = _as_dict(traces_raw.get("runs"))
 
@@ -170,14 +175,16 @@ def _build_dataframes(recordings_raw: dict, traces_raw: dict):
             return f"{m}:{s:02d}"
 
         record_time = _fmt_mm_ss(record_time_s)
-        demo_time_ticks = demo.get("time")
+        game_time_ticks = demo.get("time")
         try:
-            if not isinstance(demo_time_ticks, (int, float, str)):
+            if not isinstance(game_time_ticks, (int, float, str)):
                 raise TypeError
-            demo_time_s = round(float(demo_time_ticks) / 16)
+            game_time_seconds = float(game_time_ticks) / 16
+            game_time_s = round(game_time_seconds)
         except (TypeError, ValueError):
-            demo_time_s = None
-        demo_time = _fmt_mm_ss(demo_time_s)
+            game_time_seconds = None
+            game_time_s = None
+        game_time = _fmt_mm_ss(game_time_s)
 
         model_info = _as_dict(trace.get("model"))
 
@@ -193,12 +200,13 @@ def _build_dataframes(recordings_raw: dict, traces_raw: dict):
                 "playData": rec.get("playData"),
                 "savedAt": saved_at,
                 "createdAt": created_at,
-                "model": solver.get("model") or model_info.get("model", ""),
-                "provider": solver.get("provider") or model_info.get("provider", ""),
-                "modelProfile": solver.get("modelProfile")
-                or model_info.get("modelProfile", ""),
+                "model": model_info.get("name") or solver.get("model", ""),
+                "provider": model_info.get("provider") or solver.get("provider", ""),
+                "modelProfile": model_info.get("profile")
+                or solver.get("modelProfile", ""),
                 "failureReason": solver.get("failureReason", ""),
-                "stepCount": trace.get("stepCount", len(trace_steps)),
+                "stepCount": len(trace_steps),
+                "latestAction": _as_dict(trace_steps[-1]).get("action") if trace_steps else None,
                 "godMode": bool(demo.get("godMode", 0)),
                 "averageCandidateCount": average_candidate_count,
                 "lowerScoreRequestCount": sum(
@@ -206,7 +214,8 @@ def _build_dataframes(recordings_raw: dict, traces_raw: dict):
                 ),
                 "warningStepCount": sum(flag["warning"] for flag in event_flags),
                 "loopActiveSteps": sum(flag["loop_active"] for flag in event_flags),
-                "demoTime": demo_time,
+                "gameTime": game_time,
+                "gameTimeSeconds": game_time_seconds,
                 "recordTime": record_time,
             }
         )
@@ -223,43 +232,48 @@ def _build_dataframes(recordings_raw: dict, traces_raw: dict):
         for step_idx, step_value in enumerate(steps):
             step = _as_dict(step_value)
             action = _as_dict(step.get("action"))
-            loop = _as_dict(step.get("loopMonitor"))
-            suppressed = _as_list(loop.get("suppressedCandidates"))
+            loop = _as_dict(step.get("loop"))
+            events = _as_dict_list(step.get("candidateEvents"))
+            suppressed_by_id = {}
+            for item in events:
+                if item.get("status") == "loop_suppressed":
+                    suppressed_by_id.setdefault(str(item.get("id")), item)
             suppressed_candidates = [
                 {
                     "id": str(item.get("id")),
                     "kind": item.get("kind"),
-                    "direction": item.get("direction"),
+                    "action": _as_dict(item.get("action")),
                     "reason": item.get("reason"),
                 }
-                for item in suppressed
-                if isinstance(item, dict) and item.get("id")
+                for item in suppressed_by_id.values()
             ]
-            validation = _as_dict(step.get("validation"))
-            model_selection = _as_dict(step.get("modelSelection"))
+            decision = _as_dict(step.get("decision"))
+            fallback = _as_dict(decision.get("fallback"))
             safety_rejections = [
                 {
-                    "candidateId": str(item.get("candidateId")),
+                    "candidateId": str(item.get("id")),
                     "kind": item.get("kind"),
-                    "detail": str(item.get("detail") or "").strip(),
-                    "action_keyCode": _as_dict(item.get("proposedAction")).get(
+                    "detail": str(item.get("reason") or "").strip(),
+                    "action_keyCode": _as_dict(item.get("action")).get(
                         "keyCode"
                     ),
-                    "action_ticks": _as_dict(item.get("proposedAction")).get("ticks"),
+                    "action_ticks": _as_dict(item.get("action")).get("ticks"),
                 }
-                for item in _as_list(step.get("candidateAudit"))
-                if isinstance(item, dict)
-                and item.get("disposition") == "safety_rejection"
-                and item.get("candidateId")
+                for item in events
+                if item.get("status") == "safety_rejection"
             ]
             state = _as_dict(step.get("state"))
             candidates = _as_dict_list(step.get("candidates"))
 
-            selected_id = step.get("selectedCandidateId", "")
-            selected_kind = step.get("selectedCandidateKind", "")
+            selected_id = decision.get("selectedId", "")
+            selected = next(
+                (candidate for candidate in candidates if candidate.get("id") == selected_id),
+                {},
+            )
+            selected_kind = selected.get("kind", "")
             event_flags = _step_event_flags(step)
 
-            risk = _as_dict(state.get("guardRisk"))
+            risk = state.get("risk", "")
             runner = _as_dict(state.get("runner"))
             after_state = (
                 _as_dict(_as_dict(steps[step_idx + 1]).get("state"))
@@ -267,7 +281,7 @@ def _build_dataframes(recordings_raw: dict, traces_raw: dict):
                 else final_state
             )
             after_runner = _as_dict(after_state.get("runner"))
-            after_risk = _as_dict(after_state.get("guardRisk"))
+            after_risk = after_state.get("risk", "")
             state_gold = _as_dict(state.get("gold"))
             after_gold = _as_dict(after_state.get("gold"))
             is_final_step = step_idx + 1 == len(steps)
@@ -280,22 +294,17 @@ def _build_dataframes(recordings_raw: dict, traces_raw: dict):
                     "after_state_tick": after_state.get("tick"),
                     "action_keyCode": action.get("keyCode"),
                     "action_ticks": action.get("ticks"),
-                    "action_reason": action.get("reason", ""),
+                    "action_reason": _as_dict(selected.get("firstAction")).get("reason", ""),
                     "selectedCandidateId": selected_id,
                     "selectedCandidateKind": selected_kind,
-                    "requestedCandidateId": validation.get("requestedCandidateId")
+                    "requestedCandidateId": decision.get("requestedId")
                     or "",
                     "candidateCount": len(candidates),
-                    "fallbackUsed": validation.get("fallbackUsed", False),
-                    "fallbackReason": validation.get("fallbackReason") or "",
-                    "reasoningContent": (
-                        model_selection.get("reasoningContent")
-                        if isinstance(model_selection.get("reasoningContent"), str)
-                        else ""
-                    ),
-                    "declaredRationale": (
-                        model_selection.get("declaredRationale")
-                        if isinstance(model_selection.get("declaredRationale"), str)
+                    "fallbackUsed": decision.get("fallback") is not None,
+                    "fallbackReason": fallback.get("message") or fallback.get("code") or "",
+                    "rationale": (
+                        decision.get("rationale")
+                        if isinstance(decision.get("rationale"), str)
                         else ""
                     ),
                     "event_lowerScoreRequest": event_flags["lower_score_request"],
@@ -314,7 +323,7 @@ def _build_dataframes(recordings_raw: dict, traces_raw: dict):
                     "runner_y": runner.get("y"),
                     "runner_xOffset": runner.get("xOffset"),
                     "runner_yOffset": runner.get("yOffset"),
-                    "risk_level": risk.get("risk", ""),
+                    "risk_level": risk,
                     "gold_remaining": state_gold.get("remainingCount"),
                     "gold_complete": state_gold.get("complete"),
                     "game_state": state.get("gameState", ""),
@@ -322,7 +331,7 @@ def _build_dataframes(recordings_raw: dict, traces_raw: dict):
                     "after_runner_y": after_runner.get("y"),
                     "after_runner_xOffset": after_runner.get("xOffset"),
                     "after_runner_yOffset": after_runner.get("yOffset"),
-                    "after_risk_level": after_risk.get("risk", ""),
+                    "after_risk_level": after_risk,
                     "after_gold_remaining": after_gold.get("remainingCount"),
                     "after_gold_complete": after_gold.get("complete"),
                     "after_game_state": after_state.get("gameState", ""),
@@ -332,7 +341,7 @@ def _build_dataframes(recordings_raw: dict, traces_raw: dict):
                     "terminal_reason": outcome.get("reason", "")
                     if is_final_step
                     else "",
-                    "model": model_info.get("model", ""),
+                    "model": model_info.get("name", ""),
                     "provider": model_info.get("provider", ""),
                     "candidates_raw": candidates,
                 }
@@ -744,10 +753,22 @@ def _build_run_signals(
         progress_intervals.append(complete_interval)
     progress_interval = _longest_range(rows, progress_intervals)
     if progress_interval is not None:
-        signals.append(
+        initial_gold = rows[0]["gold_remaining"]
+        remaining_gold = rows[-1]["after_gold_remaining"]
+        gold_prefix = (
+            f"{int(initial_gold - remaining_gold)} golds · "
+            if initial_gold is not None
+            and remaining_gold is not None
+            and initial_gold >= remaining_gold >= 0
+            and initial_gold % 1 == 0
+            and remaining_gold % 1 == 0
+            else ""
+        )
+        signals.insert(
+            0,
             _signal(
                 "Progress delay",
-                " · ".join(progress_parts),
+                gold_prefix + " · ".join(progress_parts),
                 rows,
                 progress_interval,
             )
@@ -972,8 +993,7 @@ def _candidate_reason(
     candidate_replaced: bool,
     fallback_used: bool,
     fallback_reason: str,
-    reasoning_content: str,
-    declared_rationale: str,
+    rationale: str,
     suppressed_ids: set[str],
 ) -> str:
     """Prefix a candidate reason with compact semantic markers and context."""
@@ -995,11 +1015,10 @@ def _candidate_reason(
     if candidate_id in suppressed_ids:
         markers.append("🔁")
 
-    if candidate_id == requested_id and requested_below_top_score:
-        original_reason = (
-            str(reasoning_content or "").strip()
-            or str(declared_rationale or "").strip()
-        )
+    if candidate.get("_suppressed_only"):
+        original_reason = _as_dict(candidate.get("firstAction")).get("reason", "")
+    elif candidate_id == requested_id and requested_below_top_score:
+        original_reason = str(rationale or "").strip()
     else:
         original_reason = _as_dict(candidate.get("firstAction")).get("reason", "")
     return " ".join(
@@ -1158,7 +1177,19 @@ if selected_trace and not runs_df.empty and "traceId" in runs_df.columns:
 
 
 # ── Section 1: Run Overview ───────────────────────────────────────────────────
-with st.expander(f"📋 Section 1 — Run Overview{_inspect_label}", expanded=True):
+_overview_stats_suffix = ""
+if not runs_df.empty:
+    average_steps = pd.to_numeric(runs_df["stepCount"], errors="coerce").mean()
+    average_game_time = pd.to_numeric(runs_df["gameTimeSeconds"], errors="coerce").mean()
+    _overview_stats_suffix = f" (average {average_steps:.0f} steps"
+    if pd.notna(average_game_time):
+        minutes, seconds = divmod(round(average_game_time), 60)
+        _overview_stats_suffix += f" · {minutes}:{seconds:02d}"
+    _overview_stats_suffix += ")"
+with st.expander(
+    f"📋 Section 1 — Run Overview{_inspect_label}{_overview_stats_suffix}",
+    expanded=True,
+):
     if runs_df.empty:
         st.info("No recordings found.")
     else:
@@ -1166,9 +1197,9 @@ with st.expander(f"📋 Section 1 — Run Overview{_inspect_label}", expanded=Tr
             "traceId_short",
             "savedAt",
             "result",
-            "demoTime",
             "stepCount",
             "failureReason",
+            "gameTime",
             "godMode",
             "averageCandidateCount",
             "lowerScoreRequestCount",
@@ -1179,6 +1210,24 @@ with st.expander(f"📋 Section 1 — Run Overview{_inspect_label}", expanded=Tr
         ]
         cols_present = [c for c in display_cols if c in overview_runs_df.columns]
         view = cast(pd.DataFrame, overview_runs_df.loc[:, cols_present].copy())
+        gold_collected = {}
+        if not steps_df.empty:
+            for trace_id, trace_steps in steps_df.groupby("traceId", sort=False):
+                initial = _safe_number(trace_steps.iloc[0]["gold_remaining"])
+                remaining = _safe_number(trace_steps.iloc[-1]["after_gold_remaining"])
+                if (
+                    initial is not None
+                    and remaining is not None
+                    and initial >= remaining >= 0
+                    and initial % 1 == 0
+                    and remaining % 1 == 0
+                ):
+                    gold_collected[trace_id] = int(initial - remaining)
+        view.insert(
+            view.columns.get_loc("averageCandidateCount"),
+            "goldCollected",
+            overview_runs_df["traceId"].map(gold_collected).astype("Int64"),
+        )
         # Display-only row number, kept separate from persisted trace IDs.
         view.insert(
             0,
@@ -1211,8 +1260,9 @@ with st.expander(f"📋 Section 1 — Run Overview{_inspect_label}", expanded=Tr
             columns={
                 "traceId_short": "traceId",
                 "stepCount": "steps",
-                "demoTime": "time",
-                "failureReason": "reason",
+                "gameTime": "time",
+                "failureReason": "outcome",
+                "goldCollected": "🧈",
                 "averageCandidateCount": "🎯",
                 "lowerScoreRequestCount": "✨",
                 "warningStepCount": "⚠️",
@@ -1244,7 +1294,8 @@ with st.expander(f"📋 Section 1 — Run Overview{_inspect_label}", expanded=Tr
             height=header_h + row_h * len(view),
             column_config={
                 "#": st.column_config.NumberColumn("#", width=30),
-                "reason": st.column_config.TextColumn("reason", width=200),
+                "outcome": st.column_config.TextColumn("outcome", width=200),
+                "🧈": st.column_config.NumberColumn("🧈", width=30, format="%d"),
                 "🎯": st.column_config.NumberColumn("🎯", width=30, format="%.1f"),
                 "✨": st.column_config.NumberColumn("✨", width=30),
                 "⚠️": st.column_config.NumberColumn("⚠️", width=30),
@@ -1256,7 +1307,7 @@ with st.expander(f"📋 Section 1 — Run Overview{_inspect_label}", expanded=Tr
             key="run_overview_table",
         )
         st.caption(
-            "🎯 average candidates/step · ✨ model requests · "
+            "🧈 gold collected · 🎯 average candidates/step · ✨ model divergences · "
             "⚠️ replacement/suppression · 🔁 active loop steps"
         )
 
@@ -1279,11 +1330,11 @@ if selected_trace and not steps_df.empty:
     if (
         not runs_df.empty
         and "traceId" in runs_df.columns
-        and "demoTime" in runs_df.columns
+        and "gameTime" in runs_df.columns
     ):
         _row = runs_df[runs_df["traceId"] == selected_trace]
         if not _row.empty:
-            _d = str(_row.iloc[0].get("demoTime") or "")
+            _d = str(_row.iloc[0].get("gameTime") or "")
     _trace_stats_suffix = f" ({_n} steps"
     if _d:
         _trace_stats_suffix += f" · {_d}"
@@ -1416,20 +1467,15 @@ with st.expander(_s2_label, expanded=_jump_matches, key=_s2_key):
                                 if isinstance(item, dict) and item.get("id")
                             }
                             display_candidates = list(cands)
-                            displayed_ids = {
-                                str(candidate.get("id") or "")
-                                for candidate in display_candidates
-                                if isinstance(candidate, dict)
-                            }
-                            # Loop metadata can suppress a candidate that was
-                            # not included in the backend's evaluated list.
+                            # Loop suppression is shown once per ID; safety
+                            # rejections retain every event occurrence below.
                             for suppressed_candidate in suppressed_candidates:
                                 if not isinstance(suppressed_candidate, dict):
                                     continue
                                 suppressed_id = str(
                                     suppressed_candidate.get("id") or ""
                                 )
-                                if suppressed_id and suppressed_id not in displayed_ids:
+                                if suppressed_id:
                                     display_candidates.append(
                                         {
                                             "id": suppressed_id,
@@ -1438,6 +1484,7 @@ with st.expander(_s2_label, expanded=_jump_matches, key=_s2_key):
                                             ),
                                             "score": None,
                                             "firstAction": {
+                                                **_as_dict(suppressed_candidate.get("action")),
                                                 "reason": suppressed_candidate.get(
                                                     "reason", ""
                                                 )
@@ -1465,6 +1512,8 @@ with st.expander(_s2_label, expanded=_jump_matches, key=_s2_key):
                                         "candidate": (
                                             "✅ "
                                             if str(c.get("id") or "") == sel_id
+                                            and not c.get("_suppressed_only")
+                                            and not c.get("_safety_rejection")
                                             else ""
                                         )
                                         + str(c.get("id") or ""),
@@ -1494,18 +1543,10 @@ with st.expander(_s2_label, expanded=_jump_matches, key=_s2_key):
                                                 candidate_replaced=candidate_replaced,
                                                 fallback_used=fallback_used,
                                                 fallback_reason=fallback_reason,
-                                                reasoning_content=str(
+                                                rationale=str(
                                                     _display_scalar(
                                                         step_row.get(
-                                                            "reasoningContent"
-                                                        ),
-                                                        "",
-                                                    )
-                                                ),
-                                                declared_rationale=str(
-                                                    _display_scalar(
-                                                        step_row.get(
-                                                            "declaredRationale"
+                                                            "rationale"
                                                         ),
                                                         "",
                                                     )

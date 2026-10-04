@@ -268,6 +268,21 @@ def find_row_ladders(snapshot: dict[str, Any], limit: int = 6) -> list[dict[str,
     return ladders[: max(1, limit)]
 
 
+def ladder_column_reaches_top(
+    snapshot: dict[str, Any], ladder: dict[str, Any]
+) -> bool:
+    """Return whether an active ladder is continuously connected to row zero."""
+    if not _is_gold_complete(snapshot):
+        return False
+    x = _to_int(ladder.get("x"))
+    ladder_y = _to_int(ladder.get("ladderY", ladder.get("y")))
+    rows = _get_terrain_grid(snapshot)
+    if x is None or ladder_y is None or ladder_y < 0 or ladder_y >= len(rows):
+        return False
+    ladder_tiles = _active_ladder_tiles(snapshot)
+    return all(_terrain_at(rows, x, y) in ladder_tiles for y in range(ladder_y + 1))
+
+
 def get_ladder_affordance(
     snapshot: dict[str, Any], *, row_ladders: list[dict[str, Any]] | None = None
 ) -> dict[str, Any]:

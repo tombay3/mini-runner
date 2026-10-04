@@ -6,6 +6,9 @@ export default defineConfig({
     host: "0.0.0.0",
     allowedHosts: true,
     port: 8283,
+    watch: {
+      ignored: ["**/__data*/**"],
+    },
     // strictPort: true,
     // open: true // Open browser on server start
     // cors: true,

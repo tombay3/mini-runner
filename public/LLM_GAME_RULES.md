@@ -11,7 +11,6 @@
 - At low guard risk, prefer concrete collection, ladder, route-access, descent, or exit progress over retreating, holding, or waiting.
 - At medium guard risk, choose progress only when its supplied candidate reasons identify a guard-safe route; otherwise prefer safety.
 - In normal mode at overall medium risk, when the pressure guard is on the same row and closing and an exposed `defensive_dig` reason says the guard can fall, choose the highest-scored exposed safety candidate after execution gates. Equal top scores may choose either candidate. Do not apply this rule while a dig or trap-resolution gate is active, or at low, high, or critical risk. Ladder-before-access-dig guidance does not override this defensive safety choice.
-- In normal mode at medium cross-row guard risk, after execution gates and safety policy, prefer the higher-scored exposed horizontal ladder progress candidate. A nearer ladder alone is not guard-safe. Keep safety candidates and same-row restrictions first.
 - Under high or critical guard risk, prefer a valid row-changing escape, defensive dig, or movement away from the pressure guard over progress.
 - Resume concrete progress as soon as guard danger and execution gates clear; do not continue retreating after safety is restored.
 - Candidate targets, scores, and reasons are backend-derived and authoritative; do not reject an indirect-looking first action or invent an unsupported route interpretation.

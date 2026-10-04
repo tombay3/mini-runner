@@ -26,7 +26,7 @@ from .config import (
 from .debug_io import append_model_io_debug
 from .errors import AgentConfigError, AgentExecutionError, AgentRequestError
 from .logging_utils import get_logger, log_event, refresh_app_log_level
-from .prompt import build_agent_prompt
+from .prompt import build_agent_prompt, build_recent_progress
 from .traces import serialize_step_trace
 
 
@@ -225,6 +225,11 @@ def plan_next_action(
     public_config = load_public_agent_config()
     client = get_aisuite_agent_client()
     requested_model = resolve_requested_model(client, options, public_config)
+    if options.get("traceGuard"):
+        options["traceGuard"](
+            {"profile": requested_model.profile, "provider": requested_model.provider, "name": requested_model.model},
+            public_config["backend"],
+        )
     return run_candidate_selection(snapshot, history, requested_model, client, options, public_config)
 
 
@@ -285,6 +290,7 @@ def run_candidate_selection(
         analysis,
         options,
         public_config,
+        history=history,
     )
     log_event(
         LOGGER,
@@ -311,6 +317,8 @@ def run_candidate_selection(
         analysis=analysis,
         model_selection=build_model_selection_trace(result),
     )
+    if isinstance(history, list) and history:
+        trace["recentProgress"] = build_recent_progress(history)
     return {
         "action": action,
         "planner": planner,
@@ -327,12 +335,15 @@ def run_model_turn(
     analysis: dict[str, Any],
     options: dict[str, Any],
     public_config: dict[str, Any],
+    *,
+    history: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     prompt = build_agent_prompt(
         snapshot,
         candidates=candidates,
         analysis=analysis,
         include_reasoning=model.profile == "openai",
+        history=history,
     )
     messages = [
         {
@@ -380,8 +391,6 @@ def run_model_turn(
             model=model.model,
             prompt=prompt,
             response=response,
-            parse_error=parse_error,
-            selected_candidate_id=(choice or {}).get("candidateId"),
         )
     except Exception as exc:  # noqa: BLE001
         log_event(LOGGER, logging.WARNING, "agent_debug_io_write_failed", error=exc)
@@ -408,15 +417,6 @@ def validate_or_fallback_candidate(
         selected = candidates[0]
         fallback_used = True
         fallback_reason = result.get("parseError") or f"unknown candidateId: {requested_id}"
-
-    if not fallback_used:
-        policy_choice, policy_reason = preferred_guard_policy_candidate(
-            selected, candidates, analysis
-        )
-        if policy_choice is not None:
-            selected = policy_choice
-            fallback_used = True
-            fallback_reason = policy_reason
 
     action_valid = is_action_physically_valid(
         selected["firstAction"],
@@ -447,125 +447,6 @@ def validate_or_fallback_candidate(
         "fallbackReason": fallback_reason,
     }
     return selected, validation
-
-
-def preferred_guard_policy_candidate(
-    selected: dict[str, Any],
-    candidates: list[dict[str, Any]],
-    analysis: dict[str, Any],
-) -> tuple[dict[str, Any] | None, str | None]:
-    """Enforce only the two demonstrated medium-risk score preferences."""
-    risk = analysis.get("risk") or {}
-    guard = risk.get("pressureGuard") or {}
-    if (
-        analysis.get("godMode")
-        or (analysis.get("activeDig") or {}).get("active")
-        or risk.get("risk") != "medium"
-        or any(
-            candidate.get("kind") in {
-                "wait_for_dig_completion",
-                "wait_for_trap_resolution",
-                "wait_for_floor_refill",
-            }
-            for candidate in candidates
-        )
-    ):
-        return None, None
-
-    if guard.get("relativeY") == "same" and guard.get("closing"):
-        fall_digs = [
-            candidate for candidate in candidates
-            if candidate.get("kind") == "defensive_dig"
-            and "closing same-row guard can fall" in str(
-                (candidate.get("firstAction") or {}).get("reason") or ""
-            )
-        ]
-        if fall_digs:
-            safety = [candidate for candidate in candidates if candidate.get("lane") == "safety"]
-            best = max(safety, key=lambda candidate: int(candidate.get("score") or 0))
-            if _preserve_loop_breaking_defensive_dig(selected, candidates, analysis):
-                return None, None
-            if (
-                selected.get("lane") != "safety"
-                or int(selected.get("score") or 0) < int(best.get("score") or 0)
-            ):
-                return best, "medium same-row guard safety candidate has higher score"
-        return None, None
-
-    if guard.get("relativeY") not in {"above", "below"}:
-        return None, None
-    if selected.get("kind") != "align_ladder" or any(
-        candidate.get("lane") == "safety" for candidate in candidates
-    ):
-        return None, None
-    if any(
-        nearby.get("relativeY") == "same"
-        and nearby.get("risk") in {"medium", "high", "critical"}
-        for nearby in risk.get("nearbyGuards") or []
-    ):
-        return None, None
-    ladders = [
-        candidate for candidate in candidates
-        if candidate.get("kind") == "align_ladder"
-        and (candidate.get("firstAction") or {}).get("keyCode") in {37, 39}
-    ]
-    if len(ladders) < 2:
-        return None, None
-    best = max(ladders, key=lambda candidate: int(candidate.get("score") or 0))
-    if int(selected.get("score") or 0) < int(best.get("score") or 0):
-        return best, "medium cross-row ladder candidate has higher score"
-    return None, None
-
-
-def _preserve_loop_breaking_defensive_dig(
-    selected: dict[str, Any],
-    candidates: list[dict[str, Any]],
-    analysis: dict[str, Any],
-) -> bool:
-    if (
-        selected.get("kind") != "defensive_dig"
-        or "closing same-row guard can fall" not in str(
-            (selected.get("firstAction") or {}).get("reason") or ""
-        )
-    ):
-        return False
-    selected_score = int(selected.get("score") or 0)
-    higher = [
-        candidate for candidate in candidates
-        if int(candidate.get("score") or 0) > selected_score
-    ]
-    if len(higher) != 1:
-        return False
-    retreat = higher[0]
-    if (
-        retreat.get("id") != "retreat_from_guard_down"
-        or retreat.get("kind") != "retreat_from_guard"
-        or (retreat.get("firstAction") or {}).get("keyCode") != 40
-    ):
-        return False
-
-    evidence = ((analysis.get("loopReport") or {}).get("evidence") or {})
-    x_range = evidence.get("xRange")
-    if (
-        not evidence.get("noGoldChange")
-        or not isinstance(x_range, (int, float))
-        or x_range > 1
-    ):
-        return False
-    cycle_actions = []
-    for candidate_id in evidence.get("candidateIds") or []:
-        candidate_id = str(candidate_id or "")
-        if candidate_id == "retreat_from_guard_down":
-            cycle_actions.append("down")
-        elif (
-            candidate_id.startswith(("climb_ladder_", "exit_ladder_route_"))
-            and candidate_id.endswith("_up")
-        ):
-            cycle_actions.append("up")
-    return sum(
-        before == "down" and after == "up"
-        for before, after in zip(cycle_actions, cycle_actions[1:])
-    ) >= 2
 
 
 def build_loop_monitor(analysis: dict[str, Any]) -> dict[str, Any]:
@@ -613,19 +494,9 @@ def parse_candidate_response(response: Any) -> tuple[dict[str, Any] | None, str 
 
 def build_model_selection_trace(result: dict[str, Any]) -> dict[str, Any]:
     choice = result.get("choice") or {}
-    response = result.get("response")
-    message = None
-    choices = getattr(response, "choices", None)
-    if choices:
-        message = getattr(choices[0], "message", None)
-    reasoning_content = getattr(message, "reasoning_content", None)
-    if not isinstance(reasoning_content, str):
-        reasoning_content = ""
     return {
         "requestedCandidateId": choice.get("candidateId"),
-        "declaredRationale": choice.get("reasoning", ""),
-        "reasoningContent": reasoning_content[:2000],
-        "parseError": result.get("parseError"),
+        "declaredRationale": choice.get("reasoning", "")[:240],
     }
 
 

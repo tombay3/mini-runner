@@ -27,8 +27,6 @@ def append_model_io_debug(
     model: str,
     prompt: str,
     response: Any,
-    parse_error: str | None,
-    selected_candidate_id: str | None,
 ) -> None:
     if not is_debug_enabled():
         return
@@ -39,8 +37,6 @@ def append_model_io_debug(
         model=model,
         prompt=prompt,
         response=response,
-        parse_error=parse_error,
-        selected_candidate_id=selected_candidate_id,
     )
     entries = read_debug_entries()
     entries.append(entry)
@@ -66,8 +62,6 @@ def format_model_io_entry(
     model: str,
     prompt: str,
     response: Any,
-    parse_error: str | None,
-    selected_candidate_id: str | None,
 ) -> str:
     message = get_response_message(response)
     return "\n".join(
@@ -75,8 +69,6 @@ def format_model_io_entry(
             f"{ENTRY_PREFIX}{utc_now()} =====",
             f"traceId: {trace_id or ''}",
             f"model: {model}",
-            f"selectedCandidateId: {selected_candidate_id or ''}",
-            f"parseError: {parse_error or ''}",
             "",
             "--- prompt ---",
             prompt,

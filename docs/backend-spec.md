@@ -3,6 +3,7 @@
 ## Summary
 `app.py` is the local Flask API for recordings, agent planning, traces, model configuration, and
 debug logging. Use this document for endpoint contracts, configuration, and stored run data.
+Flask listens on `0.0.0.0:8485`; the debugger is disabled.
 
 Backend layers:
 
@@ -95,17 +96,23 @@ is `<8hex>-<timestamp>`. Short IDs are always the first eight-character segment.
 - `snapshot + history -> candidate analysis -> LLM candidate choice -> action validation -> response`.
 - Candidate generation and loop filtering happen deterministically in Python before the LLM call.
 - `agent-traces.json` records compact state summaries, eligible candidates, the selected candidate,
-  generic validation, loop-filter evidence, and model metadata.
+  decision/fallback, nonexposed candidate events, loop status, and run metadata.
 
 ## Trace API And Store
-- `GET /api/agent/traces/<trace_id>`: return one retained trace run.
+- `GET /api/agent/traces/<trace_id>`: return `{ "version": 4, "run": <run> }`.
 - `GET /api/agent/runs/<playData>/<level>`: return latest trace metadata and saved recording for that context.
 
-The trace store has this shape:
+This section is the canonical trace API/store reference. `app.py` owns storage, endpoints and
+run metadata; `agent/traces.py` serializes steps and terminal state, using model-input formatters
+from `agent/prompt.py`. The supported context is Classic `playData=1, level=1`.
+Dashboard views and indicators belong in [Trace dashboard](trace-dashboard.md);
+reviewed findings and comparison groups belong in [Trace cohorts](trace-cohort.md).
+
+The trace store shape is:
 
 ```json
 {
-  "version": 3,
+  "version": 4,
   "updatedAt": "2026-05-28T00:00:00.000Z",
   "runs": {
     "<traceId>": {
@@ -114,15 +121,9 @@ The trace store has this shape:
       "updatedAt": "...",
       "playData": 1,
       "level": 1,
-      "model": {},
-      "config": {},
-      "stepCount": 0,
-      "latestAction": {},
-      "outcome": {
-        "result": "failure",
-        "reason": "runner dead",
-        "finalState": {}
-      },
+      "model": { "profile": "openai", "provider": "openai", "name": "openai:gpt-5-nano" },
+      "config": { "candidateLimit": 7, "maxActionTicks": 20, "temperature": 1 },
+      "outcome": null,
       "steps": []
     }
   }
@@ -131,25 +132,123 @@ The trace store has this shape:
 
 Run data with outcome:
 
-- Each run stores `model`, `config`, `stepCount`, `latestAction`, and `outcome`.
+- Each run stores `model` and `config` once, plus `steps` and nullable `outcome`.
+- Model and backend controls are fixed within a run. Changing either requires a new run;
+  finalized runs reject further appends.
+- A run finalized without planning has null model/config.
+- `stepCount` and `latestAction` are derived API/view summaries, not stored run fields.
+- A terminal outcome is `{result, reason, finalState}`; `null` means no recorded terminal outcome.
 - `outcome.finalState` stores the terminal runner, guard, gold, tick, game-state, and god-mode
-  data needed to classify success or failure.
+  data needed to classify success or failure, or null when no final snapshot exists.
+  Terminal risk defaults to `"unknown"`; terminal snapshots contain observations, not model context.
+
+The step shape is:
+
+```text
+{
+  createdAt,
+  state: {
+    tick, gameState, godMode,
+    runner: {x, y, xOffset, yOffset, action},
+    guards: [{id, x, y, xOffset, yOffset, action, carryingGold}],
+    gold: {remainingCount, complete, visiblePositions: [{x, y, ...}]},
+    risk, primaryProgressTarget, threat, movement, route
+  },
+  candidates: [{id, kind, lane, score, target, intents, targets, reasons,
+                firstAction: {keyCode, ticks, name, reason}}],
+  decision: {requestedId, selectedId, rationale,
+             fallback: null | {code: "candidate_fallback", message}},
+  action: {keyCode, ticks},
+  loop: {active, type, suppressedCount},
+  candidateEvents: [{id, kind, status, action: {keyCode, ticks}, reason}],
+  recentProgress: optional bounded model-input summary
+}
+```
 
 Step data:
 
-- `step.state` is a compact prompt-parity summary of game state, runner, gold, movement, ladder,
-  progress target, guard risk, open holes, and route access.
-- `candidates` contains the legal backend choices, including each candidate's ID, kind, lane,
-  score, target, and first action.
-- The step also records the selected candidate, validation, action, and loop status. Raw model
-  messages and the full terrain grid are not stored.
-- `guardRisk` identifies the highest-priority mobile threat as `pressureGuard` and summarizes
-  nearby guards with `relativeX`, `relativeY`, `motion`, and `closing`. Guard pressure is adjusted
-  before candidate generation; `in_hole` has low immediate pressure.
+- `step.state` contains `tick`, `gameState`, `godMode`, `runner`, `guards`, `gold`, and `risk`.
+  Planned steps also retain model-input `primaryProgressTarget`, `threat`, `movement`, and
+  `route`, using the prompt formatters. `guards` contains the engine's observed entities;
+  `threat` includes individual risk/motion under `pressureGuard` and `nearbyGuards`.
+  `movement` includes legal directions and open holes; `route` includes ladder
+  and access information. Empty nested context fields may be omitted. Gold positions retain
+  supplied model metadata such as tile/source. Missing observations remain unknown.
+  When history is available, `step.recentProgress` retains the bounded progress summary
+  supplied to the model.
+- `candidates` contains the exposed executable backend choices, including each candidate's ID, kind, lane,
+  score, full target, intents, merged targets, reasons, and first action (including its name).
+  Model-input reasons are retained in full; the first-action reason is capped at 240 characters.
+- `decision` contains `requestedId`, `selectedId`, `rationale`, and nullable `fallback:{code,message}`.
+  The only implemented fallback code is `candidate_fallback`. Rationale and fallback message
+  are each bounded to 240 characters.
+- `action` contains only `keyCode` and `ticks`; `loop` contains `active`, `type`, and the
+  model-input `suppressedCount`.
+- `candidateEvents` contains nonexposed `{id,kind,status,action:{keyCode,ticks},reason}` rows,
+  with statuses `safety_rejection`, `physical_rejection`, `deduplicated`, `loop_suppressed`, and
+  `limit_truncated`. Each event is a nonexposed proposal occurrence, using its proposed action;
+  repeated IDs remain separate occurrences. Events carry no scores, lanes, targets or audit payload.
+  Event reasons are capped at 240 characters. Exposed/proposed audit rows are not emitted as events.
+- Step index and selected kind are derived. Raw model messages, provider reasoning, terrain,
+  non-model analysis, score breakdowns, and candidate audits are not stored in traces.
 
-Loop data:
+Derived view/API fields include one-based display step, selected kind (lookup by `selectedId`),
+request membership, fallback status, last action, after-state and elapsed time. They are not
+duplicated in stored steps. Game time uses 16 ticks per second; wall-clock duration uses timestamps.
 
-- `loopMonitor` stores confirmed loop status, type, evidence, and `suppressedCandidates`.
+For example, an unknown requested ID records the intervention separately from execution:
+
+```json
+{
+  "decision": {
+    "requestedId": "missing-id", "selectedId": "collect_same_row_gold_17_14_right",
+    "rationale": "Move toward gold.",
+    "fallback": {"code": "candidate_fallback", "message": "unknown candidateId: missing-id"}
+  },
+  "action": {"keyCode": 39, "ticks": 4}
+}
+```
+
+A safety rejection remains a nonexposed event with no score:
+
+```json
+{
+  "id": "retreat_from_guard_up", "kind": "retreat_from_guard",
+  "status": "safety_rejection", "action": {"keyCode": 38, "ticks": 6},
+  "reason": "Approaching secondary guard."
+}
+```
+
+### Candidate score diagnostics
+
+Only exposed candidates' scalar `score` is persisted in traces. `candidateAudit`, `scoreBreakdown`,
+`proposedScore`, `proposedScoreBreakdown`, `scoreStage`, and `rankingTieBreak` are internal
+diagnostics.
+
+`score` is the effective integer ranking value. Internal `scoreBreakdown` contains
+the named policy, total and actual signed components. Components sum to the total;
+fixed base values are not split into invented risk/progress factors.
+
+`candidateAudit` keeps `proposedScore` and `proposedScoreBreakdown` separate from
+the effective `score` and `scoreBreakdown`. Its `scoreStage` identifies the internal scoring stage:
+
+| Stage | Meaning |
+|---|---|
+| `proposal` | Ranking adjustments have not been applied. Rejected or duplicate-ID proposals may stop here. |
+| `validated` | The pre-shortlist score includes applicable adjustments, even if the candidate is later loop-suppressed or truncated. |
+| `exposed_rerank` | The narrow gold bonus changed the score after shortlist inclusion. |
+
+A merged candidate keeps the winning proposal's breakdown, not the sum of merged
+scores. `rankingTieBreak` instead explains order among equal-score retreats: both
+predicted guard distances, winner, duration, ticks per cell and order-change flag. It
+does not add a numeric score component or certify safety. The forecast uses tile
+coordinates at eight ticks per cell, not full physics simulation.
+
+See [current ranking rules](candidate-design.md#scoring-and-deduplication).
+
+### Loop diagnostics
+
+- `loop` stores confirmed status and type; suppression is recorded in `candidateEvents`.
 - Loop-filter behavior is defined in [candidate design](./candidate-design.md#loop-handling).
 
 Dashboard loading, derived after-state, event markers, and UI behavior are documented in
@@ -157,10 +256,10 @@ Dashboard loading, derived after-state, event markers, and UI behavior are docum
 
 Retention and run metadata:
 
-- The trace store keeps up to 10 newest runs.
-- Run-level `model` and `config` are stored once, not repeated on every step.
-- See [retention and missing links](./trace-dashboard.md#retention-and-missing-links) for
-  retention behavior.
+- The trace store keeps runs linked by pinned recordings plus the newest 10 other runs.
+- Recordings keep all pinned records plus the newest 10 unpinned records; recordings alone own pin state.
+- [Retention and missing links](./trace-dashboard.md#retention-and-missing-links) explains how
+  the dashboard presents unavailable evidence.
 
 
 ## Model Profiles
@@ -266,8 +365,8 @@ Environment-only settings:
 - `npm run api` uses the project virtual environment and Flask source reloading; the interactive
   Flask debugger remains disabled.
 - Debug model I/O is written to `__data1/agent-debug.log` with 10-entry rotation. Entries include
-  the trace ID, model, prompt, final message, reasoning summary when available, parse errors, and
-  selected candidate ID.
+  prompt/model output and correlation identifiers only, with no selected-candidate
+  or error headers.
 - OpenAI calls request a brief observable rationale. Raw model I/O is never written to stdout or
   `agent-traces.json`.
 
