@@ -51,6 +51,36 @@ Normal mode remains the default. `--god-mode` enables god mode through the exist
 before smoke validation and before every attempt. Reports record the requested mode plus recording
 step, and terminal evidence; a mismatch is an evaluation failure.
 
+## Hybrid reproducer
+
+`npm run eval:reproduce` replays a retained Classic 1:1 recording to a decision
+boundary, verifies the state/history, then can continue with normal model calls.
+The prefix is reproducible; model choices and native guard events after handoff
+remain variable. Control uses `--control-ref` (default `HEAD`); fix uses the local
+worktree. Both need the current V4 backend. Original stores are read-only.
+
+```sh
+npm run eval:reproduce -- prepare --trace <trace-id-or-prefix> --tick <tick> \
+  --control-ref main --paid-budget 2 --output __data3/<fresh-experiment>
+npm run eval:reproduce -- preflight --output __data3/<fresh-experiment>
+```
+
+`prepare`, `preflight`, `smoke`, and `verify-smoke` make no paid calls. Run those
+checks before `pair 1`, the only command that starts paid continuations. The
+budget defaults to zero and is frozen at preparation; each continuation may
+make multiple requests. Model/profile must match the historical trace.
+
+Paid execution needs explicit budget and provider-data approval. Ask the owner
+to stop any existing Flask backend; the tool starts its own isolated backend,
+reuses running Vite, and keeps Chromium sandboxed. Generated source snapshots,
+traces, recordings and file-based `status` stay under ignored `__data3`.
+Snapshots contain private environment links; do not publish entire directories.
+
+Use `review` after each pair before starting another, then `finish` to close the
+experiment. These commands take the same `--output` directory. Inspect an
+existing lock and its owner before resuming; never remove a live owner's lock
+or resume failed integrity checks blindly. Do not change prepared code/runtime.
+
 ## Reports and retention
 
 Each attempt records:
