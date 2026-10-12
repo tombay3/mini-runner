@@ -9,6 +9,7 @@
     "api": "node scripts/api.mjs",
     "test": "node scripts/sanity.mjs",
     "eval": "node scripts/evaluate-agent.mjs",
+    "eval:reproduce": "node scripts/hybrid-reproducer.mjs",
     "dash": "streamlit run trace-dash.py --server.port 8601",
     "notebook": "node scripts/notebook.mjs",
     "cohorts:check": "node scripts/check-cohorts.mjs",
