@@ -31,7 +31,10 @@ Local data stores:
 - `DELETE /api/recordings/<playData>/<level>?recordId=<recordId>`: delete the selected record and linked trace when present.
 - `DELETE /api/recordings/<playData>/<level>?traceId=<traceId>`: delete the agent record whose id matches the trace id and delete that trace.
 
-Deleting a pinned recording returns `409` and does not delete its linked trace.
+Deleting a pinned recording returns `409` unless the request selects an explicit
+`recordId` (or `traceId`) and sends JSON `{"confirmPinnedDeletion": true}`.
+The wrapper uses a stronger confirmation for pinned runs; confirmed deletion removes
+the recording and its linked trace together.
 
 Recording store shape:
 
@@ -171,6 +174,8 @@ Step data:
   Planned steps also retain model-input `primaryProgressTarget`, `threat`, `movement`, and
   `route`, using the prompt formatters. `guards` contains the engine's observed entities;
   `threat` includes individual risk/motion under `pressureGuard` and `nearbyGuards`.
+  `nearbyGuards` retains all visible guards with valid coordinates, sorted by
+  distance; it is not limited to four entries.
   `movement` includes legal directions and open holes; `route` includes ladder
   and access information. Empty nested context fields may be omitted. Gold positions retain
   supplied model metadata such as tile/source. Missing observations remain unknown.

@@ -875,6 +875,12 @@ def delete_recording(play_data: str, level: str):
 
     selected_trace_id = request.args.get("traceId") or None
     selected_record_id = request.args.get("recordId") or selected_trace_id
+    confirmation = request.get_json(silent=True)
+    confirm_pinned_deletion = (
+        bool(selected_record_id)
+        and isinstance(confirmation, dict)
+        and confirmation.get("confirmPinnedDeletion") is True
+    )
     deleted_trace_id = None
     latest_record = None
     with _store_lock:
@@ -895,11 +901,11 @@ def delete_recording(play_data: str, level: str):
             else:
                 record = find_latest_recording(store, play_data_key, level_key)
                 record_key = record.get("id") if isinstance(record, dict) else None
-            if isinstance(record, dict) and record.get("pinned") is True:
+            if isinstance(record, dict) and record.get("pinned") is True and not confirm_pinned_deletion:
                 return (
                     jsonify(
                         {
-                            "error": "pinned recording must be unpinned before deletion",
+                            "error": "pinned recording deletion requires explicit confirmation",
                             "pinned": True,
                             "recordId": record.get("id"),
                             "traceId": record.get("traceId"),

@@ -62,6 +62,14 @@ trapped, stationary, moving-away, lateral or missing threat evidence does not tr
 this rule. Other candidate families, scores, durations and primary-guard selection
 are unchanged. Rejected proposals retain their proposed score and rejection reason.
 
+Guard analysis retains every visible guard with valid coordinates, sorted by
+distance. Secondary safety checks and clearance scoring use this full list;
+the primary pressure-guard selection is unchanged.
+
+Horizontal actions reject movement toward the center of an adjacent high/critical
+guard climbing out below in the same column. Both actors' offsets determine the
+direction; this covers primary/secondary guards and exempts god mode.
+
 Under overall low guard risk, directional progress receives +4 when its predicted
 distance from every active low-risk guard stays the same or increases. The bounded
 projection uses the runner action and observed guard motion at eight ticks per cell;
@@ -100,13 +108,30 @@ candidate lane.
 Active digs, floor refill, guard clearance, and trap resolution use state-specific waits with
 bounded rechecks rather than the generic `wait_and_recheck` action.
 
-The current baseline requires zero horizontal and vertical runner offsets before
-digging. The engine can accept some off-center digs, but exposing them caused an
-earlier Classic 1:1 regression. Ordinary bottom-row and occupancy checks remain.
-A centered defensive dig against a second closing guard may appear beside a trap
-wait. See [baseline evidence](guard-safety.md).
+Ordinary digs require zero offsets. In normal mode, a supported, vertically centered
+runner may start an off-center defensive dig when ordinary choices are exhausted
+or a second closing guard needs a trap. The engine centers the dig; trap waits remain
+available. Movement, occupancy, and guard checks still apply.
+
+Before an emergency hold, a two-tick upward retreat may finish pending ladder
+alignment onto a non-ladder tile when a high/critical guard is below.
+If no ordinary action remains under diagonal high/critical pressure, try a four-tick
+horizontal retreat away from the guard; existing validation still applies.
 
 ## State and Ladder Geometry
+
+At low decision risk, a connected active ladder with a brick-blocked target side
+uses its sole known opening toward an off-column gold target. This can keep ascent
+available even when gold is below. Progress descent into the same closed shaft is
+omitted; at a ladder mouth this requires an already validated lateral candidate
+toward the target. Unknown terrain, missing/same-column targets, two available
+openings, exit routing, and medium/high/critical threat decisions retain the
+existing policy. Safety retreats remain separate. The rule reads current terrain;
+it adds no route commitment, timing changes, score changes or loop detector.
+When a known off-row gold target prefers a physically blocked ladder direction,
+low-risk planning retains the opposite direction only if it is explicitly legal.
+Unknown movement affordances, exit routing, shaft-opening preferences, and
+medium/high/critical decisions retain their existing policy and safety validation.
 
 Analysis exposes its computed `primaryProgressTarget` to candidate generation, the prompt, and
 traces.
@@ -118,6 +143,11 @@ When the runner is aligned on a traversable top entry, candidate generation expo
 `descend_route` to the underlying ladder, including after gold collection during exit routing.
 It omits that descent for one decision immediately after climbing out through the
 same ladder, preventing a direct undo. Entries reached horizontally remain available.
+At low decision risk, the existing post-ascent departure check treats upward
+`climb_ladder` and `exit_ladder_route` actions alike: after one horizontal
+alignment toward a still-available ladder ahead, it omits alignment back to the
+departed ladder for that decision. Existing history, movement, geometry, and
+unchanged-gold checks remain; no persistent commitment or new loop detector is added.
 Hidden exit ladders remain inactive until gold is complete. Discovery
 does not force a descent, commit to a route, or change loop suppression.
 
@@ -127,6 +157,9 @@ For horizontal alignment, a continuous active ladder column reaching row 0 is an
 ordinary 4/6/8-tick distance rule rather than a fixed 20 ticks. This check does not
 run before gold completion, affect ladders stopping below row 0 or rescore valid
 upward exit actions. Explicit `S` routes keep their existing durations.
+Exit alignment considers the next eligible ladder when validation or loop
+filtering rejects a proposal. It stops after the first admitted route;
+candidate limits and final selection still apply.
 
 An upward exit action uses a six-tick recheck instead of 20 ticks only when a
 descending low-risk guard is at most six cells above in the same continuous

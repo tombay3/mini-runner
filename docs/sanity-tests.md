@@ -27,7 +27,8 @@ It never writes to real `__data1`. Trace shape is checked through stored/API out
 
 ## Candidate smoke
 
-`scripts/sanity_candidates.py` runs ordinary-progress, guarded and post-gold exit fixtures through
+`check_candidate_output()` in `scripts/sanity_backend.py` runs ordinary-progress,
+guarded and post-gold exit fixtures through
 the same output check: a nonempty bounded pool, unique IDs, finite scores, valid key/tick actions,
 unchanged input and basic trace serialization. It does not assert exact scores or tactical choices.
 
@@ -42,6 +43,9 @@ basic mode switching, non-mutating demo normalization, trace playback alignment 
 `scripts/sanity_traces.mjs` remains a separate read-only check of the four local data files:
 recording/trace structure and ID links, cohort links and readable debug-log format.
 Missing files are reported as uninitialized; uncataloged traces are warnings.
+Recordings with unavailable linked traces are reported as warnings, matching
+the supported missing-trace behavior. Malformed stores, mismatched agent IDs,
+and stale cohort links still fail the check.
 It respects `AGENT_DATA_DIR`; run it while data writers are idle.
 
 ## Coverage boundaries and validation

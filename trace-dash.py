@@ -1105,11 +1105,19 @@ if st.sidebar.button("🔄 Reload data"):
 
 
 @st.cache_data(show_spinner="Loading data…")
-def cached_load(folder_path: str):
+def cached_load(folder_path: str, store_signature: tuple):
     return load_data(folder_path)
 
 
-runs_df, steps_df, meta = cached_load(_resolve_folder(folder))
+resolved_folder = _resolve_folder(folder)
+store_signature = []
+for name in ("recordings.json", "agent-traces.json"):
+    try:
+        info = (Path(resolved_folder) / name).stat()
+        store_signature.append((info.st_mtime_ns, info.st_size))
+    except FileNotFoundError:
+        store_signature.append(None)
+runs_df, steps_df, meta = cached_load(resolved_folder, tuple(store_signature))
 
 # Section 1 is newest-first. Keep this ordered frame as the selection source so
 # a displayed row always resolves to the trace shown in Sections 2-3.

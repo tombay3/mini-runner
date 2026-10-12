@@ -31,8 +31,8 @@ Start with one concrete question, such as whether a change reduces repeated wait
 gold progress. Use existing Classic 1:1 traces first. Create separate cohorts for baseline and
 changed code when comparing them; keep mode, model, and controls matched or explain differences.
 
-1. Run `npm run cohorts:check`. If the catalog does not exist, create it with the empty structure
-   below. The command does not create a catalog or review new traces automatically.
+1. Run `npm run cohorts:check`. If the catalog is missing, initialize it with
+   `npm run cohorts:check -- --write`. This creates an empty catalog; traces still need review.
 2. Choose a stable cohort ID, such as `20261007-wait-review-baseline`. Add its title, question,
    and full trace IDs under `cohorts`. Every ID must exist in `agent-traces.json`.
 3. Review each trace and add or update its entry under `traces`. Use the recorded launch manifest
@@ -73,10 +73,10 @@ the reviewing agent must check them. Cataloging does not authorize fresh runs or
 
 ## Maintenance
 
-- `npm run cohorts:check` — read-only; reports stale links and uncataloged traces, exiting nonzero
-  when attention is needed.
-- `npm run cohorts:check -- --write` — removes duplicated retention metadata and references to
-  missing traces. Writes only the catalog and saves its previous version as `.bak`.
+- `npm run cohorts:check` — read-only; reports a missing catalog, stale links, and uncataloged
+  traces. Exits nonzero when attention is needed.
+- `npm run cohorts:check -- --write` — cleans existing links
+  and retention metadata. Backs up an existing catalog as `.bak`; does not review traces.
 
 Both commands respect `AGENT_DATA_DIR`. Do not reconcile while another task edits the catalog.
 

@@ -560,14 +560,16 @@ def _nearest_open_hole_state(
 
 
 def get_dig_affordance(
-    snapshot: dict[str, Any], *, risk: dict[str, Any] | None = None
+    snapshot: dict[str, Any], *, risk: dict[str, Any] | None = None,
+    allow_off_center_defensive: bool = False,
 ) -> dict[str, Any]:
     runner = _get_runner(snapshot)
     runner_x = _to_int(runner.get("x"))
     runner_y = _to_int(runner.get("y"))
+    runner_y_offset = _to_int(runner.get("yOffset")) or 0
     runner_centered = (
         (_to_int(runner.get("xOffset")) or 0) == 0
-        and (_to_int(runner.get("yOffset")) or 0) == 0
+        and runner_y_offset == 0
     )
     rows = _get_terrain_grid(snapshot)
     active_rows = _get_active_grid(snapshot) or rows
@@ -600,6 +602,22 @@ def get_dig_affordance(
             "detail": "runner coordinates unavailable",
         }
 
+    # moveRunner falls before processing keys unless supported. An accepted
+    # dig centers xOffset itself; ordinary digging keeps its centered policy.
+    current_tile = _terrain_at(rows, runner_x, runner_y)
+    below_tile = _terrain_at(active_rows, runner_x, runner_y + 1)
+    supported_off_center = (
+        allow_off_center_defensive
+        and not _is_god_mode(snapshot)
+        and not runner_centered
+        and runner_y_offset == 0
+        and (
+            current_tile in _active_ladder_tiles(snapshot) | {"-"}
+            or below_tile in {"#", "@", "0"} | _active_ladder_tiles(snapshot)
+            or runner_y == len(rows) - 1
+        )
+    )
+
     def side_info(direction: str, dx: int) -> dict[str, Any]:
         side_x = runner_x + dx
         side_y = runner_y
@@ -614,8 +632,8 @@ def get_dig_affordance(
         )
         target_diggable = target_tile == "#"
         bottom_boundary = target_y >= len(rows) - 1
-        engine_diggable = runner_centered and side_clear and target_diggable
-        can_dig = engine_diggable and not bottom_boundary
+        engine_diggable = (runner_centered or supported_off_center) and side_clear and target_diggable
+        can_dig = runner_centered and side_clear and target_diggable and not bottom_boundary
         guard_could_fall = (
             engine_diggable
             and nearest_guard.get("relativeX") == direction
@@ -630,6 +648,8 @@ def get_dig_affordance(
         reason = "valid dig target" if can_dig else "blocked"
         if not side_clear:
             reason = "side cell is not empty"
+        elif supported_off_center and guard_could_fall:
+            reason = "defensive dig can center the horizontal offset"
         elif not runner_centered:
             reason = "runner must be centered before digging"
         elif bottom_boundary:
@@ -1024,7 +1044,7 @@ def assess_guard_risk(snapshot: dict[str, Any]) -> dict[str, Any]:
     return {
         "risk": risk,
         "pressureGuard": pressure_guard,
-        "nearbyGuards": sorted(nearby_guards, key=lambda item: item["distance"])[:4],
+        "nearbyGuards": sorted(nearby_guards, key=lambda item: item["distance"]),
         "runnerOnEdge": _is_edge(runner_x, width),
     }
 

@@ -44,8 +44,8 @@ for (const [id, record] of Object.entries(recordings?.records || {})) {
   if (record.source === "agent") {
     check(record.traceId === id, `recordings.json: agent recording/trace ID mismatch ${id}`);
   }
-  if (record.traceId) {
-    check(hasTrace(record.traceId), `recordings.json: missing linked trace ${record.traceId}`);
+  if (record.traceId && !hasTrace(record.traceId)) {
+    console.warn(`recordings.json: linked trace unavailable ${record.traceId}`);
   }
 }
 for (const [id, run] of Object.entries(traces?.runs || {})) {

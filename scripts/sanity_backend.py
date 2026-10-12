@@ -1,6 +1,9 @@
 """Backend smoke checks; temporary stores only, no servers or model calls."""
 from __future__ import annotations
 
+import copy
+import json
+import math
 import sys
 import tempfile
 from contextlib import contextmanager
@@ -10,6 +13,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from agent import AgentRequestError, validate_agent_request
+from agent.candidates import generate_candidates
+from agent.traces import serialize_step_trace
 import app as backend
 
 
@@ -69,10 +74,53 @@ def check_recording_and_trace(client):
     assert backend.load_store()["records"][trace_id]["pinned"] is True
     delete_url = f"/api/recordings/1/1?recordId={trace_id}"
     assert client.delete(delete_url).status_code == 409
-    assert client.patch(pin_url, json={"recordId": trace_id, "pinned": False}).status_code == 200
-    assert client.delete(delete_url).status_code == 200
+    assert client.delete(delete_url, json={"confirmPinnedDeletion": "true"}).status_code == 409
+    assert client.delete("/api/recordings/1/1", json={"confirmPinnedDeletion": True}).status_code == 409
+    assert backend.load_store()["records"][trace_id]["pinned"] is True
+    assert client.get(f"/api/agent/traces/{trace_id}").status_code == 200
+    assert client.delete(delete_url, json={"confirmPinnedDeletion": True}).status_code == 200
     assert backend.load_store()["records"] == {}
     assert client.get(f"/api/agent/traces/{trace_id}").status_code == 404
+
+
+def candidate_snapshot(*, guarded=False, exit_state=False):
+    grid = ["  H    ", "  H    ", "#######"] if exit_state else ["       ", "       ", "#######"]
+    gold = {"remainingCount": 0 if exit_state else 1, "complete": exit_state,
+            "visiblePositions": [] if exit_state else [{"x": 4, "y": 1}], "carriedByGuards": []}
+    return {
+        "playData": 1, "level": 1, "tick": 0, "gameStateName": "running", "godMode": False,
+        "runner": {"x": 2, "y": 1, "xOffset": 0, "yOffset": 0, "actionName": "stop"},
+        "guards": [{"id": 0, "x": 5, "y": 1, "xOffset": 0, "yOffset": 0,
+                    "actionName": "left", "hasGold": 0}] if guarded else [],
+        "gold": gold, "goldCount": gold["remainingCount"], "goldComplete": exit_state,
+        "terrainGrid": grid, "grid": grid, "openHoles": [], "activeDig": None,
+    }
+
+
+def check_candidate_output():
+    for options in ({}, {"guarded": True}, {"exit_state": True}):
+        state = candidate_snapshot(**options)
+        original = copy.deepcopy(state)
+        pool, analysis = generate_candidates(state, [], limit=7, max_action_ticks=20)
+        assert state == original
+        assert 0 < len(pool) <= 7
+        assert len({c["id"] for c in pool}) == len(pool)
+        for candidate in pool:
+            assert isinstance(candidate["id"], str)
+            assert candidate["lane"] in {"safety", "progress", "environment"}
+            assert type(candidate["score"]) in {int, float} and math.isfinite(candidate["score"])
+            action = candidate["firstAction"]
+            assert action["keyCode"] in {32, 37, 38, 39, 40, 88, 90}
+            assert type(action["ticks"]) is int and 1 <= action["ticks"] <= 20
+        selected = pool[0]
+        trace = serialize_step_trace(
+            snapshot=state, action=selected["firstAction"], candidates=pool,
+            selected_candidate=selected, analysis=analysis,
+            validation={"requestedCandidateId": selected["id"], "fallbackUsed": False},
+        )
+        assert trace["decision"]["selectedId"] == selected["id"]
+        assert trace["action"] == {k: selected["firstAction"][k] for k in ("keyCode", "ticks")}
+        json.dumps(trace, allow_nan=False)
 
 
 def check_retention():
@@ -94,4 +142,5 @@ if __name__ == "__main__":
         check_requests(client)
         check_recording_and_trace(client)
         check_retention()
+        check_candidate_output()
     print("backend smoke ok")

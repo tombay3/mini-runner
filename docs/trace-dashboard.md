@@ -37,8 +37,8 @@ npm run dash
 
 The default folder is `__data1`. Set `AGENT_DATA_DIR` or use the sidebar to select a folder containing
 `recordings.json` and `agent-traces.json`. Relative paths resolve from the repository root. The sidebar
-shows recording count, store update time and loading warnings. Press **Reload data** after an external
-import or edit: each folder's loaded data is cached until reload.
+shows recording count, store update time and loading warnings. Cached data refreshes on the next
+dashboard rerun when either store file changes. **Reload data** forces an immediate refresh.
 
 Loading starts from recordings and joins traces by full `traceId`. Trace model metadata takes
 precedence over recording `solver` metadata. Validate the trace store's integer `version: 4` and
