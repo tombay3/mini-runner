@@ -51,6 +51,44 @@ Normal mode remains the default. `--god-mode` enables god mode through the exist
 before smoke validation and before every attempt. Reports record the requested mode plus recording
 step, and terminal evidence; a mismatch is an evaluation failure.
 
+## Hybrid reproducer
+
+`npm run eval:reproduce` replays a retained Classic 1:1 recording to a decision
+boundary, verifies the state/history, then can continue with normal model calls.
+The prefix is reproducible; model choices and native guard events after handoff
+remain variable. Control uses `--control-ref` (default `HEAD`); fix uses the local
+worktree unless `--fix-ref` selects an immutable revision. Both need the current
+V4 backend. Recorded normal or god mode is inferred and verified throughout;
+isolated god-mode arms include the neutral rules file. Original stores are read-only.
+God-mode continuation checks mode/context before each model request and after
+each action, and verifies recording mode before saving. Smoke replay distinguishes
+the natural terminal from a running decision boundary at the same tick. Focused
+offline checks: `node --test scripts/hybrid-runtime.test.mjs`.
+This experimental god-mode path currently requires invisible-guard isolation;
+support for non-isolated god mode remains separate hardening work.
+
+```sh
+npm run eval:reproduce -- prepare --trace <trace-id-or-prefix> --tick <tick> \
+  --control-ref main --paid-budget 2 --output __data3/<fresh-experiment>
+npm run eval:reproduce -- preflight --output __data3/<fresh-experiment>
+```
+
+`prepare`, `preflight`, `smoke`, and `verify-smoke` make no paid calls. Run those
+checks before `pair 1`, the only command that starts paid continuations. The
+budget defaults to zero and is frozen at preparation; each continuation may
+make multiple requests. Model/profile must match the historical trace.
+
+Paid execution needs explicit budget and provider-data approval. Ask the owner
+to stop any existing Flask backend; the tool starts its own isolated backend,
+reuses running Vite, and keeps Chromium sandboxed. Generated source snapshots,
+traces, recordings and file-based `status` stay under ignored `__data3`.
+Snapshots contain private environment links; do not publish entire directories.
+
+Use `review` after each pair before starting another, then `finish` to close the
+experiment. These commands take the same `--output` directory. Inspect an
+existing lock and its owner before resuming; never remove a live owner's lock
+or resume failed integrity checks blindly. Do not change prepared code/runtime.
+
 ## Reports and retention
 
 Each attempt records:
