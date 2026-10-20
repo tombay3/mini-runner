@@ -1997,7 +1997,7 @@ def _trap_hole_between_pressure_guard(
 ) -> dict[str, Any]:
     guard = _dict(risk.get("pressureGuard"))
     side = guard.get("relativeX")
-    if side not in {"left", "right"} or guard.get("relativeY") != "same":
+    if side not in {"left", "right"}:
         return {}
     if guard.get("motion") in {"up", "climb_out"}:
         return {}
@@ -2008,8 +2008,57 @@ def _trap_hole_between_pressure_guard(
     distance = _to_int(hole.get("distance"))
     guard_x = _to_int(guard.get("x"))
     hole_x = _to_int(hole.get("x"))
-    if distance not in {1, 2} or guard_x is None or hole_x is None:
+    if guard_x is None or hole_x is None:
         return {}
+    hole_y = _to_int(hole.get("y"))
+    guard_y_offset = _to_int(guard.get("yOffset"))
+    if distance == 3:
+        # A farther trap covers only an immediately approaching guard or its
+        # observed entry. Do not dig a redundant hole closer to the runner.
+        same_row_entry = bool(
+            guard.get("relativeY") == "same"
+            and hole_y is not None
+            and _to_int(guard.get("y")) == hole_y - 1
+            and (
+                (
+                    guard.get("closing")
+                    and guard.get("motion") == ("right" if side == "left" else "left")
+                    and abs(guard_x - hole_x) <= 1
+                )
+                or (
+                    guard.get("motion") == "fall"
+                    and guard_x == hole_x
+                    and _to_int(guard.get("xOffset")) == 0
+                    and guard_y_offset is not None
+                    and guard_y_offset >= 0
+                )
+            )
+        )
+        falling_below = (
+            guard.get("relativeY") == "below" and guard.get("motion") == "fall"
+        )
+        if (
+            movement.get("godMode")
+            or _to_int(hole.get("frameIndex")) != 0
+            or not (same_row_entry or falling_below)
+        ):
+            return {}
+    elif distance not in {1, 2}:
+        return {}
+    if guard.get("relativeY") != "same":
+        # Keep the trap gate through the row change, until capture completes.
+        if not (
+            not movement.get("godMode")
+            and guard.get("relativeY") == "below"
+            and guard.get("motion") == "fall"
+            and guard_x == hole_x
+            and hole_y is not None
+            and _to_int(guard.get("y")) == hole_y
+            and _to_int(guard.get("xOffset")) == 0
+            and guard_y_offset is not None
+            and guard_y_offset < 0
+        ):
+            return {}
     guard_beyond_hole = guard_x <= hole_x if side == "left" else guard_x >= hole_x
     if not guard_beyond_hole:
         return {}

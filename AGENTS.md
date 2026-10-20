@@ -27,6 +27,7 @@
 
 - Inspect the affected code before editing and preserve unrelated worktree changes.
 - Prefer focused changes; update the relevant existing document when public behavior, APIs, config, or schemas change.
+- Choose commit buckets by intent: `Candidate:` is for experimental proposals; concrete bug fixes use `Fix:`. See [commit buckets](docs/llm-agent.md#commit-buckets).
 - Keep `npm test` smoke-only, with shared small fixtures; avoid source-code inspection, exact wording assertions, and exhaustive gameplay matrices. Passing it does not establish gameplay improvement.
 - Run `npm test`, `npm run build` for frontend changes, and Python compilation checks for backend changes.
 - Run `git diff --check` before handoff, and report any checks that could not run.

@@ -107,6 +107,16 @@ candidate lane.
 
 Active digs, floor refill, guard clearance, and trap resolution use state-specific waits with
 bounded rechecks rather than the generic `wait_and_recheck` action.
+In normal mode, trap resolution also waits while a guard is aligned with and falling into
+the nearby open hole, even after it moves to the row below. Recheck every two ticks until
+capture completes; this does not make the hole safe to cross early. Opposite-side closing
+guards still use the existing defensive-dig checks.
+
+A fully open hole three tiles away also counts as a trap when a closing same-row
+guard is at most one column from it, or the guard is already falling into it.
+This normal-mode check prevents a redundant nearer dig from blocking the runner's
+route. It excludes refilling holes, preserves the existing capture rechecks, and
+releases progress once the guard is trapped.
 
 Ordinary digs require zero offsets. In normal mode, a supported, vertically centered
 runner may start an off-center defensive dig when ordinary choices are exhausted
