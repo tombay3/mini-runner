@@ -155,6 +155,45 @@ def check_vertical_secondary_safety():
     assert unchanged == original
 
 
+def check_short_medium_clearance():
+    # The same bounded movement must be safe in either direction and at any
+    # column. Two-sided pressure is checked before granting the exception.
+    for direction in (-1, 1):
+        analysis = {
+            "runner": {"x": 12, "xOffset": 0},
+            "risk": {"risk": "medium", "pressureGuard": {
+                "id": 0, "x": 12 + 4 * direction, "xOffset": 0,
+                "risk": "medium", "relativeX": "left" if direction < 0 else "right",
+                "relativeY": "same", "distance": 4,
+            }, "nearbyGuards": []},
+        }
+        threat = analysis["risk"]["pressureGuard"]
+        analysis["risk"]["nearbyGuards"] = [threat]
+        action = {"keyCode": 37 if direction < 0 else 39, "ticks": 4}
+        original = copy.deepcopy(analysis)
+        assert action_guard_safety_rejection_detail(action, analysis) is None
+        assert analysis == original
+        assert action_guard_safety_rejection_detail({**action, "ticks": 6}, analysis)
+        # Offsets can consume the apparent tile-level clearance.
+        threat["xOffset"] = -17 * direction
+        assert action_guard_safety_rejection_detail(action, analysis)
+        threat["xOffset"] = 0
+        threat["risk"] = "high"
+        assert action_guard_safety_rejection_detail(action, analysis)
+        threat["risk"] = "medium"
+        del threat["xOffset"]
+        assert action_guard_safety_rejection_detail(action, analysis)
+        threat["xOffset"] = 0
+        analysis["risk"]["nearbyGuards"].append({
+            "id": 1, "x": 12 - 2 * direction, "xOffset": 0,
+            "risk": "medium", "relativeY": "same",
+            "relativeX": "right" if direction < 0 else "left",
+        })
+        assert action_guard_safety_rejection_detail(action, analysis)
+        analysis["godMode"] = True
+        assert action_guard_safety_rejection_detail(action, analysis) is None
+
+
 def check_retention():
     records = {
         str(i): {"id": str(i), "traceId": str(i), "source": "agent",
@@ -176,4 +215,5 @@ if __name__ == "__main__":
         check_retention()
         check_candidate_output()
         check_vertical_secondary_safety()
+        check_short_medium_clearance()
     print("backend smoke ok")

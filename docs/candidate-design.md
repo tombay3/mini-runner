@@ -71,6 +71,20 @@ Horizontal actions reject movement toward the center of an adjacent high/critica
 guard climbing out below in the same column. Both actors' offsets determine the
 direction; this covers primary/secondary guards and exempts god mode.
 
+Under overall medium pressure, same-row horizontal movement may pass the
+directional rejection for a burst of at most four ticks. Every medium-risk guard
+must retain at least two cells of horizontal separation after conservatively
+allowing both actors to approach by eight world units per tick (Classic cells are
+40 units wide). Coordinates and offsets are required; any high/critical guard
+disables this exception. Cross-row medium guards also constrain this bound.
+This permits a short approach with time to reassess, without requiring a ladder
+or changing candidate scores. Physical, hole, trap-wait, and other safety checks
+still apply. The bound covers the immediate action, not a committed escape route
+or a guarantee of survival. A matched normal-mode continuation from the known
+stall demonstrated the model choosing short approaches and climbing out; its
+first eight actions replay exactly. Broader safety and level completion remain
+unproven by this local validation.
+
 Under overall low guard risk, directional progress receives +4 when its predicted
 distance from every active low-risk guard stays the same or increases. The bounded
 projection uses the runner action and observed guard motion at eight ticks per cell;

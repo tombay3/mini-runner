@@ -2483,6 +2483,40 @@ def medium_cross_row_clearance_score_penalty(
     return 0
 
 
+def _short_medium_horizontal_clearance(
+    action: dict[str, Any], analysis: dict[str, Any],
+) -> bool:
+    """Bound both actors' possible approach before the next decision."""
+    risk = _dict(analysis.get("risk"))
+    ticks = _to_int(action.get("ticks"))
+    if (
+        risk.get("risk") != "medium"
+        or _dict(risk.get("pressureGuard")).get("risk") != "medium"
+        or action.get("keyCode") not in {LEFT_KEYCODE, RIGHT_KEYCODE}
+        or ticks is None or not 1 <= ticks <= 4
+    ):
+        return False
+    runner = _dict(analysis.get("runner"))
+    guards = [_dict(risk.get("pressureGuard")), *(risk.get("nearbyGuards") or [])]
+    for item in guards:
+        guard = _dict(item)
+        if guard.get("risk") in {"high", "critical"}:
+            return False
+        if guard.get("risk") != "medium":
+            continue
+        coordinates = [_to_int(actor.get(key)) for actor in (runner, guard)
+                       for key in ("x", "xOffset")]
+        if any(value is None for value in coordinates):
+            return False
+        rx, ro, gx, go = coordinates
+        # Classic tiles are 40 units wide. At most one 8-unit movement per
+        # actor per tick; assume both approach, even if currently moving away.
+        separation = abs((gx - rx) * 40 + go - ro)
+        if separation - 2 * LEGACY_SUBTILE_STEP * ticks < 80:
+            return False
+    return True
+
+
 def action_guard_safety_rejection_detail(
     action: dict[str, Any],
     analysis: dict[str, Any],
@@ -2543,11 +2577,13 @@ def action_guard_safety_rejection_detail(
                     f"{action_name} moves toward a second closing same-row guard "
                     f"on the {nearby_side} at distance {nearby_distance}"
                 )
+    short_medium_clearance = _short_medium_horizontal_clearance(action, analysis)
     for nearby in risk.get("nearbyGuards") or []:
         nearby = _dict(nearby)
         if (
             nearby.get("relativeY") != "same"
             or nearby.get("risk") not in GUARD_PRESSURE_RISKS
+            or (nearby.get("risk") == "medium" and short_medium_clearance)
         ):
             continue
         if nearby.get("relativeX") == "left" and key_code == LEFT_KEYCODE:
@@ -2579,9 +2615,10 @@ def action_guard_safety_rejection_detail(
         and key_code in {LEFT_KEYCODE, RIGHT_KEYCODE}
     ):
         return None
-    if side == "left" and key_code == LEFT_KEYCODE:
+    clear_same_row = short_medium_clearance and guard.get("relativeY") == "same"
+    if side == "left" and key_code == LEFT_KEYCODE and not clear_same_row:
         return f"left moves toward the {guard.get('risk')} risk pressure guard on the left"
-    if side == "right" and key_code == RIGHT_KEYCODE:
+    if side == "right" and key_code == RIGHT_KEYCODE and not clear_same_row:
         return f"right moves toward the {guard.get('risk')} risk pressure guard on the right"
     relative_y = guard.get("relativeY")
     if (
