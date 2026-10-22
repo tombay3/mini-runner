@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from agent import AgentRequestError, validate_agent_request
-from agent.candidates import generate_candidates
+from agent.candidates import generate_candidates, action_guard_safety_rejection_detail
 from agent.traces import serialize_step_trace
 import app as backend
 
@@ -123,6 +123,38 @@ def check_candidate_output():
         json.dumps(trace, allow_nan=False)
 
 
+def check_vertical_secondary_safety():
+    analysis = {
+        "godMode": False, "runner": {"action": "stop"},
+        "risk": {
+            "pressureGuard": {"id": 0, "risk": "high", "relativeX": "right",
+                              "relativeY": "same", "distance": 2, "motion": "left"},
+            "nearbyGuards": [{"id": 1, "risk": "high", "relativeX": "same",
+                              "relativeY": "below", "motion": "up"}],
+        },
+    }
+    original = copy.deepcopy(analysis)
+    for key, side, approaching, departing in ((40, "below", "up", "down"),
+                                             (38, "above", "down", "up")):
+        threat = analysis["risk"]["nearbyGuards"][0]
+        threat.update(relativeY=side, motion=approaching)
+        action = {"keyCode": key, "ticks": 6}
+        for kind in ("retreat_from_guard", "descend_route", "climb_ladder"):
+            assert action_guard_safety_rejection_detail(action, analysis, candidate_kind=kind)
+        threat["motion"] = departing
+        assert action_guard_safety_rejection_detail(action, analysis, candidate_kind="climb_ladder") is None
+        threat.update(motion=approaching, relativeX="left")
+        assert action_guard_safety_rejection_detail(action, analysis, candidate_kind="descend_route") is None
+        threat["relativeX"] = "same"
+        analysis["godMode"] = True
+        assert action_guard_safety_rejection_detail(action, analysis, candidate_kind="descend_route") is None
+        analysis["godMode"] = False
+    # Safety validation must not modify its inputs.
+    unchanged = copy.deepcopy(original)
+    action_guard_safety_rejection_detail({"keyCode": 40, "ticks": 6}, unchanged)
+    assert unchanged == original
+
+
 def check_retention():
     records = {
         str(i): {"id": str(i), "traceId": str(i), "source": "agent",
@@ -143,4 +175,5 @@ if __name__ == "__main__":
         check_recording_and_trace(client)
         check_retention()
         check_candidate_output()
+        check_vertical_secondary_safety()
     print("backend smoke ok")

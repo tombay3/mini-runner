@@ -2636,9 +2636,10 @@ def action_guard_safety_rejection_detail(
             "is not falling"
         )
     # A same-row primary threat must not hide a secondary guard approaching
-    # along the chosen vertical retreat. Preserve every earlier rejection cause.
-    if candidate_kind == "retreat_from_guard" and key_code in {UP_KEYCODE, DOWN_KEYCODE}:
-        retreat_y = "above" if key_code == UP_KEYCODE else "below"
+    # along any vertical movement, regardless of candidate intent.
+    # Preserve every earlier rejection cause and safety exception.
+    if key_code in {UP_KEYCODE, DOWN_KEYCODE}:
+        movement_y = "above" if key_code == UP_KEYCODE else "below"
         approaching_motions = (
             {"down", "fall"} if key_code == UP_KEYCODE else {"up", "climb_out"}
         )
@@ -2649,12 +2650,12 @@ def action_guard_safety_rejection_detail(
                 and nearby.get("id") != guard.get("id")
                 and nearby.get("risk") in {"high", "critical"}
                 and nearby.get("relativeX") == "same"
-                and nearby.get("relativeY") == retreat_y
+                and nearby.get("relativeY") == movement_y
                 and nearby.get("motion") in approaching_motions
             ):
                 return (
-                    f"{action_name} retreat moves toward an aligned approaching "
-                    f"secondary {nearby.get('risk')} guard {retreat_y}"
+                    f"{action_name} moves toward an aligned approaching "
+                    f"secondary {nearby.get('risk')} guard {movement_y}"
                 )
     return None
 

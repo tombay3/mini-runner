@@ -54,13 +54,14 @@ Score and tie-break explanations are diagnostic fields, not LLM prompt fields.
 Audit entries distinguish proposed and effective scores; a merged candidate keeps
 the winning proposal's breakdown rather than adding the proposals' scores.
 
-Vertical `retreat_from_guard` actions in normal mode reject movement toward an
+All vertical actions in normal mode reject movement toward an
 aligned, approaching secondary high/critical guard: up toward a guard above moving
 down/falling, or down toward a guard below moving up/climbing out. This requires
 medium/high/critical primary pressure. Existing rejection reasons take precedence;
 trapped, stationary, moving-away, lateral or missing threat evidence does not trigger
-this rule. Other candidate families, scores, durations and primary-guard selection
-are unchanged. Rejected proposals retain their proposed score and rejection reason.
+this rule. Candidate intent does not exempt progress or recovery movement from the
+same check. Scores, durations and primary-guard selection are unchanged. Rejected
+proposals retain their proposed score and rejection reason.
 
 Guard analysis retains every visible guard with valid coordinates, sorted by
 distance. Secondary safety checks and clearance scoring use this full list;
