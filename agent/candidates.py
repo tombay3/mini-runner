@@ -343,6 +343,7 @@ class CandidateBuilder:
 
     def finalize(self) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         self._restore_guard_escape_climb()
+        self._reject_unsupported_edge_evasion()
         predicted_target = predicted_horizontal_return_target(
             self.analysis["loopReport"]
         )
@@ -411,6 +412,43 @@ class CandidateBuilder:
                 if audit.get("disposition") == "exposed" and audit.get("candidateId") in pair_ids:
                     audit["rankingTieBreak"] = tie_break
         return exposed, self.analysis
+
+    def _reject_unsupported_edge_evasion(self) -> None:
+        if (
+            self.analysis.get("godMode")
+            or _dict(self.analysis.get("movement")).get("currentTile") not in {"H", "S"}
+            or not any(
+                candidate["kind"] == "retreat_from_guard"
+                and candidate["firstAction"]["keyCode"] == UP_KEYCODE
+                for candidate in self.candidates
+            )
+        ):
+            return
+        runner = _dict(self.analysis.get("runner"))
+        x, y = _to_int(runner.get("x")), _to_int(runner.get("y"))
+        rows = self.snapshot.get("grid")
+        if x is None or y is None or not isinstance(rows, list) or not 0 <= y < len(rows) - 1:
+            return
+        row, below = rows[y : y + 2]
+        if not isinstance(row, str) or not isinstance(below, str):
+            return
+        for candidate in self.candidates[:]:
+            if candidate["kind"] != "evade_edge_ladder":
+                continue
+            target_x = x + (-1 if candidate["firstAction"]["keyCode"] == LEFT_KEYCODE else 1)
+            if not (
+                0 <= target_x < min(len(row), len(below))
+                and row[target_x] == below[target_x] == " "
+            ):
+                continue
+            self.candidates.remove(candidate)
+            for audit in self.audit:
+                if audit.get("candidateId") == candidate["id"] and audit.get("disposition") == "validated":
+                    audit["disposition"] = "safety_rejection"
+                    audit["detail"] = (
+                        "edge-ladder sidestep has no support below; an admitted upward retreat is available"
+                    )
+                    break
 
     def _restore_guard_escape_climb(self) -> None:
         loop_report = self.analysis["loopReport"]

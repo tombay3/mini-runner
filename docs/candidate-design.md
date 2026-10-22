@@ -130,6 +130,13 @@ horizontal retreat away from the guard; existing validation still applies.
 
 ## State and Ladder Geometry
 
+In normal mode, omit an `evade_edge_ladder` sidestep into known empty space with
+known empty space below when an upward safety retreat has already passed physical,
+guard and loop checks. Keep supported sidesteps and sideways escape when that
+upward retreat is unavailable. Unknown terrain and god mode are unchanged. The
+candidate audit records the omitted sidestep as a safety rejection; scores and
+durations do not change.
+
 At low decision risk, a connected active ladder with a brick-blocked target side
 uses its sole known opening toward an off-column gold target. This can keep ascent
 available even when gold is below. Progress descent into the same closed shaft is
