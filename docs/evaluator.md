@@ -65,6 +65,17 @@ saving. Smoke replay distinguishes a natural terminal from a running decision
 boundary at the same tick. Original stores remain read-only.
 
 Focused offline checks: `node scripts/hybrid-runtime.mjs --test`.
+
+For a bounded local decision comparison, prepare with `--early-stop N`.
+Both paid arms stop after gold collection, returning to the exact fork runner
+pose after movement without gold progress, or N continuation decisions. The
+bound is frozen in the experiment manifest and does not change the configured
+total gameplay limits. Stops finalize partial recordings for replay verification;
+returning to a pose is a probe endpoint, not proof of an unsafe or persistent loop.
+For historical traces with an extra tick-zero `waiting` observation, smoke
+verification reports that UI-phase difference separately while still requiring
+identical actors, gold, mode and context. Every positive-tick gameplay boundary
+and the final state must match exactly.
 They cover both modes, context mismatches, terminal boundaries, and startup
 failures. Owned Vite is cleaned up even if browser shutdown fails.
 

@@ -89,6 +89,7 @@ function prepare(){
       dirtyFingerprint:hash(git('diff','HEAD','--binary')),sourceHashes:hashes(files)},
     evidenceHashes:hashes(evidence),prefixDecisions:prefix.length,paidCeiling:options.paidBudget,
     model:run.model.name,profile:run.model.profile,controlRef:options.controlRef,controlRevision,
+    localProbeSteps:options.localProbeSteps??null,
     fixRef:options.fixRef??null,fixRevision,godMode,
     historyLimit:read(path.join(root,'public/agent-config.json')).agent.historyLimit,
     browser:options.browser,baseUrl:options.baseUrl,arms:{},createdAt:new Date().toISOString()};
@@ -218,7 +219,7 @@ async function trial(arm,pair,fake=false){
       const config=read(path.join(manifest.arms[arm].root,'public/agent-config.json'));
       const observations=[];let planner;
       const deadline=Date.now()+60*60*1000;
-      const max=fake?1:config.agent.maxSteps-input.prefix.length;
+      const max=fake?1:Math.min(config.agent.maxSteps-input.prefix.length,manifest.localProbeSteps??Infinity);
       for(let n=0;n<max;n++){
         if(Date.now()>deadline)throw Error('Continuation wall timeout after 60 minutes');
         const before=await page.evaluate(()=>window.lodeRunnerAgentHooks.snapshot());
@@ -249,6 +250,15 @@ async function trial(arm,pair,fake=false){
         observations.push(observed);item.lastTick=observed.after.tick;persist();
         write(`${label}/observations.json`,observations);
         if(['runner_dead','finish'].includes(observed.after.gameStateName))break;
+        if(!fake&&manifest.localProbeSteps){
+          const samePose=(a,b)=>['x','y','xOffset','yOffset'].every(k=>a.runner[k]===b.runner[k]);
+          const collected=observed.after.gold.remainingCount<setup.after.gold.remainingCount;
+          const moved=observations.some(o=>!samePose(o.after,setup.after));
+          const returned=moved&&samePose(observed.after,setup.after)
+            &&observed.after.gold.remainingCount===setup.after.gold.remainingCount;
+          if(collected||returned){item.probeStopReason=collected?'gold collected':'returned to fork pose without gold progress';persist();break;}
+          if(n===max-1){item.probeStopReason='local probe decision cap';persist();}
+        }
         if(await page.evaluate(async({snapshot,config})=>{
           const {_test}=await import('/src/agent.js');
           return _test.hasExceededPlaybackTime(snapshot,config);
@@ -330,13 +340,20 @@ async function verifySmoke(){
     const recording=read(path.join(folder,'recording.json'));
     const trace=read(path.join(folder,'__data1/agent-traces.json')).runs[result.runId];
     const replay=await withPage(page=>page.evaluate(replayInBrowser,{demo:recording.demo}));
+    let startupPhaseOnlyDifferences=0;
     for(const step of [...input.prefix,...trace.steps]){
       const engine=replayStateAt(replay,step.state.tick);
-      assert.deepEqual(normalizeState(engine,true),normalizeState(step.state),`${arm}:${step.state.tick}`);
+      const actual=normalizeState(engine,true),expected=normalizeState(step.state);
+      // The demo clock does not encode the wrapper's duplicate WAITING UI
+      // observation at tick zero. Still verify all actors, gold and mode.
+      if(step.state.tick===0&&expected.gameState==='waiting'&&actual.gameState==='start'){
+        const {gameState:actualPhase,...a}=actual,{gameState:expectedPhase,...b}=expected;
+        assert.deepEqual(a,b,`${arm}:startup physical state`);startupPhaseOnlyDifferences++;
+      }else assert.deepEqual(actual,expected,`${arm}:${step.state.tick}`);
     }
     assert.deepEqual(normalizeState(replayStateAt(replay,result.finalTick,true),true),normalizeState(result.finalState,true));
     verified.push({arm,prefixMatched:input.prefix.length,continuationMatched:trace.steps.length,
-      finalTickMatched:result.finalTick,modelCalls:0});
+      finalTickMatched:result.finalTick,modelCalls:0,startupPhaseOnlyDifferences});
   }
   write('smoke-verification.json',{status:'passed',verified,paidStarted:status().paidStarted});
   console.log('Both generated smoke recordings replay the prefix, continuation and final state exactly.');
@@ -345,7 +362,8 @@ export const usage = `npm run eval:reproduce -- <command> --output __data3/<expe
 Commands: prepare, preflight, smoke, verify-smoke, pair N, review, finish, status
 prepare requires --trace ID_OR_PREFIX --tick N
 Prepare options: --control-ref REF (HEAD), --fix-ref REF (local worktree), --paid-budget N (0; even, maximum 100),
-          --browser PATH (/usr/bin/chromium), --base-url URL (http://127.0.0.1:8283/)`;
+          --browser PATH (/usr/bin/chromium), --base-url URL (http://127.0.0.1:8283/),
+          --early-stop N (optional: stop on collection, return to fork pose, or N decisions)`;
 
 export function parseArgs(args) {
   if (args.length === 1 && args[0] === '--help') return { help: true };
@@ -359,7 +377,8 @@ export function parseArgs(args) {
     assert(Number.isInteger(result.pair) && result.pair > 0, 'Pair number must be a positive integer');
   }
   const names = { '--output':'output', '--trace':'trace', '--tick':'tick',
-    '--control-ref':'controlRef', '--fix-ref':'fixRef', '--paid-budget':'paidBudget', '--browser':'browser', '--base-url':'baseUrl' };
+    '--control-ref':'controlRef', '--fix-ref':'fixRef', '--paid-budget':'paidBudget', '--browser':'browser', '--base-url':'baseUrl',
+    '--early-stop':'localProbeSteps' };
   const seen = new Set();
   while (index < args.length) {
     const flag = args[index++], key = names[flag], value = args[index++];
@@ -381,6 +400,11 @@ export function parseArgs(args) {
     result.paidBudget = Number(result.paidBudget);
     assert(Number.isInteger(result.paidBudget) && result.paidBudget >= 0 &&
       result.paidBudget <= 100 && result.paidBudget % 2 === 0, '--paid-budget must be even, 0..100');
+    if(result.localProbeSteps!==undefined){
+      result.localProbeSteps=Number(result.localProbeSteps);
+      assert(Number.isInteger(result.localProbeSteps)&&result.localProbeSteps>0&&result.localProbeSteps<=300,
+        '--early-stop must be 1..300');
+    }
   }
   return result;
 }
