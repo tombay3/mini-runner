@@ -684,8 +684,16 @@ def generate_candidates(
         add_non_god_escape_candidates(add, snapshot, movement, dig, risk)
 
     if ladder.get("onLadder"):
-        direction = choose_ladder_direction(snapshot, analysis)
+        direction = choose_ladder_direction(snapshot, analysis, history)
         target = _dict(analysis.get("primaryProgressTarget"))
+        if (
+            not target and not gold_complete and risk.get("risk") == "low"
+            and direction != ladder.get("recommendedAction")
+        ):
+            # Keep the factual model context consistent with the history-based
+            # direction rather than repeating the affordance's default hint.
+            ladder["recommendedAction"] = direction
+            ladder["detail"] = f"Runner is on a visible ladder; use {direction} to continue the preceding successful ladder movement."
         direction_toward_target = ladder_direction_toward_target(analysis, direction)
         add(
             kind="climb_ladder",
@@ -1984,7 +1992,10 @@ def ladder_progress_direction(snapshot: dict[str, Any], analysis: dict[str, Any]
     return None
 
 
-def choose_ladder_direction(snapshot: dict[str, Any], analysis: dict[str, Any]) -> str:
+def choose_ladder_direction(
+    snapshot: dict[str, Any], analysis: dict[str, Any],
+    history: list[dict[str, Any]],
+) -> str:
     runner_y = _to_int(analysis["runner"].get("y")) or 0
     if bool(analysis["goldComplete"]):
         return "up"
@@ -1993,6 +2004,32 @@ def choose_ladder_direction(snapshot: dict[str, Any], analysis: dict[str, Any]) 
         return route_direction
     target = _dict(analysis.get("primaryProgressTarget"))
     target_y = _to_int(target.get("y"))
+    if target_y is None and _dict(analysis.get("risk")).get("risk") == "low" and history:
+        latest = _dict(history[-1])
+        fields = ("x", "y", "xOffset", "yOffset")
+        before, after, runner = (
+            {field: _to_int(actor.get(field)) for field in fields}
+            for actor in (
+                _dict(_dict(latest.get("before")).get("runner")),
+                _dict(_dict(latest.get("after")).get("runner")),
+                _dict(analysis.get("runner")),
+            )
+        )
+        known = all(value is not None for actor in (before, after, runner)
+                    for value in actor.values())
+        key = _to_int(latest.get("keyCode"))
+        direction = "down" if key == DOWN_KEYCODE else "up"
+        if (
+            known and key in {UP_KEYCODE, DOWN_KEYCODE}
+            and str(latest.get("candidateId") or "").startswith(("climb_ladder_", "descend_route_"))
+            and latest.get("afterTick") == snapshot.get("tick")
+            and before["x"] == after["x"]
+            and all(after[field] == runner[field] for field in fields)
+            and ((after["y"] - before["y"]) * 40 + after["yOffset"] - before["yOffset"])
+                * (1 if key == DOWN_KEYCODE else -1) > 0
+            and _dict(analysis.get("movement")).get("canMoveDown" if direction == "down" else "canMoveUp") is True
+        ):
+            return direction
     if target_y is not None and target_y != runner_y:
         preferred = "up" if target_y < runner_y else "down"
         opposite = "down" if preferred == "up" else "up"

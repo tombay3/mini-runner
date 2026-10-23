@@ -180,6 +180,18 @@ medium/high/critical decisions retain their existing policy and safety validatio
 Analysis exposes its computed `primaryProgressTarget` to candidate generation, the prompt, and
 traces.
 
+With no known gold-target row and low decision risk, ladder direction continues
+the immediately preceding successful `descend_route` or `climb_ladder` action
+when that direction remains explicitly legal. Its recorded after-tick and full
+runner pose must match the current observation, with vertical displacement in
+the action's direction. This avoids undoing a ladder entry solely because the
+missing-target default is up. Visible targets, shaft-opening preferences, exit
+routing, guard-pressure decisions and safety validation remain unchanged. Waits,
+blocked actions, stale history and safety retreats do not establish continuation;
+no persistent direction or new loop detector is added. When continuation changes
+the default direction, ladder recommendation metadata and the candidate's factual
+explanation reflect that direction; gameplay prompt guidance is unchanged.
+
 Visible ladder routes include ordinary active ladder tiles and traversable top entries
 where an active ladder begins one row below. Entry metadata includes `onDownEntry`,
 `entryDirection`, and `ladderY`; the horizontal alignment target remains on the runner row.

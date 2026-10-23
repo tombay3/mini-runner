@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from agent import AgentRequestError, validate_agent_request
-from agent.candidates import generate_candidates, action_guard_safety_rejection_detail
+from agent.candidates import generate_candidates, action_guard_safety_rejection_detail, choose_ladder_direction
 from agent.reasoning_tools import get_dig_affordance
 from agent.traces import serialize_step_trace
 import app as backend
@@ -239,6 +239,58 @@ def check_defensive_dig_threat_priority():
     assert dig["left"]["guardCouldFall"] and not dig["right"]["guardCouldFall"]
 
 
+def check_targetless_ladder_continuation():
+    state = candidate_snapshot()
+    state.update(terrainGrid=["     ", "  H  ", "  H  ", "  H  ", "#####"], tick=6)
+    state["grid"] = state["terrainGrid"]
+    state["runner"].update(y=1, yOffset=10, actionName="down")
+    state["gold"]["visiblePositions"] = []
+    history = [{"candidateId": "descend_route_2_1_down", "keyCode": 40, "ticks": 6,
+                "tick": 0, "afterTick": 6,
+                "before": {"runner": {"x": 2, "y": 0, "xOffset": 0, "yOffset": 0}, "goldCount": 1},
+                "after": {"runner": copy.deepcopy(state["runner"]), "goldCount": 1}}]
+    original = copy.deepcopy((state, history))
+    for god_mode in (False, True):
+        state["godMode"] = god_mode
+        pool, analysis = generate_candidates(state, history)
+        assert any(c["kind"] == "climb_ladder" and c["firstAction"]["keyCode"] == 40 for c in pool)
+        assert not any(c["kind"] == "climb_ladder" and c["firstAction"]["keyCode"] == 38 for c in pool)
+        assert analysis["ladder"]["recommendedAction"] == "down"
+        # A visible target or exit priority must still override continuation.
+        analysis["primaryProgressTarget"] = {"x": 2, "y": 0}
+        assert choose_ladder_direction(state, analysis, history) == "up"
+        analysis["primaryProgressTarget"] = {}
+        analysis["goldComplete"] = True
+        assert choose_ladder_direction(state, analysis, history) == "up"
+        analysis["goldComplete"] = False
+        # Guard pressure, blocked movement and stale/non-progress history do not
+        # qualify for the no-target direction tie-break.
+        analysis["risk"]["risk"] = "medium"
+        assert choose_ladder_direction(state, analysis, history) == "up"
+        analysis["risk"]["risk"] = "low"
+        analysis["movement"]["canMoveDown"] = False
+        assert choose_ladder_direction(state, analysis, history) == "up"
+        analysis["movement"]["canMoveDown"] = True
+        for edit in ({"candidateId": "retreat_from_guard_down"}, {"afterTick": 5},
+                     {"before": history[0]["after"]}):
+            assert choose_ladder_direction(state, analysis, [{**history[0], **edit}]) == "up"
+        assert choose_ladder_direction(state, analysis, []) == "up"
+        upward = copy.deepcopy(history)
+        upward[0].update(candidateId="climb_ladder_2_2_up", keyCode=38)
+        upward[0]["before"]["runner"].update(y=2, yOffset=0)
+        assert choose_ladder_direction(state, analysis, upward) == "up"
+    state["godMode"] = False
+    assert (state, history) == original
+    # A real approaching guard still determines the safe vertical candidates.
+    state["guards"] = [{"id": 0, "x": 2, "y": 2, "xOffset": 0, "yOffset": 0,
+                        "actionName": "up", "hasGold": 0}]
+    pool, analysis = generate_candidates(state, history)
+    assert analysis["risk"]["risk"] in {"high", "critical"}
+    assert any(c["firstAction"]["keyCode"] == 38 for c in pool)
+    assert not any(c["firstAction"]["keyCode"] == 40 for c in pool)
+    assert analysis["ladder"]["recommendedAction"] == "up"
+
+
 def check_off_center_pinch_dig():
     state = candidate_snapshot()
     state["runner"].update(x=5, xOffset=8)
@@ -290,5 +342,6 @@ if __name__ == "__main__":
         check_short_medium_clearance()
         check_shorter_medium_candidates()
         check_defensive_dig_threat_priority()
+        check_targetless_ladder_continuation()
         check_off_center_pinch_dig()
     print("backend smoke ok")
