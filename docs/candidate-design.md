@@ -196,9 +196,10 @@ the action's direction. This avoids undoing a ladder entry solely because the
 missing-target default is up. Visible targets, shaft-opening preferences, exit
 routing, guard-pressure decisions and safety validation remain unchanged. Waits,
 blocked actions, stale history and safety retreats do not establish continuation;
-no persistent direction or new loop detector is added. When continuation changes
-the default direction, ladder recommendation metadata and the candidate's factual
-explanation reflect that direction; gameplay prompt guidance is unchanged.
+no persistent direction or new loop detector is added. For every on-ladder
+progress proposal, recommendation metadata and the candidate's factual explanation
+use the planner's chosen direction, rather than copying the geometry-only default.
+This also covers visible-target descent; gameplay prompt guidance is unchanged.
 
 Visible ladder routes include ordinary active ladder tiles and traversable top entries
 where an active ladder begins one row below. Entry metadata includes `onDownEntry`,

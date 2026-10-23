@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import json
 import math
+import re
 import sys
 import tempfile
 from contextlib import contextmanager
@@ -15,6 +16,7 @@ sys.path.insert(0, str(ROOT))
 from agent import AgentRequestError, validate_agent_request
 from agent.candidates import generate_candidates, action_guard_safety_rejection_detail, choose_ladder_direction
 from agent.reasoning_tools import get_dig_affordance
+from agent.prompt import format_candidate, format_ladder
 from agent.traces import serialize_step_trace
 import app as backend
 
@@ -264,6 +266,26 @@ def check_defensive_dig_below_pressure():
         state["godMode"] = False
 
 
+def check_ladder_direction_context():
+    state = candidate_snapshot()
+    state["terrainGrid"] = ["       ", "  H    ", "  H    ", "  H    ", "#######"]
+    state["grid"] = state["terrainGrid"]
+    state["runner"]["y"] = 2
+    for god_mode in (False, True):
+        state["godMode"] = god_mode
+        for target_y, direction, key in ((1, "up", 38), (3, "down", 40)):
+            state["gold"]["visiblePositions"] = [{"x": 4, "y": target_y}]
+            original = copy.deepcopy(state)
+            pool, analysis = generate_candidates(state, [])
+            candidate = next(c for c in pool if c["kind"] == "climb_ladder")
+            assert candidate["firstAction"]["keyCode"] == key
+            assert format_ladder(analysis["ladder"])["recommendedAction"] == direction
+            # Check semantic directional consistency, not an exact prose template.
+            reasons = format_candidate(candidate)["reasons"]
+            assert set(re.findall(r"\b(up|down)\b", " ".join(reasons))) == {direction}
+            assert state == original
+
+
 def check_targetless_ladder_continuation():
     state = candidate_snapshot()
     state.update(terrainGrid=["     ", "  H  ", "  H  ", "  H  ", "#####"], tick=6)
@@ -368,6 +390,7 @@ if __name__ == "__main__":
         check_shorter_medium_candidates()
         check_defensive_dig_threat_priority()
         check_defensive_dig_below_pressure()
+        check_ladder_direction_context()
         check_targetless_ladder_continuation()
         check_off_center_pinch_dig()
     print("backend smoke ok")

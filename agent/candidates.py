@@ -686,14 +686,11 @@ def generate_candidates(
     if ladder.get("onLadder"):
         direction = choose_ladder_direction(snapshot, analysis, history)
         target = _dict(analysis.get("primaryProgressTarget"))
-        if (
-            not target and not gold_complete and risk.get("risk") == "low"
-            and direction != ladder.get("recommendedAction")
-        ):
-            # Keep the factual model context consistent with the history-based
-            # direction rather than repeating the affordance's default hint.
-            ladder["recommendedAction"] = direction
-            ladder["detail"] = f"Runner is on a visible ladder; use {direction} to continue the preceding successful ladder movement."
+        climb_reason = ladder_reason(ladder, direction, target)
+        # The geometry-only affordance does not know the target/history choice.
+        # Expose that choice consistently without changing candidate policy.
+        ladder["recommendedAction"] = direction
+        ladder["detail"] = climb_reason
         direction_toward_target = ladder_direction_toward_target(analysis, direction)
         add(
             kind="climb_ladder",
@@ -711,7 +708,7 @@ def generate_candidates(
                 else fixed_score("climb_ladder.gold_complete")
             ),
             target={"x": runner_x, "y": runner_y, "tile": "S" if ladder.get("onExitLadder") else "H"},
-            reason=ladder_reason(ladder, direction, target),
+            reason=climb_reason,
         )
         # A vertical-cycle filter can suppress the preferred climb direction.
         # Keep one physically valid opposite exit available so filtering does
@@ -2073,12 +2070,13 @@ def ladder_direction_toward_target(analysis: dict[str, Any], direction: str) -> 
 
 
 def ladder_reason(ladder: dict[str, Any], direction: str, target: dict[str, Any]) -> str:
+    location = "revealed exit ladder" if ladder.get("onExitLadder") else "visible ladder"
     if target:
         return (
-            f"{ladder.get('detail', 'runner is on a ladder')} "
+            f"Runner is on a {location}. "
             f"Climb {direction} toward visible gold at ({target.get('x')},{target.get('y')})."
         )
-    return str(ladder.get("detail", "runner is on a ladder"))
+    return f"Runner is on a {location}; use {direction} to change row."
 
 
 def ticks_for_alignment(distance: int) -> int:
