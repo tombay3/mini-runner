@@ -251,6 +251,25 @@ class CandidateBuilder:
         guard_rejection_detail = action_guard_safety_rejection_detail(
             action, self.analysis, candidate_kind=kind
         )
+        if guard_rejection_detail is not None and key_code in {LEFT_KEYCODE, RIGHT_KEYCODE}:
+            for shorter_ticks in range(action["ticks"] - 1, 0, -1):
+                shorter = {**action, "ticks": shorter_ticks}
+                if not _short_medium_horizontal_clearance(shorter, self.analysis):
+                    continue
+                shorter, _ = _apply_prospective_horizontal_endpoint_safety(
+                    shorter, self.analysis, kind, snapshot=self.snapshot
+                )
+                if shorter is None or not is_action_physically_valid(
+                    shorter, movement, dig, candidate_kind=kind,
+                    runner_x_offset=_to_int(_dict(self.analysis.get("runner")).get("xOffset")),
+                ):
+                    continue
+                if action_guard_safety_rejection_detail(
+                    shorter, self.analysis, candidate_kind=kind
+                ) is None:
+                    action = shorter
+                    guard_rejection_detail = None
+                    break
         if guard_rejection_detail is not None:
             audit["disposition"] = "safety_rejection"
             audit["detail"] = guard_rejection_detail

@@ -195,6 +195,38 @@ def check_short_medium_clearance():
         assert action_guard_safety_rejection_detail(action, analysis) is None
 
 
+def check_shorter_medium_candidates():
+    for direction in (-1, 1):
+        state = candidate_snapshot(guarded=True)
+        state["runner"]["x"] = 2 if direction == 1 else 4
+        state["gold"]["visiblePositions"][0]["x"] = 4 if direction == 1 else 2
+        guard = state["guards"][0]
+        guard.update(x=6 if direction == 1 else 0, xOffset=-17 * direction,
+                     actionName="left" if direction == 1 else "right")
+        original = copy.deepcopy(state)
+        pool, analysis = generate_candidates(state, [])
+        progress = next(c for c in pool if c["kind"] == "collect_same_row_gold")
+        assert progress["firstAction"]["ticks"] == 3
+        assert progress["firstAction"]["keyCode"] == (39 if direction == 1 else 37)
+        assert action_guard_safety_rejection_detail(progress["firstAction"], analysis,
+                                                  candidate_kind=progress["kind"]) is None
+        assert action_guard_safety_rejection_detail({**progress["firstAction"], "ticks": 4},
+                                                  analysis, candidate_kind=progress["kind"])
+        assert state == original
+        guard["xOffset"] = 0
+        unchanged, _ = generate_candidates(state, [])
+        control = next(c for c in unchanged if c["id"] == progress["id"])
+        assert control["firstAction"]["ticks"] == 4
+        assert control["score"] == progress["score"]
+        # Near high-risk pressure must still exclude progress, at any duration.
+        guard["x"] = state["runner"]["x"] + 2 * direction
+        blocked, _ = generate_candidates(state, [])
+        assert not any(c["kind"] == "collect_same_row_gold" for c in blocked)
+        state["godMode"] = True
+        god, _ = generate_candidates(state, [])
+        assert next(c for c in god if c["kind"] == "collect_same_row_gold")["firstAction"]["ticks"] == 8
+
+
 def check_defensive_dig_threat_priority():
     state = candidate_snapshot()
     state["gold"]["visiblePositions"] = []
@@ -229,5 +261,6 @@ if __name__ == "__main__":
         check_candidate_output()
         check_vertical_secondary_safety()
         check_short_medium_clearance()
+        check_shorter_medium_candidates()
         check_defensive_dig_threat_priority()
     print("backend smoke ok")

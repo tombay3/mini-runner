@@ -77,6 +77,13 @@ must retain at least two cells of horizontal separation after conservatively
 allowing both actors to approach by eight world units per tick (Classic cells are
 40 units wide). Coordinates and offsets are required; any high/critical guard
 disables this exception. Cross-row medium guards also constrain this bound.
+If a horizontal proposal fails guard validation, try shorter durations in
+descending order only when they pass this same medium-clearance bound. Recheck
+endpoint, physical and guard safety, then apply the usual loop filtering. Keep
+the longest passing duration; otherwise retain the rejection. High/critical
+guards, missing clearance data and god mode gain no exception. Candidate IDs,
+targets and score policies stay unchanged; the audit retains proposed and
+validated action durations.
 This permits a short approach with time to reassess, without requiring a ladder
 or changing candidate scores. Physical, hole, trap-wait, and other safety checks
 still apply. The bound covers the immediate action, not a committed escape route
