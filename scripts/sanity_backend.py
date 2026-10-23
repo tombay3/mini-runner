@@ -14,6 +14,7 @@ sys.path.insert(0, str(ROOT))
 
 from agent import AgentRequestError, validate_agent_request
 from agent.candidates import generate_candidates, action_guard_safety_rejection_detail
+from agent.reasoning_tools import get_dig_affordance
 from agent.traces import serialize_step_trace
 import app as backend
 
@@ -194,6 +195,18 @@ def check_short_medium_clearance():
         assert action_guard_safety_rejection_detail(action, analysis) is None
 
 
+def check_defensive_dig_threat_priority():
+    state = candidate_snapshot()
+    state["gold"]["visiblePositions"] = []
+    descending = {"relativeX": "right", "relativeY": "above", "motion": "down", "distance": 2}
+    same_row = {"relativeX": "left", "relativeY": "same", "distance": 4}
+    risk = {"pressureGuard": descending, "nearbyGuards": [descending, same_row]}
+    assert get_dig_affordance(state, risk=risk)["right"]["guardCouldFall"]
+    same_row["distance"] = 1
+    dig = get_dig_affordance(state, risk=risk)
+    assert dig["left"]["guardCouldFall"] and not dig["right"]["guardCouldFall"]
+
+
 def check_retention():
     records = {
         str(i): {"id": str(i), "traceId": str(i), "source": "agent",
@@ -216,4 +229,5 @@ if __name__ == "__main__":
         check_candidate_output()
         check_vertical_secondary_safety()
         check_short_medium_clearance()
+        check_defensive_dig_threat_priority()
     print("backend smoke ok")

@@ -137,6 +137,9 @@ Ordinary digs require zero offsets. In normal mode, a supported, vertically cent
 runner may start an off-center defensive dig when ordinary choices are exhausted
 or a second closing guard needs a trap. The engine centers the dig; trap waits remain
 available. Movement, occupancy, and guard checks still apply.
+For defensive digging, a descending pressure guard within three cells takes
+precedence over a farther same-row guard. A nearer or equally close same-row
+guard keeps priority; a distant guard must not hide the immediate trap opportunity.
 
 Before an emergency hold, a two-tick upward retreat may finish pending ladder
 alignment onto a non-ladder tile when a high/critical guard is below.

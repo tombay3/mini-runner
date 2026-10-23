@@ -585,11 +585,17 @@ def get_dig_affordance(
         ),
         {},
     )
+    pressure_distance = _to_int(pressure_guard.get("distance")) or 99
+    same_row_distance = _to_int(nearest_guard.get("distance"))
+    # A distant same-row guard must not hide a nearer descending trap threat.
     if (
-        not nearest_guard
-        and pressure_guard.get("relativeY") == "above"
+        pressure_guard.get("relativeY") == "above"
         and pressure_guard.get("motion") in {"down", "fall"}
-        and (_to_int(pressure_guard.get("distance")) or 99) <= 3
+        and pressure_distance <= 3
+        and (
+            not nearest_guard
+            or (same_row_distance is not None and pressure_distance < same_row_distance)
+        )
     ):
         nearest_guard = pressure_guard
 
