@@ -67,6 +67,14 @@ Guard analysis retains every visible guard with valid coordinates, sorted by
 distance. Secondary safety checks and clearance scoring use this full list;
 the primary pressure-guard selection is unchanged.
 
+High/critical pressure from a guard below the runner does not by itself justify
+a defensive dig unless that guard is moving up or climbing out toward the row.
+Independent `guardCouldFall` evidence still qualifies, including a relevant
+same-row secondary guard. Same-row and above-row risk-based eligibility, physical
+dig checks, trap-entry waits, scores and durations are unchanged. This prevents
+nearby lateral guards below from authorizing empty holes in the runner's route
+while preserving existing climbing-guard preparation.
+
 Horizontal actions reject movement toward the center of an adjacent high/critical
 guard climbing out below in the same column. Both actors' offsets determine the
 direction; this covers primary/secondary guards and exempts god mode.

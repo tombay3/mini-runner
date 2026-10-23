@@ -988,10 +988,14 @@ def add_non_god_escape_candidates(
     right_dig_available = active_trap.get("side") != "right" and (bool(dig.get("canDigRight")) or bool(
         right_dig.get("canDefensiveDig") and right_dig.get("guardCouldFall")
     ))
-    left_trap_ready = guard_risk in {"high", "critical"} or bool(
+    pressure_supports_trap = guard_risk in {"high", "critical"} and (
+        guard.get("relativeY") != "below"
+        or guard.get("motion") in {"up", "climb_out"}
+    )
+    left_trap_ready = pressure_supports_trap or bool(
         left_dig.get("guardCouldFall")
     )
-    right_trap_ready = guard_risk in {"high", "critical"} or bool(
+    right_trap_ready = pressure_supports_trap or bool(
         right_dig.get("guardCouldFall")
     )
     edge_defensive_trap = bool(

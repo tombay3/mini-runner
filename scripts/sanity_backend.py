@@ -239,6 +239,31 @@ def check_defensive_dig_threat_priority():
     assert dig["left"]["guardCouldFall"] and not dig["right"]["guardCouldFall"]
 
 
+def check_defensive_dig_below_pressure():
+    state = candidate_snapshot()
+    state["gold"]["visiblePositions"] = []
+    state["terrainGrid"] = ["       ", "       ", "#######", "       ", "#######"]
+    state["grid"] = state["terrainGrid"]
+    state["runner"]["x"] = 3
+    for side in (-1, 1):
+        guard = {"id": 0, "x": 3 + side, "y": 3, "xOffset": 0, "yOffset": 0,
+                 "actionName": "right" if side < 0 else "left", "hasGold": 0}
+        state["guards"] = [guard]
+        original = copy.deepcopy(state)
+        pool, analysis = generate_candidates(state, [])
+        assert analysis["risk"]["risk"] == "high"
+        assert not any(c["kind"] == "defensive_dig" for c in pool)
+        assert state == original
+        # Preserve preparation for a guard actually climbing toward this row.
+        guard["actionName"] = "up"
+        pool, _ = generate_candidates(state, [])
+        assert any(c["kind"] == "defensive_dig" for c in pool)
+        state["godMode"] = True
+        pool, _ = generate_candidates(state, [])
+        assert not any(c["kind"] == "defensive_dig" for c in pool)
+        state["godMode"] = False
+
+
 def check_targetless_ladder_continuation():
     state = candidate_snapshot()
     state.update(terrainGrid=["     ", "  H  ", "  H  ", "  H  ", "#####"], tick=6)
@@ -342,6 +367,7 @@ if __name__ == "__main__":
         check_short_medium_clearance()
         check_shorter_medium_candidates()
         check_defensive_dig_threat_priority()
+        check_defensive_dig_below_pressure()
         check_targetless_ladder_continuation()
         check_off_center_pinch_dig()
     print("backend smoke ok")
