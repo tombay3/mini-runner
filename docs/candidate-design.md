@@ -141,8 +141,10 @@ route. It excludes refilling holes, preserves the existing capture rechecks, and
 releases progress once the guard is trapped.
 
 Ordinary digs require zero offsets. In normal mode, a supported, vertically centered
-runner may start an off-center defensive dig when ordinary choices are exhausted
-or a second closing guard needs a trap. The engine centers the dig; trap waits remain
+runner may start an off-center defensive dig when ordinary choices are exhausted,
+same-row guards exert medium-or-higher pressure on both sides, or a second closing
+guard needs a trap. Two-sided pressure does not require the ordinary shortlist to
+be empty first. The engine centers the dig; trap waits remain
 available. Movement, occupancy, and guard checks still apply.
 For defensive digging, a descending pressure guard within three cells takes
 precedence over a farther same-row guard. A nearer or equally close same-row

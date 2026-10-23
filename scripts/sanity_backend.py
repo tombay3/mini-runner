@@ -239,6 +239,33 @@ def check_defensive_dig_threat_priority():
     assert dig["left"]["guardCouldFall"] and not dig["right"]["guardCouldFall"]
 
 
+def check_off_center_pinch_dig():
+    state = candidate_snapshot()
+    state["runner"].update(x=5, xOffset=8)
+    state["terrainGrid"] = state["grid"] = ["           ", "           ",
+                                            "###########", "@@@@@@@@@@@"]
+    state["gold"]["visiblePositions"] = [{"x": 1, "y": 1}]
+    state["guards"] = [
+        {"id": 0, "x": 0, "y": 1, "xOffset": 8, "yOffset": 0,
+         "actionName": "right", "hasGold": 0},
+        {"id": 1, "x": 9, "y": 1, "xOffset": 0, "yOffset": 17,
+         "actionName": "climb_out", "hasGold": 0},
+    ]
+    original = copy.deepcopy(state)
+    pool, _ = generate_candidates(state, [])
+    assert any(c["kind"] == "retreat_from_guard" for c in pool)
+    assert any(c["kind"] == "defensive_dig" and c["firstAction"]["keyCode"] == 88
+               for c in pool)
+    assert state == original
+    state["guards"] = state["guards"][1:]
+    _, analysis = generate_candidates(state, [])
+    assert not analysis["dig"]["right"]["canDefensiveDig"]
+    state = copy.deepcopy(original)
+    state["godMode"] = True
+    _, analysis = generate_candidates(state, [])
+    assert not analysis["dig"]["right"]["canDefensiveDig"]
+
+
 def check_retention():
     records = {
         str(i): {"id": str(i), "traceId": str(i), "source": "agent",
@@ -263,4 +290,5 @@ if __name__ == "__main__":
         check_short_medium_clearance()
         check_shorter_medium_candidates()
         check_defensive_dig_threat_priority()
+        check_off_center_pinch_dig()
     print("backend smoke ok")

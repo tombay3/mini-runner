@@ -576,6 +576,17 @@ def boost_same_burst_gold_opposite_ladder(
     return result
 
 
+def has_opposing_same_row_guard_pressure(risk: dict[str, Any]) -> bool:
+    sides = {
+        guard.get("relativeX")
+        for guard in risk.get("nearbyGuards") or []
+        if isinstance(guard, dict)
+        and guard.get("relativeY") == "same"
+        and guard.get("risk") in GUARD_PRESSURE_RISKS
+    }
+    return {"left", "right"} <= sides
+
+
 def analyze_state(snapshot: dict[str, Any], history: list[dict[str, Any]]) -> dict[str, Any]:
     runner = _dict(snapshot.get("runner"))
     gold = _dict(snapshot.get("gold"))
@@ -584,7 +595,12 @@ def analyze_state(snapshot: dict[str, Any], history: list[dict[str, Any]]) -> di
     primary_progress_target = find_primary_progress_target(nearest_gold)
     risk = assess_guard_risk(snapshot)
     movement = get_movement_affordance(snapshot)
-    dig = get_dig_affordance(snapshot, risk=risk)
+    dig = get_dig_affordance(
+        snapshot, risk=risk,
+        allow_off_center_defensive=(
+            not snapshot.get("godMode") and has_opposing_same_row_guard_pressure(risk)
+        ),
+    )
     analysis = {
         "gameState": snapshot.get("gameStateName"),
         "godMode": bool(snapshot.get("godMode")),
@@ -957,15 +973,7 @@ def add_non_god_escape_candidates(
     left_dig = _dict(dig.get("left"))
     right_dig = _dict(dig.get("right"))
     active_trap = _trap_hole_between_pressure_guard(movement, risk)
-    same_row_guards = [
-        _dict(item)
-        for item in risk.get("nearbyGuards") or []
-        if isinstance(item, dict) and item.get("relativeY") == "same"
-    ]
-    pinch = (
-        any(item.get("relativeX") == "left" and item.get("risk") in GUARD_PRESSURE_RISKS for item in same_row_guards)
-        and any(item.get("relativeX") == "right" and item.get("risk") in GUARD_PRESSURE_RISKS for item in same_row_guards)
-    )
+    pinch = has_opposing_same_row_guard_pressure(risk)
     left_dig_available = active_trap.get("side") != "left" and (bool(dig.get("canDigLeft")) or bool(
         left_dig.get("canDefensiveDig") and left_dig.get("guardCouldFall")
     ))
