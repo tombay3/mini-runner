@@ -88,7 +88,7 @@ def build_loop_report(
         key_codes=key_codes,
         candidate_ids=candidate_ids,
         no_gold_change=no_gold_change,
-        primary_target=dict_value(analysis.get("primaryProgressTarget")),
+        gold_target=dict_value(analysis.get("goldTarget")),
         movement=dict_value(analysis.get("movement")),
     )
     stationary_repeat = (
@@ -343,7 +343,7 @@ def detect_vertical_cycle(
     key_codes: list[int],
     candidate_ids: list[str],
     no_gold_change: bool,
-    primary_target: dict[str, Any],
+    gold_target: dict[str, Any],
     movement: dict[str, Any],
 ) -> dict[str, Any]:
     if len(positions) < 6 or not no_gold_change:
@@ -380,9 +380,9 @@ def detect_vertical_cycle(
             if candidate_kind(candidate_id) in {"climb_ladder", "descend_route"}
         }
     )
-    target_y = to_int(primary_target.get("y"))
+    target_y = to_int(gold_target.get("y"))
     preferred = "up" if target_y is not None and target_y < current_y else "down" if target_y is not None and target_y > current_y else None
-    direction = primary_target.get("direction")
+    direction = gold_target.get("direction")
     exit_direction = (
         direction
         if direction in {"left", "right"}

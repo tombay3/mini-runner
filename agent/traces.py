@@ -56,7 +56,7 @@ def summarize_state(snapshot: dict[str, Any], analysis: dict[str, Any] | None = 
         },
         "risk": _dict(analysis.get("risk")).get("risk", "unknown"),
         **({key: context.get(key, {}) for key in
-            ("primaryProgressTarget", "threat", "movement", "route")}
+            ("goldTarget", "exitTarget", "threat", "movement", "route")}
            if analysis else {}),
     }
 
@@ -68,7 +68,6 @@ def summarize_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
         **{key: candidate.get(key) for key in ("id", "kind", "lane", "score")},
         "target": context.get("target"),
         "intents": context.get("intents", []),
-        "targets": context.get("targets", []),
         "reasons": context.get("reasons", []),
         "firstAction": {**_action(action), "name": context["action"]["name"],
                         "reason": _text(action.get("reason"))},

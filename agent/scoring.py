@@ -8,6 +8,7 @@ from typing import Any
 LOW_RISK_GUARD_CLEARANCE_BONUS = 4
 MEDIUM_CROSS_ROW_CLEARANCE_PENALTY = 12
 SAME_BURST_OPPOSITE_LADDER_GOLD_BONUS = 4
+RECENT_LADDER_RETURN_PENALTY = 30
 
 
 # Existing values preserve the historical heuristic policy. New-family defaults

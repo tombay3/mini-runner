@@ -580,7 +580,7 @@ def get_dig_affordance(
     nearest_guard = next(
         (
             guard
-            for guard in risk.get("nearbyGuards") or []
+            for guard in risk.get("guards") or []
             if guard.get("relativeY") == "same"
         ),
         {},
@@ -1003,7 +1003,7 @@ def assess_guard_risk(snapshot: dict[str, Any]) -> dict[str, Any]:
     runner_x = _to_int(runner.get("x"))
     runner_y = _to_int(runner.get("y"))
     if runner_x is None or runner_y is None:
-        return {"risk": "unknown", "pressureGuard": None, "nearbyGuards": []}
+        return {"risk": "unknown", "pressureGuard": None, "guards": []}
 
     nearby_guards = []
     for guard in guards:
@@ -1050,7 +1050,7 @@ def assess_guard_risk(snapshot: dict[str, Any]) -> dict[str, Any]:
     return {
         "risk": risk,
         "pressureGuard": pressure_guard,
-        "nearbyGuards": sorted(nearby_guards, key=lambda item: item["distance"]),
+        "guards": sorted(nearby_guards, key=lambda item: item["distance"]),
         "runnerOnEdge": _is_edge(runner_x, width),
     }
 

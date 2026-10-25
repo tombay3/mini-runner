@@ -47,6 +47,8 @@ The snapshot separates structural terrain from live state. It includes:
 - `runner` position, offsets, and action;
 - `guards` with position, offsets, motion, and carried-gold state;
 - `gold` with visible positions, carried gold, remaining count, and completion;
+- `exitTarget`, the next exit waypoint after gold completion when uniquely
+  identified; see [candidate context](./candidate-design.md);
 - `activeDig` and open-hole timing information;
 - `terrainGrid`, containing only structural terrain.
 

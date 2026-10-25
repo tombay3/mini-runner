@@ -287,7 +287,7 @@ def load_trace_store() -> dict[str, Any]:
                 raise ValueError("malformed v4 trace decision")
             state = step["state"]
             if any(key in state and not isinstance(state[key], dict)
-                   for key in ("primaryProgressTarget", "threat", "movement", "route")):
+                   for key in ("goldTarget", "exitTarget", "threat", "movement", "route")):
                 raise ValueError("malformed v4 trace model state context")
             if "suppressedCount" in step["loop"] and (
                     type(step["loop"]["suppressedCount"]) is not int or step["loop"]["suppressedCount"] < 0):
@@ -295,7 +295,7 @@ def load_trace_store() -> dict[str, Any]:
             for candidate in step["candidates"]:
                 if not isinstance(candidate, dict) or any(
                         key in candidate and not isinstance(candidate[key], list)
-                        for key in ("intents", "targets", "reasons")):
+                        for key in ("intents", "reasons")):
                     raise ValueError("malformed v4 trace model candidate context")
     return data
 

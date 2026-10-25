@@ -1,5 +1,50 @@
 // Wrapper/helper smoke checks. No browser, services, model calls or store writes.
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import vm from "node:vm";
+
+// Exercise the real hook with revealed H tiles and an S in the source map.
+const runtime = vm.createContext({
+  window: {}, levelData: ["  S  "], curLevel: 1, playData: 1, playMode: 0,
+  NO_OF_TILES_X: 5, NO_OF_TILES_Y: 1,
+  runner: { pos: { x: 0, y: 0, xOffset: 0, yOffset: 0 }, action: 0 },
+  ACT_STOP: 0, guardCount: 0, fillHoleObj: [],
+  godMode: false, godModeKeyPressed: false, goldComplete: false, goldCount: 1,
+  GAME_START: 0, GAME_RUNNING: 1, gameState: 1,
+  recordCount: 0, playTickTimer: 0, curTime: 0, TICK_COUNT_PER_TIME: 16,
+  EMPTY_T: 0, BLOCK_T: 1, SOLID_T: 2, LADDR_T: 3, BAR_T: 4,
+  TRAP_T: 5, HLADR_T: 6, GOLD_T: 7, GUARD_T: 8, RUNNER_T: 9,
+  map: Array.from({ length: 5 }, () => [{ base: 3, act: 3 }]),
+});
+vm.runInContext(readFileSync(new URL("../public/game/lodeRunner.agentHooks.js", import.meta.url), "utf8"), runtime);
+const exitSnapshot = () => runtime.window.lodeRunnerAgentHooks.snapshot();
+assert.equal(exitSnapshot().exitTarget, null);
+runtime.goldComplete = true;
+runtime.goldCount = 0;
+assert.deepEqual(JSON.parse(JSON.stringify(exitSnapshot().exitTarget)), { x: 2, y: 0, tile: "S" });
+runtime.levelData = ["    S"];
+assert.equal(exitSnapshot().exitTarget.x, 4);
+runtime.levelData = ["S   S"];
+assert.equal(exitSnapshot().exitTarget, null);
+runtime.levelData = ["HHHHH"];
+assert.equal(exitSnapshot().exitTarget, null);
+
+// The lower disconnected S is not an entrance to the top-connected exit.
+const exitRows = ["  S  ", "  H  ", "  S  ", "     ", "  S  "];
+runtime.NO_OF_TILES_Y = exitRows.length;
+runtime.levelData = [exitRows.join("")];
+runtime.map = Array.from({ length: 5 }, (_, x) => exitRows.map(row => {
+  const tile = "SH".includes(row[x]) ? runtime.LADDR_T : runtime.EMPTY_T;
+  return { base: tile, act: tile };
+}));
+runtime.runner.pos.y = 4;
+assert.deepEqual(JSON.parse(JSON.stringify(exitSnapshot().exitTarget)), { x: 2, y: 2, tile: "S" });
+runtime.runner.pos.y = 1;
+assert.equal(exitSnapshot().exitTarget.y, 1);
+runtime.runner.pos.x = 2;
+assert.equal(exitSnapshot().exitTarget.y, 0);
+runtime.runner.pos.y = 4;
+assert.equal(exitSnapshot().exitTarget.y, 2);
 
 function resetWindow() {
   globalThis.window = {

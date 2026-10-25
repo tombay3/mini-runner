@@ -155,9 +155,9 @@ The step shape is:
     runner: {x, y, xOffset, yOffset, action},
     guards: [{id, x, y, xOffset, yOffset, action, carryingGold}],
     gold: {remainingCount, complete, visiblePositions: [{x, y, ...}]},
-    risk, primaryProgressTarget, threat, movement, route
+    risk, goldTarget, exitTarget, threat, movement, route
   },
-  candidates: [{id, kind, lane, score, target, intents, targets, reasons,
+  candidates: [{id, kind, lane, score, target, intents, reasons,
                 firstAction: {keyCode, ticks, name, reason}}],
   decision: {requestedId, selectedId, rationale,
              fallback: null | {code: "candidate_fallback", message}},
@@ -171,10 +171,12 @@ The step shape is:
 Step data:
 
 - `step.state` contains `tick`, `gameState`, `godMode`, `runner`, `guards`, `gold`, and `risk`.
-  Planned steps also retain model-input `primaryProgressTarget`, `threat`, `movement`, and
-  `route`, using the prompt formatters. `guards` contains the engine's observed entities;
-  `threat` includes individual risk/motion under `pressureGuard` and `nearbyGuards`.
-  `nearbyGuards` retains all visible guards with valid coordinates, sorted by
+  Planned steps also retain model-input `goldTarget`, `exitTarget`, `threat`, `movement`, and
+  `route`, using the prompt formatters. `exitTarget` is the next approach or climb
+  waypoint; see [exit waypoint selection](./candidate-design.md#state-and-ladder-geometry).
+  `guards` contains the engine's observed entities;
+  `threat` includes individual risk/motion under `pressureGuard` and `guards`.
+  `threat.guards` retains all guards with valid coordinates, sorted by
   distance; it is not limited to four entries.
   `movement` includes legal directions and open holes; `route` includes ladder
   and access information. Empty nested context fields may be omitted. Gold positions retain
@@ -182,7 +184,7 @@ Step data:
   When history is available, `step.recentProgress` retains the bounded progress summary
   supplied to the model.
 - `candidates` contains the exposed executable backend choices, including each candidate's ID, kind, lane,
-  score, full target, intents, merged targets, reasons, and first action (including its name).
+  score, full target, intents, reasons, and first action (including its name).
   Model-input reasons are retained in full; the first-action reason is capped at 240 characters.
 - `decision` contains `requestedId`, `selectedId`, `rationale`, and nullable `fallback:{code,message}`.
   The only implemented fallback code is `candidate_fallback`. Rationale and fallback message

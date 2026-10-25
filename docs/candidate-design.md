@@ -33,9 +33,10 @@ lower-scored candidate.
 
 `agent/scoring.py` holds named base values and the ladder-distance formula.
 `scoreBreakdown` records the effective integer total and actual signed components:
-base, ladder-distance bonus, guard-clearance adjustments and the narrow gold bonus
-when applied. Components sum to the score; fixed values are not presented as
-invented risk or progress calculations. Centralizing the constants does not tune them.
+base, ladder-distance bonus, guard-clearance adjustments, recent-ladder-return
+penalty and the narrow gold bonus when applied. Components sum to the score;
+fixed values are not presented as invented risk or progress calculations.
+Centralizing the constants does not tune them.
 
 After score/ID sorting and truncation, two bounded rules can reorder exposed choices:
 
@@ -118,7 +119,7 @@ retains its established behavior. Same-row and high/critical threats continue
 through hard safety validation.
 
 Candidates with identical normalized key/tick actions are merged only when kind and target match.
-Their intents, targets, and reasons are retained. Semantically different candidates remain visible
+Their shared target, intents, and reasons are retained. Semantically different candidates remain visible
 even when their first action happens to be the same.
 
 ## Candidate Classification Matrix
@@ -185,8 +186,24 @@ low-risk planning retains the opposite direction only if it is explicitly legal.
 Unknown movement affordances, exit routing, shaft-opening preferences, and
 medium/high/critical decisions retain their existing policy and safety validation.
 
-Analysis exposes its computed `primaryProgressTarget` to candidate generation, the prompt, and
-traces.
+Analysis exposes its computed `goldTarget` to candidate generation, the prompt, and
+traces. A brief definition appears before gold completion when `goldTarget` is
+known: the preferred visible gold objective, excluding guard-carried gold, without
+a verified safe route. After gold completion, that definition is omitted.
+
+After gold completion, a separate `exitTarget: {x, y, tile: "S"}` identifies the
+next exit waypoint in model context and traces. The runtime hook
+reads `S` from the loaded level map because revealing it converts live tiles to
+`H`. It follows the unique top-row exit column through connected `S` and `H`
+tiles. From below, the waypoint is its lowest `S`; alongside the revealed span,
+it is on the runner's row. Once the runner is on the connected ladder, the
+waypoint moves to the top. Disconnected lower `S` tiles are excluded; missing or
+ambiguous exits leave the target unknown. A brief definition appears only after
+gold completion when the target is known. This context does not affect candidate
+generation, scores, safety checks, or `goldTarget` selection.
+
+Candidate targets are local waypoints; a short input may stop before reaching
+one. Neither a candidate name nor its score proves a route to the exit.
 
 With no known gold-target row and low decision risk, ladder direction continues
 the immediately preceding successful `descend_route` or `climb_ladder` action
@@ -245,6 +262,17 @@ families, so it is a bounded transition correction rather than route commitment.
 Loop detection examines the most recent 10 recorded decisions. An active dig prevents loop
 confirmation. All loop types require no gold-count change; environment waits and guard retreats are
 treated conservatively so normal state changes are not mistaken for a loop.
+
+After gold collection, normal low-risk states also rank recent ladder returns
+lower when another admitted progress choice exists. A fresh ascent followed only
+by same-row ladder alignment establishes the known ladder; history must match
+the current tick and full runner pose. Re-entering that shaft or aligning back
+to it receives a -30 score component and a factual return explanation. A
+conflicting ladder-direction recommendation is cleared. Actions and admission
+stay unchanged, and a sole progress choice keeps its original score. Any admitted
+safety choice, medium-or-higher risk, god mode, or active loop recovery bypasses this
+adjustment. This preference uses up to 24 history entries and does not confirm a
+new loop type.
 
 A loop is confirmed as one of:
 

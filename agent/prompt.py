@@ -57,6 +57,18 @@ def build_agent_prompt(
                 "because its first short action appears indirect, and do not invent unsupported "
                 "route interpretations."
             ),
+            (
+                "goldTarget is the backend’s preferred visible gold objective, excluding "
+                "guard-carried gold; it is not a verified safe route."
+                if not analysis.get("goldComplete") and _dict(analysis.get("goldTarget"))
+                else None
+            ),
+            (
+                "exitTarget is the current waypoint for approaching or climbing the revealed "
+                "exit ladder. Choose among the supplied candidates while preserving guard safety."
+                if analysis.get("goldComplete") and _dict(analysis.get("exitTarget"))
+                else None
+            ),
             f"Return JSON only: {response_format}.",
             rationale_instruction,
             "Agent rules:\n" + read_agent_rules(),
@@ -191,7 +203,7 @@ def build_state_context(
     ladder = _dict(analysis.get("ladder"))
     route_access = _dict(analysis.get("routeAccess"))
     loop_report = _dict(analysis.get("loopReport"))
-    primary_target = _dict(analysis.get("primaryProgressTarget"))
+    gold_target = _dict(analysis.get("goldTarget"))
     return compact_value(
         {
             "game": {
@@ -212,12 +224,13 @@ def build_state_context(
                 "remaining": gold.get("remainingCount", snapshot.get("goldCount")),
                 "visible": gold.get("visiblePositions", []),
             },
-            "primaryProgressTarget": primary_target,
+            "goldTarget": gold_target,
+            "exitTarget": _dict(analysis.get("exitTarget")),
             "threat": {
                 "risk": risk.get("risk"),
                 "pressureGuard": format_guard(risk.get("pressureGuard")),
-                "nearbyGuards": [
-                    format_guard(guard) for guard in risk.get("nearbyGuards") or []
+                "guards": [
+                    format_guard(guard) for guard in risk.get("guards") or []
                 ],
             },
             "movement": {
@@ -272,9 +285,6 @@ def format_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
                 "ticks": action.get("ticks"),
             },
             "intents": candidate.get("intents") or [candidate.get("kind")],
-            "targets": candidate.get("targets") or (
-                [candidate.get("target")] if candidate.get("target") else []
-            ),
             "reasons": reasons,
         }
     )

@@ -16,7 +16,7 @@ sys.path.insert(0, str(ROOT))
 from agent import AgentRequestError, validate_agent_request
 from agent.candidates import generate_candidates, action_guard_safety_rejection_detail, choose_ladder_direction
 from agent.reasoning_tools import get_dig_affordance
-from agent.prompt import format_candidate, format_ladder
+from agent.prompt import build_state_context, format_candidate, format_ladder
 from agent.traces import serialize_step_trace
 import app as backend
 
@@ -123,7 +123,66 @@ def check_candidate_output():
         )
         assert trace["decision"]["selectedId"] == selected["id"]
         assert trace["action"] == {k: selected["firstAction"][k] for k in ("keyCode", "ticks")}
+        for candidate, saved in zip(pool, trace["candidates"]):
+            assert saved["target"] == candidate["target"]
+            assert "targets" not in candidate and "targets" not in saved
+        if state["guards"]:
+            guards = build_state_context(state, analysis)["threat"]["guards"]
+            assert len(guards) == len(state["guards"])
+            assert guards[0]["x"] == state["guards"][0]["x"]
         json.dumps(trace, allow_nan=False)
+
+
+def check_exit_context():
+    state = candidate_snapshot(exit_state=True)
+    pool, original = generate_candidates(state, [])
+    state["exitTarget"] = {"x": 2, "y": 1, "tile": "S"}
+    updated, analysis = generate_candidates(state, [])
+    assert updated == pool and analysis["goldTarget"] == original["goldTarget"]
+    assert build_state_context(state, analysis)["exitTarget"] == state["exitTarget"]
+    trace = serialize_step_trace(
+        snapshot=state, action=pool[0]["firstAction"], candidates=pool,
+        selected_candidate=pool[0], analysis=analysis,
+        validation={"requestedCandidateId": pool[0]["id"], "fallbackUsed": False},
+    )
+    assert trace["state"]["exitTarget"] == state["exitTarget"]
+    state["gold"]["complete"] = state["goldComplete"] = False
+    _, analysis = generate_candidates(state, [])
+    assert "exitTarget" not in build_state_context(state, analysis)
+
+
+def check_recent_ladder_return():
+    state = candidate_snapshot(exit_state=True)
+    state["terrainGrid"] = state["grid"] = ["       ", "       ", "##H#H##", "  H H  ", "#######"]
+    state["tick"] = 20
+    before = {"runner": {"x": 2, "y": 3, "xOffset": 0, "yOffset": 0}, "goldCount": 0}
+    arrived = {"runner": {"x": 2, "y": 1, "xOffset": 0, "yOffset": 0}, "goldCount": 0}
+    history = [{"candidateId": "exit_ladder_route_2_3_up", "keyCode": 38,
+                "ticks": 20, "tick": 0, "afterTick": 20, "before": before, "after": arrived}]
+    original = copy.deepcopy((state, history))
+    control, _ = generate_candidates(state, [])
+    changed, analysis = generate_candidates(state, history)
+    action_keys = lambda pool: {c["id"]: (c["firstAction"]["keyCode"], c["firstAction"]["ticks"]) for c in pool}
+    assert action_keys(control) == action_keys(changed)
+    assert control[0]["kind"] == "descend_route" and changed[0]["kind"] == "align_ladder"
+    assert analysis["ladder"]["recommendedAction"] is None
+    assert (state, history) == original
+    state["runner"]["x"] = 3
+    state["tick"] = 24
+    history.append({"candidateId": "align_ladder_4_1_right", "keyCode": 39, "ticks": 4,
+                    "tick": 20, "afterTick": 24, "before": arrived,
+                    "after": {"runner": {"x": 3, "y": 1, "xOffset": 0, "yOffset": 0}, "goldCount": 0}})
+    changed, _ = generate_candidates(state, history)
+    assert changed[0]["target"]["x"] == 4
+    state["tick"] = 25  # Stale history cannot establish a return.
+    stale, _ = generate_candidates(state, history)
+    assert all(not any(p["name"] == "recent_ladder_return_penalty" for p in c["scoreBreakdown"]["components"]) for c in stale)
+    state, history = copy.deepcopy(original)
+    state["terrainGrid"] = state["grid"] = ["       ", "## ####", "##H####", "  H    ", "#######"]
+    sole, analysis = generate_candidates(state, history)
+    assert len(sole) == 1 and sole[0]["kind"] == "descend_route"
+    assert analysis["ladder"]["recommendedAction"] == "down"
+    assert generate_candidates(state, [None])[0]
 
 
 def check_vertical_secondary_safety():
@@ -132,14 +191,14 @@ def check_vertical_secondary_safety():
         "risk": {
             "pressureGuard": {"id": 0, "risk": "high", "relativeX": "right",
                               "relativeY": "same", "distance": 2, "motion": "left"},
-            "nearbyGuards": [{"id": 1, "risk": "high", "relativeX": "same",
+            "guards": [{"id": 1, "risk": "high", "relativeX": "same",
                               "relativeY": "below", "motion": "up"}],
         },
     }
     original = copy.deepcopy(analysis)
     for key, side, approaching, departing in ((40, "below", "up", "down"),
                                              (38, "above", "down", "up")):
-        threat = analysis["risk"]["nearbyGuards"][0]
+        threat = analysis["risk"]["guards"][0]
         threat.update(relativeY=side, motion=approaching)
         action = {"keyCode": key, "ticks": 6}
         for kind in ("retreat_from_guard", "descend_route", "climb_ladder"):
@@ -168,10 +227,10 @@ def check_short_medium_clearance():
                 "id": 0, "x": 12 + 4 * direction, "xOffset": 0,
                 "risk": "medium", "relativeX": "left" if direction < 0 else "right",
                 "relativeY": "same", "distance": 4,
-            }, "nearbyGuards": []},
+            }, "guards": []},
         }
         threat = analysis["risk"]["pressureGuard"]
-        analysis["risk"]["nearbyGuards"] = [threat]
+        analysis["risk"]["guards"] = [threat]
         action = {"keyCode": 37 if direction < 0 else 39, "ticks": 4}
         original = copy.deepcopy(analysis)
         assert action_guard_safety_rejection_detail(action, analysis) is None
@@ -187,7 +246,7 @@ def check_short_medium_clearance():
         del threat["xOffset"]
         assert action_guard_safety_rejection_detail(action, analysis)
         threat["xOffset"] = 0
-        analysis["risk"]["nearbyGuards"].append({
+        analysis["risk"]["guards"].append({
             "id": 1, "x": 12 - 2 * direction, "xOffset": 0,
             "risk": "medium", "relativeY": "same",
             "relativeX": "right" if direction < 0 else "left",
@@ -234,7 +293,7 @@ def check_defensive_dig_threat_priority():
     state["gold"]["visiblePositions"] = []
     descending = {"relativeX": "right", "relativeY": "above", "motion": "down", "distance": 2}
     same_row = {"relativeX": "left", "relativeY": "same", "distance": 4}
-    risk = {"pressureGuard": descending, "nearbyGuards": [descending, same_row]}
+    risk = {"pressureGuard": descending, "guards": [descending, same_row]}
     assert get_dig_affordance(state, risk=risk)["right"]["guardCouldFall"]
     same_row["distance"] = 1
     dig = get_dig_affordance(state, risk=risk)
@@ -304,9 +363,9 @@ def check_targetless_ladder_continuation():
         assert not any(c["kind"] == "climb_ladder" and c["firstAction"]["keyCode"] == 38 for c in pool)
         assert analysis["ladder"]["recommendedAction"] == "down"
         # A visible target or exit priority must still override continuation.
-        analysis["primaryProgressTarget"] = {"x": 2, "y": 0}
+        analysis["goldTarget"] = {"x": 2, "y": 0}
         assert choose_ladder_direction(state, analysis, history) == "up"
-        analysis["primaryProgressTarget"] = {}
+        analysis["goldTarget"] = {}
         analysis["goldComplete"] = True
         assert choose_ladder_direction(state, analysis, history) == "up"
         analysis["goldComplete"] = False
@@ -385,6 +444,8 @@ if __name__ == "__main__":
         check_recording_and_trace(client)
         check_retention()
         check_candidate_output()
+        check_exit_context()
+        check_recent_ladder_return()
         check_vertical_secondary_safety()
         check_short_medium_clearance()
         check_shorter_medium_candidates()
