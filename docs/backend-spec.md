@@ -154,11 +154,11 @@ The step shape is:
     tick, gameState, godMode,
     runner: {x, y, xOffset, yOffset, action},
     guards: [{id, x, y, xOffset, yOffset, action, carryingGold}],
-    gold: {remainingCount, complete, visiblePositions: [{x, y, ...}]},
+    gold: {remaining, complete, visible: [{x, y, ...}]},
     risk, goldTarget, exitTarget, threat, movement, route
   },
-  candidates: [{id, kind, lane, score, target, intents, reasons,
-                firstAction: {keyCode, ticks, name, reason}}],
+  candidates: [{id, kind, lane, score, target, reasons,
+                action: {keyCode, ticks, name}}],
   decision: {requestedId, selectedId, rationale,
              fallback: null | {code: "candidate_fallback", message}},
   action: {keyCode, ticks},
@@ -175,21 +175,23 @@ Step data:
   `route`, using the prompt formatters. `exitTarget` is the next approach or climb
   waypoint; see [exit waypoint selection](./candidate-design.md#state-and-ladder-geometry).
   `guards` contains the engine's observed entities;
-  `threat` includes individual risk/motion under `pressureGuard` and `guards`.
+  `threat` includes individual risk/motion under `primaryThreat` and `guards`.
   `threat.guards` retains all guards with valid coordinates, sorted by
   distance; it is not limited to four entries.
-  `movement` includes legal directions and open holes; `route` includes ladder
-  and access information. Empty nested context fields may be omitted. Gold positions retain
+  `movement` includes physical directions and open holes; `route` includes ladder
+  and dig-access information. Empty objects and unknown optional values may be omitted;
+  empty lists, false and zero are retained as known observations. Gold positions retain
   supplied model metadata such as tile/source. Missing observations remain unknown.
   When history is available, `step.recentProgress` retains the bounded progress summary
   supplied to the model.
 - `candidates` contains the exposed executable backend choices, including each candidate's ID, kind, lane,
-  score, full target, intents, reasons, and first action (including its name).
-  Model-input reasons are retained in full; the first-action reason is capped at 240 characters.
+  score, full target, reasons, and action (including its name).
+  Model-input reasons are retained in full in the single `reasons` list.
 - `decision` contains `requestedId`, `selectedId`, `rationale`, and nullable `fallback:{code,message}`.
   The only implemented fallback code is `candidate_fallback`. Rationale and fallback message
   are each bounded to 240 characters.
-- `action` contains only `keyCode` and `ticks`; `loop` contains `active`, `type`, and the
+- Step `action` contains the backend-issued `keyCode` and `ticks`; it does not certify engine
+  execution. Candidate `action` is the offered input. `loop` contains `active`, `type`, and the
   model-input `suppressedCount`.
 - `candidateEvents` contains nonexposed `{id,kind,status,action:{keyCode,ticks},reason}` rows,
   with statuses `safety_rejection`, `physical_rejection`, `deduplicated`, `loop_suppressed`, and
@@ -198,6 +200,79 @@ Step data:
   Event reasons are capped at 240 characters. Exposed/proposed audit rows are not emitted as events.
 - Step index and selected kind are derived. Raw model messages, provider reasoning, terrain,
   non-model analysis, score breakdowns, and candidate audits are not stored in traces.
+
+### Model state context
+
+The model receives the following compact context. Trace state retains the same
+`goldTarget`, `exitTarget`, `threat`, `movement`, and `route` structures.
+
+```text
+game: {playData, level, gameState, godMode}
+runner: {x, y, xOffset, yOffset, action}
+gold: {remaining, complete, visible: [{x, y, ...}]}
+goldTarget: {x, y, ...}
+exitTarget: {x, y, tile}
+threat: {
+  risk,
+  primaryThreat: guard,
+  guards: [guard]
+}
+guard: {id?, x, y, relativeX, relativeY, distance, motion,
+        approachingOnSameRow, risk, carryingGold}
+movement: {
+  physicalDirections: [left|right|up|down],
+  openHoles: {left|right: {openDugHoleDistance,
+              hole: {x, y, distance, occupiedByTrappedGuard}}}
+}
+route: {
+  ladder: {onLadder, atDownwardEntry, onExitLadder, adjacent, preferredDirection,
+           nearestRowEntry: {x, y, tile, distance, direction, entryDirection, ladderY}},
+  digAccess: {digAvailable, digAction, entryAvailable, entryAction,
+              entryBlockedByGuard, digBlockedByGuard, accessCell,
+              dropThreat: {unsafe, nearestGuard: guard}, reason}
+}
+loop: {active, type, suppressedCount}
+```
+
+- `primaryThreat` prioritizes assessed risk, same-row pressure, then distance;
+  it need not be the nearest guard. `approachingOnSameRow` only describes horizontal
+  approach on the runner's row, not a general future interception prediction.
+- `carryingGold` is true only for a positive engine carrying counter. Negative
+  cooldowns do not represent held gold. Raw counters remain engine/replay data.
+- `physicalDirections` does not certify guard safety or candidate admission.
+  An empty list means no physically available direction; omission means unknown.
+- `nearestRowEntry` is a local access point. `preferredDirection` is a local hint;
+  it does not override exposed candidates or execution gates.
+- `digAvailable` concerns creating access; `entryAvailable` concerns entering an
+  existing opening. These are separate operations, not contradictory availability flags.
+- `goldTarget` is a preferred visible-gold objective, not a verified route.
+  `exitTarget` is an approach/climb waypoint, not necessarily the final destination.
+- Top-level trace `state.guards` retains actual engine observations. `threat` retains
+  decision assessments. Trace `state.risk` summarizes the decision analysis risk;
+  terminal state risk is unknown when no analysis was performed. Do not infer an
+  independent observed risk assessment from this scalar.
+- Candidate `action` has `name` and `ticks` in model context; traces additionally
+  retain its `keyCode`. `kind`, `lane`, `score`, `target` and `reasons` are shared.
+
+### Recent progress context
+
+When history exists, the model and trace share `recentProgress`:
+
+```text
+entries: [{candidateId, action: {name, ticks},
+           before: {x, y, xOffset, yOffset}, after: {x, y, xOffset, yOffset},
+           tileChanged, offsetChanged, remainingGoldDelta}]
+repeatedCandidate: {candidateId, entryCount, target: {x, y},
+                    startDistance, endDistance, distanceChange,
+                    targetDistanceReduced, targetTileReached}
+```
+
+This contains at most eight entries. `repeatedCandidate` describes the consecutive
+tail sharing the latest candidate ID. Deltas are after minus before; a negative
+gold delta means collection and a negative distance delta means closer to the
+candidate target. `targetTileReached` ignores offsets. Distance reduction is not
+proof of safety or gameplay progress. Missing measurements are null here, rather
+than invented zeroes. Historical candidate IDs are observations, not current choices.
 
 Derived view/API fields include one-based display step, selected kind (lookup by `selectedId`),
 request membership, fallback status, last action, after-state and elapsed time. They are not

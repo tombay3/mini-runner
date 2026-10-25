@@ -539,7 +539,7 @@ def candidate_kind(candidate_id: str | None) -> str | None:
 
 
 def action_direction(candidate: dict[str, Any]) -> str | None:
-    key_code = to_int(dict_value(candidate.get("firstAction")).get("keyCode"))
+    key_code = to_int(dict_value(candidate.get("action")).get("keyCode"))
     return {
         LEFT_KEYCODE: "left",
         RIGHT_KEYCODE: "right",

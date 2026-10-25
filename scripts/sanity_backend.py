@@ -16,8 +16,8 @@ sys.path.insert(0, str(ROOT))
 from agent import AgentRequestError, validate_agent_request
 from agent.candidates import generate_candidates, action_guard_safety_rejection_detail, choose_ladder_direction
 from agent.reasoning_tools import get_dig_affordance
-from agent.prompt import build_state_context, format_candidate, format_ladder
-from agent.traces import serialize_step_trace
+from agent.prompt import build_state_context, build_recent_progress, format_candidate, format_guard, format_ladder, format_route_access
+from agent.traces import serialize_step_trace, summarize_state
 import app as backend
 
 
@@ -112,25 +112,66 @@ def check_candidate_output():
             assert isinstance(candidate["id"], str)
             assert candidate["lane"] in {"safety", "progress", "environment"}
             assert type(candidate["score"]) in {int, float} and math.isfinite(candidate["score"])
-            action = candidate["firstAction"]
+            action = candidate["action"]
             assert action["keyCode"] in {32, 37, 38, 39, 40, 88, 90}
             assert type(action["ticks"]) is int and 1 <= action["ticks"] <= 20
         selected = pool[0]
         trace = serialize_step_trace(
-            snapshot=state, action=selected["firstAction"], candidates=pool,
+            snapshot=state, action=selected["action"], candidates=pool,
             selected_candidate=selected, analysis=analysis,
             validation={"requestedCandidateId": selected["id"], "fallbackUsed": False},
         )
         assert trace["decision"]["selectedId"] == selected["id"]
-        assert trace["action"] == {k: selected["firstAction"][k] for k in ("keyCode", "ticks")}
+        assert trace["action"] == {k: selected["action"][k] for k in ("keyCode", "ticks")}
         for candidate, saved in zip(pool, trace["candidates"]):
             assert saved["target"] == candidate["target"]
-            assert "targets" not in candidate and "targets" not in saved
+            assert set(saved) == {"id", "kind", "lane", "score", "target", "reasons", "action"}
+            assert set(saved["action"]) == {"keyCode", "ticks", "name"}
+            assert saved["reasons"] == format_candidate(candidate)["reasons"]
+        assert trace["state"]["gold"]["remaining"] == state["goldCount"]
         if state["guards"]:
             guards = build_state_context(state, analysis)["threat"]["guards"]
             assert len(guards) == len(state["guards"])
             assert guards[0]["x"] == state["guards"][0]["x"]
         json.dumps(trace, allow_nan=False)
+
+
+def check_model_context():
+    state = candidate_snapshot(guarded=True)
+    for counter, expected in ((-1, False), (0, False), (12, True)):
+        state["guards"][0]["hasGold"] = counter
+        _, analysis = generate_candidates(state, [])
+        context = build_state_context(state, analysis)
+        assert context["threat"]["guards"][0]["carryingGold"] is expected
+        assert context["threat"]["primaryThreat"]["approachingOnSameRow"] is True
+        assert summarize_state(state, analysis)["guards"][0]["carryingGold"] is expected
+        assert summarize_state(state)["guards"][0]["carryingGold"] is expected
+    assert "carryingGold" not in format_guard({})
+    context = build_state_context(state, {"movement": dict.fromkeys(
+        ("canMoveLeft", "canMoveRight", "canMoveUp", "canMoveDown"), False)})
+    assert context["movement"]["physicalDirections"] == []
+    assert context["gold"]["visible"] == []
+    assert "physicalDirections" not in build_state_context(state, {}).get("movement", {})
+    access = format_route_access({"available": False, "followAvailable": True,
+                                  "followAction": "right"})
+    assert access["digAvailable"] is False and access["entryAvailable"] is True
+    assert access["entryAction"] == "right"
+    history = [{"candidateId": "align_ladder_4_1_right", "keyCode": 39, "ticks": 4,
+                "before": {"runner": {"x": 2, "y": 1, "xOffset": 0, "yOffset": 0}, "goldCount": 2},
+                "after": {"runner": {"x": 3, "y": 1, "xOffset": 0, "yOffset": 0}, "goldCount": 1}}]
+    original = copy.deepcopy(history)
+    recent = build_recent_progress(history)
+    entry = recent["entries"][0]
+    assert entry["action"] == {"name": "right", "ticks": 4}
+    assert entry["tileChanged"] is True and entry["offsetChanged"] is False
+    assert entry["remainingGoldDelta"] == -1
+    repeated = recent["repeatedCandidate"]
+    assert repeated["target"] == {"x": 4, "y": 1}
+    assert repeated["targetDistanceReduced"] is True and repeated["targetTileReached"] is False
+    assert history == original
+    missing = build_recent_progress([{}])
+    assert missing["entries"][0]["tileChanged"] is None
+    assert missing["repeatedCandidate"]["targetDistanceReduced"] is None
 
 
 def check_open_hole_escape():
@@ -158,7 +199,7 @@ def check_exit_context():
     assert updated == pool and analysis["goldTarget"] == original["goldTarget"]
     assert build_state_context(state, analysis)["exitTarget"] == state["exitTarget"]
     trace = serialize_step_trace(
-        snapshot=state, action=pool[0]["firstAction"], candidates=pool,
+        snapshot=state, action=pool[0]["action"], candidates=pool,
         selected_candidate=pool[0], analysis=analysis,
         validation={"requestedCandidateId": pool[0]["id"], "fallbackUsed": False},
     )
@@ -179,7 +220,7 @@ def check_recent_ladder_return():
     original = copy.deepcopy((state, history))
     control, _ = generate_candidates(state, [])
     changed, analysis = generate_candidates(state, history)
-    action_keys = lambda pool: {c["id"]: (c["firstAction"]["keyCode"], c["firstAction"]["ticks"]) for c in pool}
+    action_keys = lambda pool: {c["id"]: (c["action"]["keyCode"], c["action"]["ticks"]) for c in pool}
     assert action_keys(control) == action_keys(changed)
     assert control[0]["kind"] == "descend_route" and changed[0]["kind"] == "align_ladder"
     assert analysis["ladder"]["recommendedAction"] is None
@@ -206,7 +247,7 @@ def check_vertical_secondary_safety():
     analysis = {
         "godMode": False, "runner": {"action": "stop"},
         "risk": {
-            "pressureGuard": {"id": 0, "risk": "high", "relativeX": "right",
+            "primaryThreat": {"id": 0, "risk": "high", "relativeX": "right",
                               "relativeY": "same", "distance": 2, "motion": "left"},
             "guards": [{"id": 1, "risk": "high", "relativeX": "same",
                               "relativeY": "below", "motion": "up"}],
@@ -240,13 +281,13 @@ def check_short_medium_clearance():
     for direction in (-1, 1):
         analysis = {
             "runner": {"x": 12, "xOffset": 0},
-            "risk": {"risk": "medium", "pressureGuard": {
+            "risk": {"risk": "medium", "primaryThreat": {
                 "id": 0, "x": 12 + 4 * direction, "xOffset": 0,
                 "risk": "medium", "relativeX": "left" if direction < 0 else "right",
                 "relativeY": "same", "distance": 4,
             }, "guards": []},
         }
-        threat = analysis["risk"]["pressureGuard"]
+        threat = analysis["risk"]["primaryThreat"]
         analysis["risk"]["guards"] = [threat]
         action = {"keyCode": 37 if direction < 0 else 39, "ticks": 4}
         original = copy.deepcopy(analysis)
@@ -284,17 +325,17 @@ def check_shorter_medium_candidates():
         original = copy.deepcopy(state)
         pool, analysis = generate_candidates(state, [])
         progress = next(c for c in pool if c["kind"] == "collect_same_row_gold")
-        assert progress["firstAction"]["ticks"] == 3
-        assert progress["firstAction"]["keyCode"] == (39 if direction == 1 else 37)
-        assert action_guard_safety_rejection_detail(progress["firstAction"], analysis,
+        assert progress["action"]["ticks"] == 3
+        assert progress["action"]["keyCode"] == (39 if direction == 1 else 37)
+        assert action_guard_safety_rejection_detail(progress["action"], analysis,
                                                   candidate_kind=progress["kind"]) is None
-        assert action_guard_safety_rejection_detail({**progress["firstAction"], "ticks": 4},
+        assert action_guard_safety_rejection_detail({**progress["action"], "ticks": 4},
                                                   analysis, candidate_kind=progress["kind"])
         assert state == original
         guard["xOffset"] = 0
         unchanged, _ = generate_candidates(state, [])
         control = next(c for c in unchanged if c["id"] == progress["id"])
-        assert control["firstAction"]["ticks"] == 4
+        assert control["action"]["ticks"] == 4
         assert control["score"] == progress["score"]
         # Near high-risk pressure must still exclude progress, at any duration.
         guard["x"] = state["runner"]["x"] + 2 * direction
@@ -302,7 +343,7 @@ def check_shorter_medium_candidates():
         assert not any(c["kind"] == "collect_same_row_gold" for c in blocked)
         state["godMode"] = True
         god, _ = generate_candidates(state, [])
-        assert next(c for c in god if c["kind"] == "collect_same_row_gold")["firstAction"]["ticks"] == 8
+        assert next(c for c in god if c["kind"] == "collect_same_row_gold")["action"]["ticks"] == 8
 
 
 def check_defensive_dig_threat_priority():
@@ -310,7 +351,7 @@ def check_defensive_dig_threat_priority():
     state["gold"]["visiblePositions"] = []
     descending = {"relativeX": "right", "relativeY": "above", "motion": "down", "distance": 2}
     same_row = {"relativeX": "left", "relativeY": "same", "distance": 4}
-    risk = {"pressureGuard": descending, "guards": [descending, same_row]}
+    risk = {"primaryThreat": descending, "guards": [descending, same_row]}
     assert get_dig_affordance(state, risk=risk)["right"]["guardCouldFall"]
     same_row["distance"] = 1
     dig = get_dig_affordance(state, risk=risk)
@@ -354,8 +395,8 @@ def check_ladder_direction_context():
             original = copy.deepcopy(state)
             pool, analysis = generate_candidates(state, [])
             candidate = next(c for c in pool if c["kind"] == "climb_ladder")
-            assert candidate["firstAction"]["keyCode"] == key
-            assert format_ladder(analysis["ladder"])["recommendedAction"] == direction
+            assert candidate["action"]["keyCode"] == key
+            assert format_ladder(analysis["ladder"])["preferredDirection"] == direction
             # Check semantic directional consistency, not an exact prose template.
             reasons = format_candidate(candidate)["reasons"]
             assert set(re.findall(r"\b(up|down)\b", " ".join(reasons))) == {direction}
@@ -376,8 +417,8 @@ def check_targetless_ladder_continuation():
     for god_mode in (False, True):
         state["godMode"] = god_mode
         pool, analysis = generate_candidates(state, history)
-        assert any(c["kind"] == "climb_ladder" and c["firstAction"]["keyCode"] == 40 for c in pool)
-        assert not any(c["kind"] == "climb_ladder" and c["firstAction"]["keyCode"] == 38 for c in pool)
+        assert any(c["kind"] == "climb_ladder" and c["action"]["keyCode"] == 40 for c in pool)
+        assert not any(c["kind"] == "climb_ladder" and c["action"]["keyCode"] == 38 for c in pool)
         assert analysis["ladder"]["recommendedAction"] == "down"
         # A visible target or exit priority must still override continuation.
         analysis["goldTarget"] = {"x": 2, "y": 0}
@@ -409,8 +450,8 @@ def check_targetless_ladder_continuation():
                         "actionName": "up", "hasGold": 0}]
     pool, analysis = generate_candidates(state, history)
     assert analysis["risk"]["risk"] in {"high", "critical"}
-    assert any(c["firstAction"]["keyCode"] == 38 for c in pool)
-    assert not any(c["firstAction"]["keyCode"] == 40 for c in pool)
+    assert any(c["action"]["keyCode"] == 38 for c in pool)
+    assert not any(c["action"]["keyCode"] == 40 for c in pool)
     assert analysis["ladder"]["recommendedAction"] == "up"
 
 
@@ -429,7 +470,7 @@ def check_off_center_pinch_dig():
     original = copy.deepcopy(state)
     pool, _ = generate_candidates(state, [])
     assert any(c["kind"] == "retreat_from_guard" for c in pool)
-    assert any(c["kind"] == "defensive_dig" and c["firstAction"]["keyCode"] == 88
+    assert any(c["kind"] == "defensive_dig" and c["action"]["keyCode"] == 88
                for c in pool)
     assert state == original
     state["guards"] = state["guards"][1:]
@@ -461,6 +502,7 @@ if __name__ == "__main__":
         check_recording_and_trace(client)
         check_retention()
         check_candidate_output()
+        check_model_context()
         check_open_hole_escape()
         check_exit_context()
         check_recent_ladder_return()

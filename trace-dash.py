@@ -45,6 +45,14 @@ def _as_dict_list(value: Any) -> list[dict[str, Any]]:
     return [item for item in _as_list(value) if isinstance(item, dict)]
 
 
+def _candidate_reasons(value: Any) -> str:
+    return "; ".join(
+        reason.strip()
+        for reason in _as_list(value)
+        if isinstance(reason, str) and reason.strip()
+    )
+
+
 def _safe_int(value: Any, default: int = 0) -> int:
     try:
         if pd.isna(value):
@@ -294,7 +302,7 @@ def _build_dataframes(recordings_raw: dict, traces_raw: dict):
                     "after_state_tick": after_state.get("tick"),
                     "action_keyCode": action.get("keyCode"),
                     "action_ticks": action.get("ticks"),
-                    "action_reason": _as_dict(selected.get("firstAction")).get("reason", ""),
+                    "action_reason": _candidate_reasons(selected.get("reasons")),
                     "selectedCandidateId": selected_id,
                     "selectedCandidateKind": selected_kind,
                     "requestedCandidateId": decision.get("requestedId")
@@ -324,7 +332,7 @@ def _build_dataframes(recordings_raw: dict, traces_raw: dict):
                     "runner_xOffset": runner.get("xOffset"),
                     "runner_yOffset": runner.get("yOffset"),
                     "risk_level": risk,
-                    "gold_remaining": state_gold.get("remainingCount"),
+                    "gold_remaining": state_gold.get("remaining"),
                     "gold_complete": state_gold.get("complete"),
                     "game_state": state.get("gameState", ""),
                     "after_runner_x": after_runner.get("x"),
@@ -332,7 +340,7 @@ def _build_dataframes(recordings_raw: dict, traces_raw: dict):
                     "after_runner_xOffset": after_runner.get("xOffset"),
                     "after_runner_yOffset": after_runner.get("yOffset"),
                     "after_risk_level": after_risk,
-                    "after_gold_remaining": after_gold.get("remainingCount"),
+                    "after_gold_remaining": after_gold.get("remaining"),
                     "after_gold_complete": after_gold.get("complete"),
                     "after_game_state": after_state.get("gameState", ""),
                     "terminal_result": outcome.get("result", "")
@@ -418,7 +426,7 @@ def _candidate_signatures(candidates: list[dict[str, Any]]) -> set[tuple[int, in
     return {
         signature
         for candidate in candidates
-        if (signature := _action_signature(candidate.get("firstAction"))) is not None
+        if (signature := _action_signature(candidate.get("action"))) is not None
     }
 
 
@@ -440,7 +448,7 @@ def _is_meaningful_lower_score_request(
     if requested is None:
         return False
     requested_score = _safe_number(requested.get("score"))
-    requested_signature = _action_signature(requested.get("firstAction"))
+    requested_signature = _action_signature(requested.get("action"))
     scored = [
         (candidate, score)
         for candidate in candidates
@@ -908,7 +916,7 @@ def _build_run_signals(
             requested.get("score") if requested is not None else None
         )
         requested_signature = _action_signature(
-            requested.get("firstAction") if requested is not None else None
+            requested.get("action") if requested is not None else None
         )
         scored = [
             (candidate, score)
@@ -998,36 +1006,33 @@ def _candidate_reason(
 ) -> str:
     """Prefix a candidate reason with compact semantic markers and context."""
     candidate_id = str(candidate.get("id") or "")
+    exposed = not candidate.get("_suppressed_only")
     markers = []
     semantic_reasons = []
 
-    if candidate_id == requested_id and requested_below_top_score:
+    if exposed and candidate_id == requested_id and requested_below_top_score:
         markers.append("✨")
-    if candidate_id == requested_id and candidate_replaced:
+    if exposed and candidate_id == requested_id and candidate_replaced:
         markers.append("⚠️")
         semantic_reasons.append(
-            f"Validation replaced this requested candidate; backend executed "
+            f"Validation replaced this requested candidate; backend selected "
             f"{selected_id or 'none'}."
         )
-    elif candidate_id == selected_id and fallback_used:
+    elif exposed and candidate_id == selected_id and fallback_used:
         markers.append("⚠️")
-        semantic_reasons.append(fallback_reason or "Fallback used.")
+        detail = str(fallback_reason or "").strip()
+        semantic_reasons.append(f"Validation: {detail}" if detail else "Fallback used.")
     if candidate_id in suppressed_ids:
         markers.append("🔁")
 
-    if candidate.get("_suppressed_only"):
-        original_reason = _as_dict(candidate.get("firstAction")).get("reason", "")
-    elif candidate_id == requested_id and requested_below_top_score:
-        original_reason = str(rationale or "").strip()
-    else:
-        original_reason = _as_dict(candidate.get("firstAction")).get("reason", "")
+    reason_parts = [_candidate_reasons(candidate.get("reasons"))]
+    model_reason = str(rationale or "").strip()
+    if exposed and candidate_id == requested_id and requested_below_top_score and model_reason:
+        reason_parts.append(f"Model: {model_reason}")
+    reason_parts.extend(semantic_reasons)
     return " ".join(
         part
-        for part in [
-            " ".join(markers),
-            *semantic_reasons,
-            str(original_reason or "").strip() or "No reason provided.",
-        ]
+        for part in [" ".join(markers), " · ".join(part for part in reason_parts if part)]
         if part
     )
 
@@ -1491,12 +1496,10 @@ with st.expander(_s2_label, expanded=_jump_matches, key=_s2_key):
                                                 "kind", "suppressed"
                                             ),
                                             "score": None,
-                                            "firstAction": {
+                                            "action": {
                                                 **_as_dict(suppressed_candidate.get("action")),
-                                                "reason": suppressed_candidate.get(
-                                                    "reason", ""
-                                                )
                                             },
+                                            "reasons": [suppressed_candidate.get("reason", "")],
                                             "_suppressed_only": True,
                                         }
                                     )

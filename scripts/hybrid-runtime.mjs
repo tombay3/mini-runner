@@ -33,7 +33,7 @@ export function normalizeState(state, engine = false, label = 'state') {
       out.id = integer(value.id, `${name}.id`);
       if (engine) {
         assert(typeof value.hasGold === 'boolean' || Number.isFinite(value.hasGold), `${name}.hasGold: missing/invalid`);
-        out.carryingGold = Boolean(value.hasGold);
+        out.carryingGold = value.hasGold > 0;
       } else out.carryingGold = boolean(value.carryingGold, `${name}.carryingGold`);
     }
     return out;
@@ -41,8 +41,9 @@ export function normalizeState(state, engine = false, label = 'state') {
   assert(Array.isArray(state.guards), `${label}.guards: missing full guard array`);
   const guards = state.guards.map((g, i) => actor(g, `${label}.guards[${i}]`, true)).sort((a, b) => a.id - b.id);
   assert.equal(new Set(guards.map(g => g.id)).size, guards.length, `${label}: duplicate guard IDs`);
-  assert(object(state.gold) && Array.isArray(state.gold.visiblePositions), `${label}.gold.visiblePositions: missing array`);
-  const visiblePositions = state.gold.visiblePositions.map((p, i) => {
+  const visible = engine ? state.gold?.visiblePositions : state.gold?.visible;
+  assert(object(state.gold) && Array.isArray(visible), `${label}.gold: missing visible array`);
+  const visiblePositions = visible.map((p, i) => {
     assert(object(p), `${label}.gold.visiblePositions[${i}]: invalid position`);
     return { x: integer(p.x, `${label}.gold.x`), y: integer(p.y, `${label}.gold.y`) };
   }).sort((a, b) => a.y - b.y || a.x - b.x);
@@ -52,8 +53,8 @@ export function normalizeState(state, engine = false, label = 'state') {
     gameState: text(engine ? state.gameStateName : state.gameState, `${label}.gameState`),
     godMode: boolean(state.godMode, `${label}.godMode`),
     runner: actor(state.runner, `${label}.runner`), guards,
-    gold: { remainingCount: integer(state.gold.remainingCount, `${label}.gold.remainingCount`),
-      complete: boolean(state.gold.complete, `${label}.gold.complete`), visiblePositions },
+    gold: { remaining: integer(engine ? state.gold.remainingCount : state.gold.remaining, `${label}.gold.remaining`),
+      complete: boolean(state.gold.complete, `${label}.gold.complete`), visible: visiblePositions },
   };
 }
 export function replayInBrowser({ demo }) {
@@ -214,6 +215,19 @@ async function runChecks() {
     assert.equal(replayStateAt(replay,8),running);
     assert.equal(replayStateAt(replay,8,true),terminal);
     assert.throws(()=>replayStateAt(replay,9));
+  });
+
+  test('engine observations normalize to V4 state including guard gold cooldowns',()=>{
+    const actor={x:2,y:1,xOffset:0,yOffset:0,actionName:'left'};
+    const engine={tick:8,gameStateName:'running',godMode:false,runner:actor,
+      guards:[{...actor,id:0,hasGold:-1}],
+      gold:{remainingCount:1,complete:false,visiblePositions:[{x:4,y:1}]}};
+    const trace={tick:8,gameState:'running',godMode:false,runner:{...actor,action:'left'},
+      guards:[{...actor,id:0,action:'left',carryingGold:false}],
+      gold:{remaining:1,complete:false,visible:[{x:4,y:1}]}};
+    assert.deepEqual(normalizeState(engine,true),normalizeState(trace));
+    engine.guards[0].hasGold=12;trace.guards[0].carryingGold=true;
+    assert.deepEqual(normalizeState(engine,true),normalizeState(trace));
   });
 
   test('limited continuation can end at a running replay boundary',()=>{

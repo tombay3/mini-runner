@@ -302,7 +302,8 @@ def run_candidate_selection(
     selected, validation = validate_or_fallback_candidate(result, candidates, analysis)
     loop_monitor = build_loop_monitor(analysis)
 
-    action = dict(selected["firstAction"])
+    action = dict(selected["action"])
+    action["reason"] = next(iter(selected.get("reasons") or []), "")
     planner = build_planner(
         result, requested_model, validation, public_config, len(candidates)
     )
@@ -419,14 +420,14 @@ def validate_or_fallback_candidate(
         fallback_reason = result.get("parseError") or f"unknown candidateId: {requested_id}"
 
     action_valid = is_action_physically_valid(
-        selected["firstAction"],
+        selected["action"],
         analysis["movement"],
         analysis["dig"],
         candidate_kind=selected.get("kind"),
         runner_x_offset=(analysis.get("runner") or {}).get("xOffset"),
     )
     action_guard_safe = is_action_guard_safe(
-        selected["firstAction"], analysis, candidate_kind=selected.get("kind")
+        selected["action"], analysis, candidate_kind=selected.get("kind")
     )
     if not action_valid or not action_guard_safe:
         replacement_reason = (

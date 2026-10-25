@@ -295,7 +295,7 @@ def load_trace_store() -> dict[str, Any]:
             for candidate in step["candidates"]:
                 if not isinstance(candidate, dict) or any(
                         key in candidate and not isinstance(candidate[key], list)
-                        for key in ("intents", "reasons")):
+                        for key in ("reasons",)):
                     raise ValueError("malformed v4 trace model candidate context")
     return data
 

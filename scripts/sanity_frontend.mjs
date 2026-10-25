@@ -137,7 +137,7 @@ const trace = {
   steps: [{
     state: { tick: 0, risk: "low", godMode: false }, action: { keyCode: 39, ticks: 4 },
     candidates: [{ id: "right", kind: "collect_same_row_gold", lane: "progress",
-      score: 100, firstAction: { keyCode: 39, ticks: 4 } }],
+      score: 100, action: { keyCode: 39, ticks: 4 } }],
     decision: { requestedId: "right", selectedId: "right", rationale: "smoke", fallback: null },
     loop: { active: false, type: null }, candidateEvents: [],
   }],

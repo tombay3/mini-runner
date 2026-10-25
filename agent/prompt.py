@@ -51,7 +51,7 @@ def build_agent_prompt(
             "You are choosing one backend-generated candidate for the next short Lode Runner input burst.",
             (
                 "The backend has generated executable candidates and assigned scores, targets, "
-                "and safety intents. Candidates may represent different tactical tradeoffs; "
+                "and categories. Candidates may represent different tactical tradeoffs; "
                 "apply execution gates and the risk policy before comparing progress. Candidate "
                 "targets, scores, and reasons are backend-derived. Do not reject a candidate "
                 "because its first short action appears indirect, and do not invent unsupported "
@@ -83,7 +83,7 @@ def format_recent_progress(history: list[dict[str, Any]] | None) -> str | None:
         return None
     return (
         "Recent progress (last 8 history entries; valid JSON):\n"
-        "null means unknown. goldCountDelta and distanceChange are after minus before; "
+        "null means unknown. remainingGoldDelta and distanceChange are after minus before; "
         "negative values mean fewer remaining gold or a closer candidate target. "
         "Target distance uses tiles only. Offset motion, including centering, can occur "
         "without tile motion or decreasing target distance. These observations do not "
@@ -111,9 +111,9 @@ def _motion(before: dict, after: dict, fields: tuple[str, str]) -> bool | None:
 def _target_progress(recent: list[dict], candidate_id: str | None) -> dict[str, Any]:
     target = candidate_target(candidate_id)
     result = {
-        "target": target,
+        "target": {"x": target[0], "y": target[1]} if target else None,
         "startDistance": None, "endDistance": None, "distanceChange": None,
-        "madeProgress": None, "targetReached": None,
+        "targetDistanceReduced": None, "targetTileReached": None,
     }
     if not target or not recent or any(_history_int(value) is None for value in target):
         result["target"] = None
@@ -124,7 +124,9 @@ def _target_progress(recent: list[dict], candidate_id: str | None) -> dict[str, 
         return result
     # The existing helper's missing-data defaults are not evidence of no progress.
     progress = assess_repeated_candidate_progress(recent, candidate_id)
-    result.update(progress)
+    result.update({key: progress[key] for key in ("startDistance", "endDistance")})
+    result["targetDistanceReduced"] = progress["madeProgress"]
+    result["targetTileReached"] = progress["targetReached"]
     result["distanceChange"] = progress["endDistance"] - progress["startDistance"]
     return result
 
@@ -146,12 +148,12 @@ def build_recent_progress(history: list[dict[str, Any]] | None) -> dict[str, Any
         after_gold = _history_int(_dict(item.get("after")).get("goldCount"))
         entries.append({
             "candidateId": candidate_id,
-            "keyCode": _history_int(item.get("keyCode")),
-            "ticks": _history_int(item.get("ticks")),
+            "action": {"name": ACTION_NAMES.get(item.get("keyCode"), "unknown"),
+                       "ticks": _history_int(item.get("ticks"))},
             "before": before, "after": after,
-            "tileMotion": _motion(before, after, ("x", "y")),
-            "offsetMotion": _motion(before, after, ("xOffset", "yOffset")),
-            "goldCountDelta": after_gold - before_gold
+            "tileChanged": _motion(before, after, ("x", "y")),
+            "offsetChanged": _motion(before, after, ("xOffset", "yOffset")),
+            "remainingGoldDelta": after_gold - before_gold
             if before_gold is not None and after_gold is not None else None,
         })
     repeated_id = recent[-1]["candidateId"] if recent else None
@@ -228,13 +230,13 @@ def build_state_context(
             "exitTarget": _dict(analysis.get("exitTarget")),
             "threat": {
                 "risk": risk.get("risk"),
-                "pressureGuard": format_guard(risk.get("pressureGuard")),
+                "primaryThreat": format_guard(risk.get("primaryThreat")),
                 "guards": [
                     format_guard(guard) for guard in risk.get("guards") or []
                 ],
             },
             "movement": {
-                "legalDirections": [
+                "physicalDirections": [
                     direction
                     for direction, field in (
                         ("left", "canMoveLeft"),
@@ -243,12 +245,13 @@ def build_state_context(
                         ("down", "canMoveDown"),
                     )
                     if movement.get(field)
-                ],
+                ] if all(type(movement.get(field)) is bool for field in
+                         ("canMoveLeft", "canMoveRight", "canMoveUp", "canMoveDown")) else None,
                 "openHoles": format_open_holes(movement),
             },
             "route": {
                 "ladder": format_ladder(ladder),
-                "access": format_route_access(route_access),
+                "digAccess": format_route_access(route_access),
             },
             "loop": {
                 "active": bool(loop_report.get("active")),
@@ -268,11 +271,8 @@ def format_candidates(candidates: list[dict[str, Any]]) -> str:
 
 
 def format_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
-    action = _dict(candidate.get("firstAction"))
+    action = _dict(candidate.get("action"))
     reasons = list(candidate.get("reasons") or [])
-    action_reason = action.get("reason")
-    if action_reason and action_reason not in reasons:
-        reasons.append(action_reason)
     return compact_value(
         {
             "id": candidate.get("id"),
@@ -284,24 +284,20 @@ def format_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
                 "name": ACTION_NAMES.get(action.get("keyCode"), "unknown"),
                 "ticks": action.get("ticks"),
             },
-            "intents": candidate.get("intents") or [candidate.get("kind")],
             "reasons": reasons,
         }
     )
 
 
+def carrying_gold(value: Any) -> bool | None:
+    """Only positive engine carrying counters represent held gold."""
+    return value > 0 if isinstance(value, (int, float)) else None
+
+
 def format_guard(value: Any) -> dict[str, Any]:
     guard = _dict(value)
     has_gold = guard.get("hasGold")
-    guard_id = (
-        guard.get("id")
-        if (
-            isinstance(has_gold, (int, float))
-            and not isinstance(has_gold, bool)
-            and has_gold > 0
-        )
-        else None
-    )
+    guard_id = guard.get("id") if carrying_gold(has_gold) else None
     return compact_value(
         {
             "id": guard_id,
@@ -311,9 +307,9 @@ def format_guard(value: Any) -> dict[str, Any]:
             "relativeY": guard.get("relativeY"),
             "distance": guard.get("distance"),
             "motion": guard.get("motion"),
-            "closing": guard.get("closing"),
+            "approachingOnSameRow": guard.get("approachingOnSameRow"),
             "risk": guard.get("risk"),
-            "hasGold": guard.get("hasGold"),
+            "carryingGold": carrying_gold(has_gold),
         }
     )
 
@@ -343,11 +339,11 @@ def format_ladder(ladder: dict[str, Any]) -> dict[str, Any]:
     return compact_value(
         {
             "onLadder": ladder.get("onLadder"),
-            "onDownEntry": ladder.get("onDownEntry"),
+            "atDownwardEntry": ladder.get("onDownEntry"),
             "onExitLadder": ladder.get("onExitLadder"),
             "adjacent": ladder.get("adjacentToLadder"),
-            "recommendedAction": ladder.get("recommendedAction"),
-            "nearest": {
+            "preferredDirection": ladder.get("recommendedAction"),
+            "nearestRowEntry": {
                 "x": nearest.get("x"),
                 "y": nearest.get("y"),
                 "tile": nearest.get("tile"),
@@ -365,17 +361,17 @@ def format_route_access(route_access: dict[str, Any]) -> dict[str, Any]:
     nearest_threat = _dict(drop_threat.get("nearestThreat"))
     return compact_value(
         {
-            "available": route_access.get("available"),
-            "recommendedAction": route_access.get("recommendedAction"),
-            "followAvailable": route_access.get("followAvailable"),
-            "followAction": route_access.get("followAction"),
-            "followBlockedByGuard": route_access.get("followBlockedByGuard"),
+            "digAvailable": route_access.get("available"),
+            "digAction": route_access.get("recommendedAction"),
+            "entryAvailable": route_access.get("followAvailable"),
+            "entryAction": route_access.get("followAction"),
+            "entryBlockedByGuard": route_access.get("followBlockedByGuard"),
             "digBlockedByGuard": route_access.get("digBlockedByGuard"),
             "accessCell": route_access.get("openedAccessCell")
             or route_access.get("plannedAccessCell"),
             "dropThreat": {
                 "unsafe": drop_threat.get("unsafe"),
-                "nearest": format_guard(nearest_threat),
+                "nearestGuard": format_guard(nearest_threat),
             },
             "reason": route_access.get("reason"),
         }
@@ -387,7 +383,7 @@ def compact_value(value: Any) -> Any:
         result = {}
         for key, item in value.items():
             compacted = compact_value(item)
-            if compacted is None or compacted == "" or compacted == {} or compacted == []:
+            if compacted is None or compacted == "" or compacted == {}:
                 continue
             result[key] = compacted
         return result
@@ -399,7 +395,6 @@ def compact_value(value: Any) -> Any:
             is not None
             and compacted != ""
             and compacted != {}
-            and compacted != []
         ]
     return value
 

@@ -576,7 +576,7 @@ def get_dig_affordance(
     gold_positions = _visible_gold_set(snapshot)
     guard_positions = _guard_position_set(snapshot)
     risk = risk if risk is not None else assess_guard_risk(snapshot)
-    pressure_guard = risk.get("pressureGuard") or {}
+    pressure_guard = risk.get("primaryThreat") or {}
     nearest_guard = next(
         (
             guard
@@ -647,7 +647,7 @@ def get_dig_affordance(
             <= (
                 5
                 if risk.get("runnerOnEdge")
-                and nearest_guard.get("closing")
+                and nearest_guard.get("approachingOnSameRow")
                 else 4
             )
         )
@@ -1003,7 +1003,7 @@ def assess_guard_risk(snapshot: dict[str, Any]) -> dict[str, Any]:
     runner_x = _to_int(runner.get("x"))
     runner_y = _to_int(runner.get("y"))
     if runner_x is None or runner_y is None:
-        return {"risk": "unknown", "pressureGuard": None, "guards": []}
+        return {"risk": "unknown", "primaryThreat": None, "guards": []}
 
     nearby_guards = []
     for guard in guards:
@@ -1028,7 +1028,7 @@ def assess_guard_risk(snapshot: dict[str, Any]) -> dict[str, Any]:
             "motion": motion,
             "hasGold": _to_int(guard.get("hasGold")) or 0,
         }
-        guard_info["closing"] = (
+        guard_info["approachingOnSameRow"] = (
             guard_info["relativeY"] == "same"
             and (
                 (guard_info["relativeX"] == "left" and guard_info["motion"] == "right")
@@ -1049,7 +1049,7 @@ def assess_guard_risk(snapshot: dict[str, Any]) -> dict[str, Any]:
     risk = pressure_guard.get("risk") if pressure_guard else "low"
     return {
         "risk": risk,
-        "pressureGuard": pressure_guard,
+        "primaryThreat": pressure_guard,
         "guards": sorted(nearby_guards, key=lambda item: item["distance"]),
         "runnerOnEdge": _is_edge(runner_x, width),
     }

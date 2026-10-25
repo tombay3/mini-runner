@@ -89,7 +89,7 @@ response is JSON with a `candidateId`. OpenAI profiles may also return a short r
 The model also receives a summary of the last eight history entries: movement, centering,
 gold changes and repeated-target progress. Missing observations remain unknown. This context
 does not change candidate generation or safety validation; its structured form is retained as
-`recentProgress` in the trace. At medium cross-row guard risk, the prompt no longer mandates
+`recentProgress` in the trace. At medium cross-row guard risk, the prompt does not mandate
 the higher-scored horizontal ladder choice; execution gates and safety guidance still apply.
 
 The rationale is diagnostic output, not hidden reasoning. Debug logging can correlate it with the

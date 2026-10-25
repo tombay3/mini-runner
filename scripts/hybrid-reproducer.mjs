@@ -128,9 +128,11 @@ function verifyHandoff(result,input){
   const old=input.run.steps[input.prefix.length].recentProgress?.entries ?? [];
   for(let i=0;i<old.length;i++){
     const h=result.history.slice(-old.length)[i], o=old[i];
-    assert.equal(h.candidateId,o.candidateId);assert.equal(h.keyCode,o.keyCode);assert.equal(h.ticks,o.ticks);
+    assert.equal(h.candidateId,o.candidateId);
+    assert.equal(({32:'stop',37:'left',38:'up',39:'right',40:'down',88:'dig_right',90:'dig_left'})[h.keyCode],o.action.name);
+    assert.equal(h.ticks,o.action.ticks);
     for(const side of ['before','after'])for(const f of ['x','y','xOffset','yOffset'])assert.equal(h[side].runner[f],o[side][f]);
-    assert.equal(h.after.goldCount-h.before.goldCount,o.goldCountDelta);
+    assert.equal(h.after.goldCount-h.before.goldCount,o.remainingGoldDelta);
   }
 }
 
@@ -154,7 +156,7 @@ async function preflight(){
   for(const arm of ['control','fix']){
     const source=manifest.arms[arm].root;
     const payload={snapshot:result.after,history:result.history};write(`${arm}-preflight-input.json`,payload);
-    const code=`import json,sys,types; from pathlib import Path; p=types.ModuleType('_check'); p.__path__=[str(Path.cwd()/'agent')];sys.modules['_check']=p; from _check.candidates import generate_candidates; from _check.config import reload_dotenv_files,resolve_model_profile,load_public_agent_config; reload_dotenv_files(); m=resolve_model_profile(sys.argv[2],source='preflight'); d=json.load(open(sys.argv[1])); pool,a=generate_candidates(d['snapshot'],d['history']);print(json.dumps({'model':m.model,'profile':m.profile,'provider':m.provider,'config':load_public_agent_config(),'candidates':[{'id':c['id'],'kind':c['kind'],'action':c['firstAction']} for c in pool]}))`;
+    const code=`import json,sys,types; from pathlib import Path; p=types.ModuleType('_check'); p.__path__=[str(Path.cwd()/'agent')];sys.modules['_check']=p; from _check.candidates import generate_candidates; from _check.config import reload_dotenv_files,resolve_model_profile,load_public_agent_config; reload_dotenv_files(); m=resolve_model_profile(sys.argv[2],source='preflight'); d=json.load(open(sys.argv[1])); pool,a=generate_candidates(d['snapshot'],d['history']);print(json.dumps({'model':m.model,'profile':m.profile,'provider':m.provider,'config':load_public_agent_config(),'candidates':[{'id':c['id'],'kind':c['kind'],'action':c['action']} for c in pool]}))`;
     const out=JSON.parse(execFileSync(path.join(root,'.venv/bin/python'),['-B','-c',code,path.join(here,`${arm}-preflight-input.json`),manifest.profile],{cwd:source}));
     assert.equal(out.model,manifest.model);assert.equal(out.profile,manifest.profile);
     assert.deepEqual(out.config.backend,input.run.config);
@@ -288,7 +290,7 @@ async function trial(arm,pair,fake=false){
 
     item.status='completed';item.result=result.result;item.reason=result.reason;
     item.finalTick=result.snapshot.tick;item.gameTime=result.snapshot.time;
-    item.goldCollected=input.run.steps[input.prefix.length].state.gold.remainingCount-result.snapshot.gold.remainingCount;
+    item.goldCollected=input.run.steps[input.prefix.length].state.gold.remaining-result.snapshot.gold.remainingCount;
     item.steps=result.observations;item.firstSelected=trace.steps[0].decision.selectedId;
     item.executedDigs=trace.steps.filter(s=>[88,90].includes(s.action.keyCode)).length;
     item.movementSteps=trace.steps.filter(s=>[37,38,39,40].includes(s.action.keyCode)).length;

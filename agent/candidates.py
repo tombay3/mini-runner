@@ -130,7 +130,7 @@ def rank_same_column_retreat_tie(
     """Reorder only an exposed equal-highest-score left/right retreat pair."""
     result = list(candidates)
     risk = analysis.get("risk") or {}
-    primary = risk.get("pressureGuard") or {}
+    primary = risk.get("primaryThreat") or {}
     if (
         analysis.get("godMode") or risk.get("risk") not in {"medium", "high", "critical"}
         or primary.get("relativeX") != "same" or primary.get("relativeY") not in {"above", "below"}
@@ -142,7 +142,7 @@ def rank_same_column_retreat_tie(
     left, right = by_id[LEFT_RETREAT_ID], by_id[RIGHT_RETREAT_ID]
     if left["score"] != right["score"] or left["score"] != max(c["score"] for c in candidates):
         return result, None
-    a, b = left["firstAction"], right["firstAction"]
+    a, b = left["action"], right["action"]
     if (
         a["keyCode"] != 37 or b["keyCode"] != 39 or a["ticks"] != b["ticks"]
         or not isinstance(a["ticks"], int) or a["ticks"] < 1
@@ -287,7 +287,7 @@ class CandidateBuilder:
             audit["detail"] = "candidate id already proposed"
             return any(c["id"] == candidate_id for c in self.candidates)
         self._seen.add(candidate_id)
-        candidate = {"id": candidate_id, "kind": kind, "firstAction": action}
+        candidate = {"id": candidate_id, "kind": kind, "action": action}
         loop_report = self.analysis["loopReport"]
         suppression_reason = candidate_suppression_reason(candidate, loop_report)
         clearance_bonus = low_risk_guard_clearance_score_bonus(
@@ -314,6 +314,9 @@ class CandidateBuilder:
             reasons.append(
                 "bounded progress consumes minimum clearance under medium cross-row pressure"
             )
+        action_reason = action.get("reason")
+        if action_reason and action_reason not in reasons:
+            reasons.append(action_reason)
         next_candidate = {
             "id": candidate_id,
             "kind": kind,
@@ -321,8 +324,7 @@ class CandidateBuilder:
             "score": adjusted_score,
             "scoreBreakdown": adjusted_spec.breakdown(),
             "target": target,
-            "firstAction": action,
-            "intents": [kind],
+            "action": {key: action[key] for key in ("keyCode", "ticks")},
             "reasons": reasons,
         }
         if suppression_reason:
@@ -337,7 +339,7 @@ class CandidateBuilder:
             return False
         signature = (action["keyCode"], action["ticks"])
         for index, existing in enumerate(self.candidates):
-            existing_action = existing["firstAction"]
+            existing_action = existing["action"]
             if signature != (existing_action["keyCode"], existing_action["ticks"]):
                 continue
             if not candidates_semantically_mergeable(existing, next_candidate):
@@ -349,7 +351,6 @@ class CandidateBuilder:
                 self.candidates[index] = {
                     **merged,
                     **next_candidate,
-                    "intents": merged["intents"],
                     "reasons": merged["reasons"],
                 }
             else:
@@ -372,7 +373,7 @@ class CandidateBuilder:
             candidate
             for candidate in self.candidates
             if candidate_target(str(candidate.get("id"))) == predicted_target
-            and _to_int(_dict(candidate.get("firstAction")).get("keyCode"))
+            and _to_int(_dict(candidate.get("action")).get("keyCode"))
             in {LEFT_KEYCODE, RIGHT_KEYCODE}
         ]
         alternatives = [
@@ -466,9 +467,8 @@ class CandidateBuilder:
             candidate.update(score=spec.total, scoreBreakdown=spec.breakdown())
             reason = f"returns to the ladder used to reach ({x},{y}); no row or gold progress since arrival"
             candidate["reasons"].insert(0, reason)
-            candidate["firstAction"] = {**candidate["firstAction"], "reason": reason}
             ladder = _dict(self.analysis.get("ladder"))
-            if ladder.get("recommendedAction") == ACTION_NAMES[candidate["firstAction"]["keyCode"]]:
+            if ladder.get("recommendedAction") == ACTION_NAMES[candidate["action"]["keyCode"]]:
                 ladder.update(recommendedAction=None, detail=reason)
             for row in self.audit:
                 if row.get("candidateId") == candidate["id"] and row.get("disposition") == "validated":
@@ -480,7 +480,7 @@ class CandidateBuilder:
             or _dict(self.analysis.get("movement")).get("currentTile") not in {"H", "S"}
             or not any(
                 candidate["kind"] == "retreat_from_guard"
-                and candidate["firstAction"]["keyCode"] == UP_KEYCODE
+                and candidate["action"]["keyCode"] == UP_KEYCODE
                 for candidate in self.candidates
             )
         ):
@@ -496,7 +496,7 @@ class CandidateBuilder:
         for candidate in self.candidates[:]:
             if candidate["kind"] != "evade_edge_ladder":
                 continue
-            target_x = x + (-1 if candidate["firstAction"]["keyCode"] == LEFT_KEYCODE else 1)
+            target_x = x + (-1 if candidate["action"]["keyCode"] == LEFT_KEYCODE else 1)
             if not (
                 0 <= target_x < min(len(row), len(below))
                 and row[target_x] == below[target_x] == " "
@@ -518,7 +518,7 @@ class CandidateBuilder:
             route = self.candidates[0]
             climb, audit, _reason = self._loop_suppressed_climbs[0]
             risk = _dict(self.analysis.get("risk"))
-            guard = _dict(risk.get("pressureGuard"))
+            guard = _dict(risk.get("primaryThreat"))
             distance = _to_int(guard.get("distance"))
             toward_guard = {
                 "left": LEFT_KEYCODE,
@@ -531,16 +531,16 @@ class CandidateBuilder:
                 and risk.get("risk") == "low"
                 and guard.get("risk") == "low"
                 and guard.get("relativeY") == "same"
-                and guard.get("closing")
+                and guard.get("approachingOnSameRow")
                 and guard.get("motion") in {"left", "right"}
                 and distance is not None
                 and 1 < distance <= LOW_RISK_LOOP_ESCAPE_MAX_DISTANCE
                 and route.get("lane") == "progress"
-                and _dict(route.get("firstAction")).get("keyCode") == toward_guard
-                and _dict(climb.get("firstAction")).get("keyCode") in {
+                and _dict(route.get("action")).get("keyCode") == toward_guard
+                and _dict(climb.get("action")).get("keyCode") in {
                     UP_KEYCODE, DOWN_KEYCODE,
                 }
-                and (_to_int(_dict(climb.get("firstAction")).get("ticks")) or 0) <= 6
+                and (_to_int(_dict(climb.get("action")).get("ticks")) or 0) <= 6
                 and isinstance(recent_ids, list)
                 and len(recent_ids) >= 8
                 and climb.get("id") not in recent_ids[-8:]
@@ -569,7 +569,7 @@ def boost_same_burst_gold_opposite_ladder(
         or exposed[0].get("kind") != "align_ladder"
     ):
         return exposed
-    top_key = _to_int(_dict(exposed[0].get("firstAction")).get("keyCode"))
+    top_key = _to_int(_dict(exposed[0].get("action")).get("keyCode"))
     if top_key not in {LEFT_KEYCODE, RIGHT_KEYCODE}:
         return exposed
     runner = _dict(analysis.get("runner"))
@@ -581,7 +581,7 @@ def boost_same_burst_gold_opposite_ladder(
     for candidate in exposed:
         if candidate.get("kind") != "collect_same_row_gold":
             continue
-        action, target = _dict(candidate.get("firstAction")), _dict(candidate.get("target"))
+        action, target = _dict(candidate.get("action")), _dict(candidate.get("target"))
         key = _to_int(action.get("keyCode"))
         ticks = _to_int(action.get("ticks"))
         gold_x, gold_y = _to_int(target.get("x")), _to_int(target.get("y"))
@@ -791,7 +791,7 @@ def generate_candidates(
     if analysis.get("ladderProgressDirection") == "horizontal":
         target_x = _to_int(_dict(analysis.get("goldTarget")).get("x"))
         lateral_key = LEFT_KEYCODE if target_x is not None and target_x < runner_x else RIGHT_KEYCODE
-        if not any(_dict(c.get("firstAction")).get("keyCode") == lateral_key for c in candidates):
+        if not any(_dict(c.get("action")).get("keyCode") == lateral_key for c in candidates):
             analysis["ladderProgressDirection"] = None
     add_descent_candidates(add, analysis, movement, history)
 
@@ -827,7 +827,7 @@ def generate_candidates(
             add_non_god_escape_candidates(add, snapshot, movement, recovery_dig, risk)
 
     # Finish a pending ascent before holding, without claiming another row climb.
-    guard = _dict(risk.get("pressureGuard"))
+    guard = _dict(risk.get("primaryThreat"))
     if (
         not candidates
         and not god_mode
@@ -881,7 +881,7 @@ def merge_candidate_metadata(
     existing: dict[str, Any], incoming: dict[str, Any]
 ) -> dict[str, Any]:
     merged = dict(existing)
-    for field in ("intents", "reasons"):
+    for field in ("reasons",):
         values = list(existing.get(field) or [])
         for value in incoming.get(field) or []:
             if value not in values:
@@ -974,7 +974,7 @@ def add_exit_candidates(
 def exit_climb_ticks(snapshot: dict[str, Any], analysis: dict[str, Any]) -> int:
     """Bound one exit climb when a close guard descends the same ladder."""
     risk = _dict(analysis.get("risk"))
-    guard = _dict(risk.get("pressureGuard"))
+    guard = _dict(risk.get("primaryThreat"))
     runner = _dict(analysis.get("runner"))
     runner_x = _to_int(runner.get("x"))
     runner_y = _to_int(runner.get("y"))
@@ -1015,9 +1015,9 @@ def add_non_god_escape_candidates(
     dig: dict[str, Any],
     risk: dict[str, Any],
 ) -> None:
-    guard = _dict(risk.get("pressureGuard"))
+    guard = _dict(risk.get("primaryThreat"))
     side = guard.get("relativeX")
-    closing = bool(guard.get("closing"))
+    closing = bool(guard.get("approachingOnSameRow"))
     guard_risk = guard.get("risk")
     left_dig = _dict(dig.get("left"))
     right_dig = _dict(dig.get("right"))
@@ -1744,7 +1744,7 @@ def add_opposite_trap_preparation_dig_candidate(
             and _dict(guard).get("relativeY") == "same"
             and _dict(guard).get("relativeX") == opposite
             and _dict(guard).get("risk") in {"high", "critical"}
-            and _dict(guard).get("closing")
+            and _dict(guard).get("approachingOnSameRow")
             and (_to_int(_dict(guard).get("distance")) or 99) <= 4
         ),
         None,
@@ -2006,7 +2006,7 @@ def add_wait_and_recheck_candidate(add) -> None:
 
 
 def add_emergency_hold_candidate(add, risk: dict[str, Any]) -> None:
-    guard = _dict(risk.get("pressureGuard"))
+    guard = _dict(risk.get("primaryThreat"))
     relative_y = guard.get("relativeY")
     signature = "_".join(
         str(guard.get(key, "unknown"))
@@ -2178,7 +2178,7 @@ def make_candidate_id(kind: str, target: dict[str, Any] | None, action_name: str
 def _trap_hole_between_pressure_guard(
     movement: dict[str, Any], risk: dict[str, Any]
 ) -> dict[str, Any]:
-    guard = _dict(risk.get("pressureGuard"))
+    guard = _dict(risk.get("primaryThreat"))
     side = guard.get("relativeX")
     if side not in {"left", "right"}:
         return {}
@@ -2204,7 +2204,7 @@ def _trap_hole_between_pressure_guard(
             and _to_int(guard.get("y")) == hole_y - 1
             and (
                 (
-                    guard.get("closing")
+                    guard.get("approachingOnSameRow")
                     and guard.get("motion") == ("right" if side == "left" else "left")
                     and abs(guard_x - hole_x) <= 1
                 )
@@ -2362,8 +2362,8 @@ def _apply_prospective_horizontal_endpoint_safety(
     if key_code not in {LEFT_KEYCODE, RIGHT_KEYCODE}:
         return action, None
     risk = _dict(analysis.get("risk"))
-    guard = _dict(risk.get("pressureGuard"))
-    if guard.get("risk") not in GUARD_PRESSURE_RISKS or not guard.get("closing"):
+    guard = _dict(risk.get("primaryThreat"))
+    if guard.get("risk") not in GUARD_PRESSURE_RISKS or not guard.get("approachingOnSameRow"):
         return action, None
     direction = "left" if key_code == LEFT_KEYCODE else "right"
     guard_behind = (
@@ -2567,7 +2567,7 @@ def medium_cross_row_clearance_score_penalty(
     if analysis.get("godMode") or candidate_lane(candidate_kind) != "progress":
         return 0
     risk = _dict(analysis.get("risk"))
-    pressure_guard = _dict(risk.get("pressureGuard"))
+    pressure_guard = _dict(risk.get("primaryThreat"))
     if (
         risk.get("risk") != "medium"
         or pressure_guard.get("risk") != "medium"
@@ -2636,13 +2636,13 @@ def _short_medium_horizontal_clearance(
     ticks = _to_int(action.get("ticks"))
     if (
         risk.get("risk") != "medium"
-        or _dict(risk.get("pressureGuard")).get("risk") != "medium"
+        or _dict(risk.get("primaryThreat")).get("risk") != "medium"
         or action.get("keyCode") not in {LEFT_KEYCODE, RIGHT_KEYCODE}
         or ticks is None or not 1 <= ticks <= 4
     ):
         return False
     runner = _dict(analysis.get("runner"))
-    guards = [_dict(risk.get("pressureGuard")), *(risk.get("guards") or [])]
+    guards = [_dict(risk.get("primaryThreat")), *(risk.get("guards") or [])]
     for item in guards:
         guard = _dict(item)
         if guard.get("risk") in {"high", "critical"}:
@@ -2671,7 +2671,7 @@ def action_guard_safety_rejection_detail(
     if analysis.get("godMode"):
         return None
     risk = _dict(analysis.get("risk"))
-    guard = _dict(risk.get("pressureGuard"))
+    guard = _dict(risk.get("primaryThreat"))
     key_code = action.get("keyCode")
     runner_offset = _to_int(_dict(analysis.get("runner")).get("xOffset"))
     # Tile-level "same column" can hide movement into a rising guard's center.
@@ -2710,7 +2710,7 @@ def action_guard_safety_rejection_detail(
                 nearby.get("relativeY") == "same"
                 and nearby_side in {"left", "right"}
                 and nearby_side != side
-                and nearby.get("closing")
+                and nearby.get("approachingOnSameRow")
                 and nearby_distance is not None
                 and nearby_distance <= 7
                 and (
@@ -2750,7 +2750,7 @@ def action_guard_safety_rejection_detail(
     if (
         candidate_kind == "evade_open_hole"
         and guard.get("relativeY") in {"above", "below"}
-        and not guard.get("closing")
+        and not guard.get("approachingOnSameRow")
         and key_code in {LEFT_KEYCODE, RIGHT_KEYCODE}
     ):
         return None
@@ -2852,7 +2852,7 @@ def _medium_cross_row_climb_has_clearance(
     if candidate_kind != "climb_ladder":
         return False
     risk = _dict(analysis.get("risk"))
-    pressure_guard = _dict(risk.get("pressureGuard"))
+    pressure_guard = _dict(risk.get("primaryThreat"))
     if pressure_guard.get("risk") != "medium":
         return False
     key_code = action.get("keyCode")
@@ -2919,7 +2919,7 @@ def limit_horizontal_ticks_under_guard_pressure(
     if analysis.get("godMode"):
         return action
     risk = _dict(analysis.get("risk"))
-    guard = _dict(risk.get("pressureGuard"))
+    guard = _dict(risk.get("primaryThreat"))
     if guard.get("risk") not in GUARD_PRESSURE_RISKS:
         return action
     if action.get("keyCode") not in {LEFT_KEYCODE, RIGHT_KEYCODE}:

@@ -464,7 +464,7 @@ export function summarizeAttempt(number, startedAt, result, trace, config) {
         lane: candidateLane(candidate),
         score: candidate?.score,
         target: candidate?.target,
-        firstAction: candidate?.firstAction,
+        action: candidate?.action,
       })),
       candidateEvents: step.candidateEvents.map((event) => ({
         id: event.id,
@@ -556,8 +556,8 @@ function stepMadeProgress(step, nextStep) {
   const after = nextStep?.state || {};
   const beforeRunner = before.runner || {};
   const afterRunner = after.runner || {};
-  const beforeGold = Number(before?.gold?.remainingCount);
-  const afterGold = Number(after?.gold?.remainingCount);
+  const beforeGold = Number(before?.gold?.remaining);
+  const afterGold = Number(after?.gold?.remaining);
   if (Number.isFinite(beforeGold) && Number.isFinite(afterGold) && afterGold < beforeGold) {
     return true;
   }

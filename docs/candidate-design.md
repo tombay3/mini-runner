@@ -18,7 +18,7 @@ Each candidate supplied to the model contains:
 - `kind` and `lane`: tactical intent and its safety, progress, or environment lane;
 - `score`: backend heuristic ranking;
 - `target`: local objective metadata when applicable;
-- `firstAction`: the validated short key/tick action;
+- `action`: the validated short key/tick action;
 - `reasons`: backend-derived context for the candidate.
 
 The builder records every proposal in `candidateAudit`. A proposal is exposed, truncated by the
@@ -119,7 +119,7 @@ retains its established behavior. Same-row and high/critical threats continue
 through hard safety validation.
 
 Candidates with identical normalized key/tick actions are merged only when kind and target match.
-Their shared target, intents, and reasons are retained. Semantically different candidates remain visible
+Their shared kind and target are retained, and their reasons are combined without duplicates. Semantically different candidates remain visible
 even when their first action happens to be the same.
 
 ## Candidate Classification Matrix

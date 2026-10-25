@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from .prompt import build_state_context, format_candidate
+from .prompt import build_state_context, carrying_gold, format_candidate
 
 
 def utc_now() -> str:
@@ -35,7 +35,7 @@ def summarize_state(snapshot: dict[str, Any], analysis: dict[str, Any] | None = 
         guards.append({
             **{key: guard.get(key) for key in ("id", "x", "y", "xOffset", "yOffset")},
             "action": guard.get("actionName", guard.get("action")),
-            "carryingGold": bool(guard.get("hasGold", False)),
+            "carryingGold": carrying_gold(guard.get("hasGold")),
         })
     context = build_state_context(snapshot, analysis)
     return {
@@ -48,9 +48,9 @@ def summarize_state(snapshot: dict[str, Any], analysis: dict[str, Any] | None = 
         },
         "guards": guards,
         "gold": {
-            "remainingCount": gold.get("remainingCount", snapshot.get("goldCount")),
+            "remaining": gold.get("remainingCount", snapshot.get("goldCount")),
             "complete": gold.get("complete", snapshot.get("goldComplete")),
-            "visiblePositions": context.get("gold", {}).get("visible", []) if analysis else
+            "visible": context.get("gold", {}).get("visible", []) if analysis else
                                 [{"x": item.get("x"), "y": item.get("y")}
                                  for item in gold.get("visiblePositions", []) if isinstance(item, dict)],
         },
@@ -62,15 +62,13 @@ def summarize_state(snapshot: dict[str, Any], analysis: dict[str, Any] | None = 
 
 
 def summarize_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
-    action = _dict(candidate.get("firstAction"))
+    action = _dict(candidate.get("action"))
     context = format_candidate(candidate)
     return {
         **{key: candidate.get(key) for key in ("id", "kind", "lane", "score")},
         "target": context.get("target"),
-        "intents": context.get("intents", []),
         "reasons": context.get("reasons", []),
-        "firstAction": {**_action(action), "name": context["action"]["name"],
-                        "reason": _text(action.get("reason"))},
+        "action": {**_action(action), "name": context["action"]["name"]},
     }
 
 
