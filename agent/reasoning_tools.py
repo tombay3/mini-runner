@@ -550,7 +550,7 @@ def _nearest_open_hole_state(
                     "x": x,
                     "y": y,
                     "distance": distance,
-                    "frameIndex": _to_int(hole.get("frameIndex")) or 0,
+                    "frameIndex": _to_int(hole.get("frameIndex")),
                     "frameTime": _to_int(hole.get("frameTime")) or 0,
                     "occupiedByTrappedGuard": (x, y) in trapped_guard_cells,
                 }

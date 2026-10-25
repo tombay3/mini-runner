@@ -124,6 +124,11 @@ even when their first action happens to be the same.
 
 ## Candidate Classification Matrix
 
+`escape_through_open_hole` requires a fully open hole (`frameIndex: 0`). Once
+the visible refill animation starts, or its frame is unknown, that escape is
+not generated. This conservative gate does not predict remaining hole lifetime
+or guarantee another safe choice.
+
 `agent/candidate_lanes.json` is the authoritative lane mapping. Safety candidates handle immediate
 guard or hole threats; progress candidates collect gold, change route or row, access terrain,
 descend, or use the revealed exit; environment candidates wait and recheck when the state may

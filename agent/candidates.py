@@ -1177,6 +1177,7 @@ def add_non_god_escape_candidates(
                 (guard_risk in {"high", "critical"} or medium_retreat_drop)
                 and movement.get(movement_key)
                 and _to_int(movement_detail.get("openDugHoleDistance")) == 1
+                and hole.get("frameIndex") == 0  # Do not enter a visibly refilling hole.
                 and hole_y is not None
                 and terrain_height is not None
                 and hole_y < terrain_height - 1

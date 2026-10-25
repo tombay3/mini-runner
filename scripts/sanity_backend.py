@@ -133,6 +133,23 @@ def check_candidate_output():
         json.dumps(trace, allow_nan=False)
 
 
+def check_open_hole_escape():
+    state = candidate_snapshot(guarded=True)
+    state["terrainGrid"] = ["       ", "       ", "#######", "       ", "#######"]
+    state["grid"] = ["       ", "       ", "### ###", "       ", "#######"]
+    state["guards"][0].update(x=1, y=2, yOffset=-9, actionName="climb_out")
+    hole = {"x": 3, "y": 2, "frameIndex": 0, "frameTime": 0}
+    state["openHoles"] = [hole]
+    pool, _ = generate_candidates(state, [])
+    assert any(c["kind"] == "escape_through_open_hole" for c in pool)
+    hole["frameIndex"] = 2
+    closing, _ = generate_candidates(state, [])
+    del hole["frameIndex"]
+    unknown, _ = generate_candidates(state, [])
+    for pool in (closing, unknown):
+        assert pool and all(c["kind"] != "escape_through_open_hole" for c in pool)
+
+
 def check_exit_context():
     state = candidate_snapshot(exit_state=True)
     pool, original = generate_candidates(state, [])
@@ -444,6 +461,7 @@ if __name__ == "__main__":
         check_recording_and_trace(client)
         check_retention()
         check_candidate_output()
+        check_open_hole_escape()
         check_exit_context()
         check_recent_ladder_return()
         check_vertical_secondary_safety()
