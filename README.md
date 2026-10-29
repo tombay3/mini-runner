@@ -86,11 +86,9 @@ run. Use `Play`, `Prev`, `Next`, and `Delete` to inspect retained recordings.
 
 ## Trace Dashboard
 
-The trace dashboard is the primary agent-trace stepping and debugging tool. It lets you
-inspect retained recording and the decisions within them, connecting each run step to
-the state that produced it, the candidates the model could see, the requested choice, backend
-validation, the executed action, and the observed outcome. Existing stores can be inspected
-without running the game frontend or backend.
+Use the read-only trace dashboard to compare runs and inspect each decision: state,
+candidates, model request, backend selection, issued input, and observed result.
+It reads existing stores without requiring the frontend or backend.
 
 Start it in another terminal with the Python environment activated:
 
@@ -126,8 +124,16 @@ Run the backend and frontend quick checks with:
 npm test
 ```
 
-These checks use direct helpers and the Flask test client. They do not run the legacy game or call
-an LLM. See [Sanity tests](docs/sanity-tests.md).
+These smoke checks use small fixtures and the Flask test client. They make no model calls.
+
+| Command | Purpose |
+| --- | --- |
+| `npm test` | Fast code smoke checks |
+| `npm run test:regression` | Focused Python and JavaScript regressions |
+| `npm run data:check` | Read-only checks of local recordings, traces, cohorts, and debug log |
+| `npm run cohorts:check` | Check cohort links and uncataloged traces |
+
+See [Testing](docs/sanity-tests.md) for coverage and limitations.
 
 ### Agent evaluator
 
@@ -148,7 +154,7 @@ without calling the model. See [Agent evaluator](docs/evaluator.md).
 - [Backend spec](docs/backend-spec.md): Flask APIs, JSON stores, model profiles, and logging.
 - [Trace dashboard](docs/trace-dashboard.md): run signals, stepping debugger, and candidate analysis.
 - [Recording and playback](docs/record-playback.md): wrapper UI buttons, and run selection.
-- [Sanity tests](docs/sanity-tests.md): backend and frontend regression coverage.
+- [Testing](docs/sanity-tests.md): smoke, regressions, data checks, and planner validation.
 - [Agent evaluator](docs/evaluator.md): repeatable real-runtime trials and reports.
 - [Puzzle game](docs/puzzle-game.md): Lode Runner rules and puzzle-solving concepts.
 - [Legacy runtime](docs/legacy-runtime.md): original CreateJS architecture and features.

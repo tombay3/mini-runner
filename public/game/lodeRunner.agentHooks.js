@@ -119,6 +119,7 @@
 			goldCount: goldCount || 0,
 			goldComplete: !!goldComplete,
 			gold: snapshotGold(guardSnapshots),
+			exitTarget: snapshotExitTarget(),
 			lastFailureReason: lastFailureReason,
 			runner: runnerSnapshot,
 			guards: guardSnapshots,
@@ -228,6 +229,37 @@
 				return { id: item.id, x: item.x, y: item.y, hasGold: item.hasGold };
 			})
 		};
+	}
+
+	function snapshotExitTarget() {
+		// Revealing an exit replaces live S tiles with H; retain its map identity.
+		if (!goldComplete || !levelData || !map) return null;
+		var levelMap = levelData[curLevel - 1];
+		if (typeof levelMap !== "string") return null;
+		var target = null;
+		for (var x = 0; x < NO_OF_TILES_X; x++) {
+			if (levelMap.charAt(x) !== "S") continue;
+			var cell = map[x] && map[x][0];
+			if (!cell || cell.base !== LADDR_T) return null;
+			if (target) return null; // Do not choose arbitrarily among multiple exits.
+			target = { x: x, y: 0, tile: "S" };
+		}
+		if (!target || !runner || !runner.pos) return null;
+		var bottomExitY = 0;
+		var bottomLadderY = 0;
+		for (var y = 1; y < NO_OF_TILES_Y; y++) {
+			var tile = levelMap.charAt(y * NO_OF_TILES_X + target.x);
+			if (tile !== "S" && tile !== "H") break;
+			var ladderCell = map[target.x] && map[target.x][y];
+			if (!ladderCell || ladderCell.base !== LADDR_T) return null;
+			bottomLadderY = y;
+			if (tile === "S") bottomExitY = y;
+		}
+		var runnerY = runner.pos.y;
+		if (!Number.isInteger(runnerY) || runnerY < 0 || runnerY >= NO_OF_TILES_Y) return null;
+		var onExitColumn = runner.pos.x === target.x && runnerY <= bottomLadderY;
+		target.y = onExitColumn ? 0 : Math.min(runnerY, bottomExitY);
+		return target;
 	}
 
 	function snapshotTerrainGrid() {

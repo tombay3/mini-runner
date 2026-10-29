@@ -9,11 +9,11 @@ gameplay or stored evidence.
 | Section | Purpose | Useful evidence |
 | --- | --- | --- |
 | **1 — Run Overview** | Roll up and compare retained runs. | Outcomes, steps, game time, gold, candidate availability, model departures, warnings and loops. |
-| **2 — Trace Inspector** | Drill down into a selected decision. | Pre-action state, exposed candidates, requested and executed choices, reasons, suppression and safety rejections. |
+| **2 — Trace Inspector** | Drill down into a selected decision. | Pre-action state, exposed candidates, requested and selected candidates, reasons, suppression and safety rejections. |
 | **3 — Run Signals** | Find anomaly/event windows worth reviewing. | Progress delays, constrained choices, loops, stationary stalls, model departures and validation interventions, with step links and copyable context. |
 
-Start with the overview, use a signal to jump to a decision, then inspect surrounding steps.
-Signals identify evidence windows, not confirmed bugs or proof that a rejected action was safe.
+Start with the overview, follow a signal to a decision, then inspect nearby steps.
+Signals identify events to review; they do not confirm bugs or prove rejected actions safe.
 
 ## Documentation ownership
 
@@ -44,9 +44,12 @@ Loading starts from recordings and joins traces by full `traceId`. Trace model m
 precedence over recording `solver` metadata. Validate the trace store's integer `version: 4` and
 `runs` dictionary. Missing stores or loading failures produce warnings.
 
-The dashboard builds `runs_df` (recordings joined to run metadata) and `steps_df` (decisions, state,
-actions, candidate events and derived after-state). After-state is the next step's state, or
-`outcome.finalState` for the final action. An absent final state or model context remains unknown;
+The dashboard builds two tables:
+
+- `runs_df`: recordings joined to trace metadata.
+- `steps_df`: decisions, states, actions, events, and derived after-state.
+
+After-state comes from the next decision, or `outcome.finalState` for the last action. An absent final state or model context remains unknown;
 do not reconstruct it or modify archived evidence.
 
 ## Section 1: Run Overview
@@ -79,8 +82,9 @@ show the selected run's `(n steps · m:ss)`.
 `✨` requires an exposed requested candidate below the highest exposed score, with a `(keyCode,
 ticks)` action different from every top-score candidate's action. Unknown IDs, equal top scores and
 equivalent top actions do not qualify. This test concerns the **requested** choice; inspect
-`decision.selectedId` and fallback to confirm execution. It is stricter than the offline count of
-all executed lower-score selections.
+`decision.selectedId` and fallback to identify the backend-selected candidate. It is stricter than
+the offline count of all selected lower-score candidates. Step `issuedAction` records issued key/tick
+input; subsequent engine states provide evidence of observed movement.
 
 `⚠️` covers replacement when a nonempty requested ID differs from the selected ID, a non-null
 fallback, or loop suppression. Safety rejection alone marks its candidate row, not the whole step.
@@ -89,11 +93,11 @@ fallback, or loop suppression. Safety rejection alone marks its candidate row, n
 ## Section 2: Trace Inspector
 
 Each decision has an expander in a fixed-height scrollable panel. Its title shows the one-based
-step number, executed key/ticks, runner position, remaining gold, reported risk, selected candidate
+step number, issued key/ticks, runner position, remaining gold, reported risk, selected candidate
 ID and pre-action game clock (`state.tick / 16`). The same `✨`, `⚠️` and `🔁` markers apply.
 
 The candidate table separates exposed choices from loop-suppression and safety-rejection events.
-Requested, executed, fallback, lower-score and suppression markers remain beside the relevant
+Requested, selected, fallback, lower-score and suppression markers remain beside the relevant
 reason. IDs identify candidate kind, so the compact table omits that redundant column. Structured
 targets remain in the trace but are not displayed here.
 
@@ -102,12 +106,15 @@ counts. Event rows have blank scores and are not available model choices:
 
 - Loop-suppression rows use the first event per ID; their derived list/count is deduplicated.
 - Safety-rejection rows preserve repeated occurrences, including repeated IDs.
-- Raw `candidateEvents` retains every occurrence. Other statuses remain in the trace without
+- Raw `excludedProposals` retains every occurrence. Other statuses remain in the trace without
   dedicated table rows.
 
-The selected candidate's `firstAction.reason` explains the action. Intervention details come from
+The selected candidate's `reasons` explain the action. Intervention details come from
 `decision.fallback`; the brief model rationale comes from `decision.rationale`. Preserve these
-distinctions rather than presenting a request as an executed choice.
+distinctions rather than presenting a request as a selected candidate.
+Candidate reasons omit empty entries and join with semicolons. Lower-score request rows append
+nonempty rationale as `Model: …`; validation context is separated with ` · `. Missing explanations
+stay blank, and suppression event rows show their event reason without model or validation context.
 
 ## Section 3: Run Signals
 
@@ -122,7 +129,7 @@ These describe available choices, not an independent safety score.
 | **Confirmed loops** | Active loop steps, contiguous episodes and longest duration. |
 | **Stationary stalls** | At least five game seconds of unchanged runner position and offsets, with singleton, forced-safety, emergency-hold or common-rejection evidence. |
 | **Model divergence** | Requested departures from top-scored distinct actions, score gaps and lane changes, using the `✨` predicate. |
-| **Validation results** | Fallbacks and replaced requests, without treating them as executed model choices. |
+| **Validation results** | Fallbacks and replaced requests, distinguished from the model's requested candidates. |
 
 Each signal has a representative step or range and a button that jumps to its starting step.
 **Copy** includes `RUN CONTEXT`, `Candidates` and `EVENTS`: full trace ID, outcome, steps, timing,

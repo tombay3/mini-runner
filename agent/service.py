@@ -51,7 +51,6 @@ class AisuiteAgentClient:
         provider_key, _model_name = normalized.split(":", 1)
         supported = ProviderFactory.get_supported_providers()
         if provider_key not in supported:
-            error_cls = AgentRequestError if source == "request" else AgentConfigError
             raise error_cls(
                 f"unsupported provider '{provider_key}'. Supported providers: {sorted(supported)}"
             )
@@ -161,9 +160,7 @@ def _extract_openai_reasoning_summary(response: Any) -> str:
     return "\n".join(summaries)
 
 
-def _extract_openai_declared_reasoning(content: Any) -> str:
-    if not isinstance(content, str) or not content.strip():
-        return ""
+def _response_json_text(content: str) -> str:
     text = content.strip()
     if text.startswith("```"):
         text = text.strip("`")
@@ -171,6 +168,13 @@ def _extract_openai_declared_reasoning(content: Any) -> str:
         if lines and lines[0].lower().startswith("json"):
             lines = lines[1:]
         text = "\n".join(lines).strip()
+    return text
+
+
+def _extract_openai_declared_reasoning(content: Any) -> str:
+    if not isinstance(content, str) or not content.strip():
+        return ""
+    text = _response_json_text(content)
     try:
         payload = json.loads(text)
     except json.JSONDecodeError:
@@ -198,23 +202,13 @@ def validate_agent_request(payload: Any) -> tuple[dict[str, Any], list[dict[str,
     if not isinstance(history, list):
         raise AgentRequestError("history must be an array")
 
-    model = payload.get("model")
-    if model is not None and not isinstance(model, str):
-        raise AgentRequestError("model must be a string")
-
-    model_profile = payload.get("modelProfile")
-    if model_profile is not None and not isinstance(model_profile, str):
-        raise AgentRequestError("modelProfile must be a string")
-
-    run_id = payload.get("runId")
-    if run_id is not None and not isinstance(run_id, str):
-        raise AgentRequestError("runId must be a string")
-
-    return snapshot, history, {
-        "model": model,
-        "modelProfile": model_profile,
-        "runId": run_id,
-    }
+    options = {}
+    for field in ("model", "modelProfile", "runId"):
+        value = payload.get(field)
+        if value is not None and not isinstance(value, str):
+            raise AgentRequestError(f"{field} must be a string")
+        options[field] = value
+    return snapshot, history, options
 
 
 def plan_next_action(
@@ -299,10 +293,11 @@ def run_candidate_selection(
         run_id=options.get("runId"),
         elapsed_ms=round((time.monotonic() - selection_started) * 1000),
     )
-    selected, validation = validate_or_fallback_candidate(result, candidates, analysis)
+    selected, validation = validate_or_fallback_candidate(result, candidates, analysis, snapshot=snapshot)
     loop_monitor = build_loop_monitor(analysis)
 
-    action = dict(selected["firstAction"])
+    action = dict(selected["action"])
+    action["reason"] = next(iter(selected.get("reasons") or []), "")
     planner = build_planner(
         result, requested_model, validation, public_config, len(candidates)
     )
@@ -405,6 +400,8 @@ def validate_or_fallback_candidate(
     result: dict[str, Any],
     candidates: list[dict[str, Any]],
     analysis: dict[str, Any],
+    *,
+    snapshot: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     by_id = {candidate["id"]: candidate for candidate in candidates}
     choice = result.get("choice") or {}
@@ -419,14 +416,14 @@ def validate_or_fallback_candidate(
         fallback_reason = result.get("parseError") or f"unknown candidateId: {requested_id}"
 
     action_valid = is_action_physically_valid(
-        selected["firstAction"],
+        selected["action"],
         analysis["movement"],
         analysis["dig"],
         candidate_kind=selected.get("kind"),
         runner_x_offset=(analysis.get("runner") or {}).get("xOffset"),
     )
     action_guard_safe = is_action_guard_safe(
-        selected["firstAction"], analysis, candidate_kind=selected.get("kind")
+        selected["action"], analysis, candidate_kind=selected.get("kind"), snapshot=snapshot
     )
     if not action_valid or not action_guard_safe:
         replacement_reason = (
@@ -435,8 +432,6 @@ def validate_or_fallback_candidate(
             else "selected candidate action moved toward guard pressure"
         )
         selected = candidates[0]
-        action_valid = True
-        action_guard_safe = True
         fallback_used = True
         fallback_reason = replacement_reason
     validation = {
@@ -467,13 +462,7 @@ def parse_candidate_response(response: Any) -> tuple[dict[str, Any] | None, str 
     if not isinstance(content, str) or not content.strip():
         return None, "model returned no text content"
 
-    text = content.strip()
-    if text.startswith("```"):
-        text = text.strip("`")
-        lines = text.splitlines()
-        if lines and lines[0].lower().startswith("json"):
-            lines = lines[1:]
-        text = "\n".join(lines).strip()
+    text = _response_json_text(content)
 
     try:
         payload = json.loads(text)

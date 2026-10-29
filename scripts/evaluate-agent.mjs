@@ -362,6 +362,10 @@ function resolveBrowserExecutable(explicitPath) {
   return match;
 }
 
+function increment(counts, key, amount = 1) {
+  counts[key] = (counts[key] || 0) + amount;
+}
+
 export function summarizeAttempt(number, startedAt, result, trace, config) {
   const steps = Array.isArray(trace?.steps) ? trace.steps : [];
   const kinds = {};
@@ -377,17 +381,16 @@ export function summarizeAttempt(number, startedAt, result, trace, config) {
   let confirmedLoops = 0;
   let suppressedCandidates = 0;
   for (const [stepIndex, step] of steps.entries()) {
-    if (!Array.isArray(step.candidates) || !Array.isArray(step.candidateEvents) ||
+    if (!Array.isArray(step.candidates) || !Array.isArray(step.excludedProposals) ||
         !step.decision || !["requestedId", "selectedId", "rationale", "fallback"].every(
           (key) => Object.hasOwn(step.decision, key)) ||
         (step.decision.fallback !== null &&
           (!step.decision.fallback || typeof step.decision.fallback.code !== "string" ||
            typeof step.decision.fallback.message !== "string")) ||
         typeof step.loop?.active !== "boolean" || !Object.hasOwn(step.loop, "type") ||
-        !step.state || !Object.hasOwn(step.state, "risk") ||
-        (step.state.risk !== null && typeof step.state.risk === "object") ||
-        !step.action || !["keyCode", "ticks"].every((key) => Object.hasOwn(step.action, key)) ||
-        step.candidateEvents.some((event) => !event || ["exposed", "proposed"].includes(event.status))) {
+        !step.state ||
+        !step.issuedAction || !["keyCode", "ticks"].every((key) => Object.hasOwn(step.issuedAction, key)) ||
+        step.excludedProposals.some((event) => !event || ["exposed", "proposed"].includes(event.status))) {
       throw new Error(`Expected compact v4 step at index ${stepIndex}`);
     }
     const candidates = step.candidates;
@@ -395,31 +398,29 @@ export function summarizeAttempt(number, startedAt, result, trace, config) {
     const selectedIndex = candidates.findIndex((candidate) => candidate.id === decision.selectedId);
     const selected = candidates[selectedIndex];
     const kind = selected?.kind || "unknown";
-    kinds[kind] = (kinds[kind] || 0) + 1;
+    increment(kinds, kind);
     if (decision.fallback !== null) fallbacks += 1;
     if (step.loop.active) confirmedLoops += 1;
     suppressedCandidates += new Set(
-      step.candidateEvents.filter((event) => event.status === "loop_suppressed").map((event) => event.id),
+      step.excludedProposals.filter((event) => event.status === "loop_suppressed").map((event) => event.candidateId),
     ).size;
     maxCandidatePool = Math.max(maxCandidatePool, candidates.length);
-    candidateEventStatuses.exposed = (candidateEventStatuses.exposed || 0) + candidates.length;
+    increment(candidateEventStatuses, "exposed", candidates.length);
     for (const candidate of candidates) {
       const candidateKind = candidate?.kind || "unknown";
-      candidatePoolKinds[candidateKind] = (candidatePoolKinds[candidateKind] || 0) + 1;
+      increment(candidatePoolKinds, candidateKind);
       const lane = candidateLane(candidate);
-      candidatePoolLanes[lane] = (candidatePoolLanes[lane] || 0) + 1;
+      increment(candidatePoolLanes, lane);
     }
-    const selectedKind = kind;
     const selectedLane = selected ? candidateLane(selected) : "other";
     const stepDecisionClass = decisionClass(step);
-    decisionClasses[stepDecisionClass] = (decisionClasses[stepDecisionClass] || 0) + 1;
-    for (const event of step.candidateEvents) {
+    increment(decisionClasses, stepDecisionClass);
+    for (const event of step.excludedProposals) {
       const status = event.status;
-      candidateEventStatuses[status] = (candidateEventStatuses[status] || 0) + 1;
+      increment(candidateEventStatuses, status);
       const gapClass = eventGapClassification(status);
       if (gapClass) {
-        candidateGapClassifications[gapClass] =
-          (candidateGapClassifications[gapClass] || 0) + 1;
+        increment(candidateGapClassifications, gapClass);
       }
     }
     if (candidates.length > 1) {
@@ -427,16 +428,14 @@ export function summarizeAttempt(number, startedAt, result, trace, config) {
         (candidate) => candidateLane(candidate) === "progress" && candidate.id !== decision.selectedId,
       ).length;
       if (unselectedProgress) {
-        candidateGapClassifications.exposed_not_selected =
-          (candidateGapClassifications.exposed_not_selected || 0) + unselectedProgress;
+        increment(candidateGapClassifications, "exposed_not_selected", unselectedProgress);
       }
     }
     const nextStep = steps[stepIndex + 1];
     const selectedNoProgress =
       selectedLane === "progress" && nextStep && !stepMadeProgress(step, nextStep);
     if (selectedNoProgress) {
-      candidateGapClassifications.selected_no_progress =
-        (candidateGapClassifications.selected_no_progress || 0) + 1;
+      increment(candidateGapClassifications, "selected_no_progress");
     }
     let classification = "no_gap";
     if (!candidates.length) classification = "no_generated_candidates";
@@ -447,7 +446,7 @@ export function summarizeAttempt(number, startedAt, result, trace, config) {
       requestedCandidateId: decision.requestedId,
       selectedCandidateId: decision.selectedId,
       selectedCandidateIndex: selectedIndex < 0 ? null : selectedIndex,
-      selectedCandidateKind: selectedKind,
+      selectedCandidateKind: kind,
       selectedCandidateLane: selectedLane,
       selectedScore: selected?.score ?? null,
       exposedCandidateCount: candidates.length,
@@ -455,22 +454,22 @@ export function summarizeAttempt(number, startedAt, result, trace, config) {
       decisionClass: stepDecisionClass,
       rationale: decision.rationale,
       fallback: decision.fallback,
-      risk: step.state.risk,
+      risk: step.state.threat?.risk ?? "unknown",
       loop: { active: step.loop.active, type: step.loop.type },
-      action: { keyCode: step.action.keyCode, ticks: step.action.ticks },
+      issuedAction: { keyCode: step.issuedAction.keyCode, ticks: step.issuedAction.ticks },
       candidates: candidates.map((candidate) => ({
         id: candidate?.id,
         kind: candidate?.kind,
         lane: candidateLane(candidate),
         score: candidate?.score,
         target: candidate?.target,
-        firstAction: candidate?.firstAction,
+        offeredAction: candidate?.offeredAction,
       })),
-      candidateEvents: step.candidateEvents.map((event) => ({
-        id: event.id,
+      excludedProposals: step.excludedProposals.map((event) => ({
+        candidateId: event.candidateId,
         kind: event.kind,
         status: event.status,
-        action: { keyCode: event.action.keyCode, ticks: event.action.ticks },
+        proposedAction: { keyCode: event.proposedAction.keyCode, ticks: event.proposedAction.ticks },
         reason: event.reason,
       })),
       selectedNoProgress: Boolean(selectedNoProgress),
@@ -556,8 +555,8 @@ function stepMadeProgress(step, nextStep) {
   const after = nextStep?.state || {};
   const beforeRunner = before.runner || {};
   const afterRunner = after.runner || {};
-  const beforeGold = Number(before?.gold?.remainingCount);
-  const afterGold = Number(after?.gold?.remainingCount);
+  const beforeGold = Number(before?.gold?.remaining);
+  const afterGold = Number(after?.gold?.remaining);
   if (Number.isFinite(beforeGold) && Number.isFinite(afterGold) && afterGold < beforeGold) {
     return true;
   }

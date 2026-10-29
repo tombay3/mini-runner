@@ -16,10 +16,11 @@ def debug_log_enabled() -> bool:
     return os.environ.get("AGENT_DEBUG_LOG", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def effective_app_log_level_name() -> str:
+def effective_app_log_level() -> int:
     if debug_log_enabled():
-        return "DEBUG"
-    return os.environ.get("APP_LOG_LEVEL", "INFO").upper()
+        return logging.DEBUG
+    name = os.environ.get("APP_LOG_LEVEL", "INFO").upper()
+    return logging.getLevelNamesMapping().get(name, logging.INFO)
 
 
 def configure_logging() -> logging.Logger:
@@ -27,14 +28,7 @@ def configure_logging() -> logging.Logger:
     if _CONFIGURED:
         return logging.getLogger(APP_LOGGER_NAME)
 
-    app_level_name = effective_app_log_level_name()
-    app_level = getattr(logging, app_level_name, logging.INFO)
-    log_format = os.environ.get("APP_LOG_FORMAT", "plain").lower()
-    format_string = (
-        "%(asctime)s level=%(levelname)s logger=%(name)s %(message)s"
-        if log_format == "plain"
-        else "%(asctime)s level=%(levelname)s logger=%(name)s %(message)s"
-    )
+    app_level = effective_app_log_level()
 
     logging.config.dictConfig(
         {
@@ -42,7 +36,7 @@ def configure_logging() -> logging.Logger:
             "disable_existing_loggers": False,
             "formatters": {
                 "plain": {
-                    "format": format_string,
+                    "format": "%(asctime)s level=%(levelname)s logger=%(name)s %(message)s",
                     "datefmt": "%Y-%m-%dT%H:%M:%S",
                 }
             },
@@ -50,7 +44,7 @@ def configure_logging() -> logging.Logger:
                 "console": {
                     "class": "logging.StreamHandler",
                     "formatter": "plain",
-                    "level": app_level_name,
+                    "level": app_level,
                 }
             },
             "root": {
@@ -60,7 +54,7 @@ def configure_logging() -> logging.Logger:
             "loggers": {
                 APP_LOGGER_NAME: {
                     "handlers": ["console"],
-                    "level": app_level_name,
+                    "level": app_level,
                     "propagate": False,
                 },
                 "werkzeug": {
@@ -79,8 +73,7 @@ def configure_logging() -> logging.Logger:
 
 
 def refresh_app_log_level() -> None:
-    app_level_name = effective_app_log_level_name()
-    app_level = getattr(logging, app_level_name, logging.INFO)
+    app_level = effective_app_log_level()
     logger = logging.getLogger(APP_LOGGER_NAME)
     logger.setLevel(app_level)
     for handler in logger.handlers:

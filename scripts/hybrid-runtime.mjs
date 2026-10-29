@@ -33,7 +33,7 @@ export function normalizeState(state, engine = false, label = 'state') {
       out.id = integer(value.id, `${name}.id`);
       if (engine) {
         assert(typeof value.hasGold === 'boolean' || Number.isFinite(value.hasGold), `${name}.hasGold: missing/invalid`);
-        out.carryingGold = Boolean(value.hasGold);
+        out.carryingGold = value.hasGold > 0;
       } else out.carryingGold = boolean(value.carryingGold, `${name}.carryingGold`);
     }
     return out;
@@ -41,8 +41,9 @@ export function normalizeState(state, engine = false, label = 'state') {
   assert(Array.isArray(state.guards), `${label}.guards: missing full guard array`);
   const guards = state.guards.map((g, i) => actor(g, `${label}.guards[${i}]`, true)).sort((a, b) => a.id - b.id);
   assert.equal(new Set(guards.map(g => g.id)).size, guards.length, `${label}: duplicate guard IDs`);
-  assert(object(state.gold) && Array.isArray(state.gold.visiblePositions), `${label}.gold.visiblePositions: missing array`);
-  const visiblePositions = state.gold.visiblePositions.map((p, i) => {
+  const visible = engine ? state.gold?.visiblePositions : state.gold?.visible;
+  assert(object(state.gold) && Array.isArray(visible), `${label}.gold: missing visible array`);
+  const visiblePositions = visible.map((p, i) => {
     assert(object(p), `${label}.gold.visiblePositions[${i}]: invalid position`);
     return { x: integer(p.x, `${label}.gold.x`), y: integer(p.y, `${label}.gold.y`) };
   }).sort((a, b) => a.y - b.y || a.x - b.x);
@@ -52,8 +53,8 @@ export function normalizeState(state, engine = false, label = 'state') {
     gameState: text(engine ? state.gameStateName : state.gameState, `${label}.gameState`),
     godMode: boolean(state.godMode, `${label}.godMode`),
     runner: actor(state.runner, `${label}.runner`), guards,
-    gold: { remainingCount: integer(state.gold.remainingCount, `${label}.gold.remainingCount`),
-      complete: boolean(state.gold.complete, `${label}.gold.complete`), visiblePositions },
+    gold: { remaining: integer(engine ? state.gold.remainingCount : state.gold.remaining, `${label}.gold.remaining`),
+      complete: boolean(state.gold.complete, `${label}.gold.complete`), visible: visiblePositions },
   };
 }
 export function replayInBrowser({ demo }) {
@@ -150,7 +151,7 @@ export async function handoff({demo,run,forkTick,historyLimit}){
     const next=run.steps[run.steps.indexOf(step)+1];
     const a=step.state.tick===0?initialState:snapshots[step.state.tick], b=snapshots[next.state.tick];
     if(!a||!b)throw Error('Missing prefix history boundary');
-    history.push({candidateId:step.decision.selectedId,...step.action,
+    history.push({candidateId:step.decision.selectedId,...step.issuedAction,
       tick:a.tick,state:a.gameStateName,afterTick:b.tick,afterState:b.gameStateName,
       before:_test.summarizeHistorySnapshot(a),after:_test.summarizeHistorySnapshot(b)});
   }
@@ -187,57 +188,3 @@ export function finalizeInBrowser() {
 }
 
 // Explicit offline checks only; importing the runtime never starts tests.
-async function runChecks() {
-  const {default: test} = await import('node:test');
-  const {default: fs} = await import('node:fs');
-  const {default: os} = await import('node:os');
-  const {default: path} = await import('node:path');
-  const {startServer} = await import('./hybrid-reproducer.mjs');
-
-  for(const godMode of [false,true]) {
-  test(`${godMode?'god':'normal'} mode rejects mode or context drift`,()=>{
-    const state={playData:1,level:1,godMode};
-    verifyEngineContext(state,godMode);
-    assert.throws(()=>verifyEngineContext({...state,godMode:!godMode},godMode));
-    assert.throws(()=>verifyEngineContext({...state,godMode:undefined},godMode));
-    assert.throws(()=>verifyEngineContext({...state,level:2},godMode));
-    assert.throws(()=>verifyEngineContext({...state,playData:2},godMode));
-  });
-
-  }
-  test('natural terminal sharing a tick does not replace a decision boundary',()=>{
-    const initialState={tick:0,gameStateName:'start',godMode:true};
-    const running={tick:8,gameStateName:'running',godMode:true};
-    const terminal={tick:8,gameStateName:'finish',godMode:true};
-    const replay={initialState,states:[running],terminal};
-    assert.equal(replayStateAt(replay,0),initialState);
-    assert.equal(replayStateAt(replay,8),running);
-    assert.equal(replayStateAt(replay,8,true),terminal);
-    assert.throws(()=>replayStateAt(replay,9));
-  });
-
-  test('limited continuation can end at a running replay boundary',()=>{
-    const state={tick:8,gameStateName:'running',godMode:true};
-    const replay={states:[state],terminal:{tick:10,gameStateName:'running',godMode:true}};
-    assert.equal(replayStateAt(replay,8,true),state);
-  });
-
-  test('missing executable and early service exit fail startup', async t=>{
-    const cwd=fs.mkdtempSync(path.join(os.tmpdir(),'hybrid-startup-'));
-    t.after(()=>fs.rmSync(cwd,{recursive:true,force:true}));
-    const url='http://127.0.0.1:1/';
-    await assert.rejects(startServer(path.join(cwd,'missing'),[],cwd,url,path.join(cwd,'missing.log')),
-      error=>error.code==='ENOENT');
-    await assert.rejects(startServer(process.execPath,['-e','process.exit(2)'],cwd,url,path.join(cwd,'exit.log')),
-      /Owned service exited/);
-  });
-}
-
-if (typeof process !== 'undefined' && process.argv[1] === import.meta.filename) {
-  if (process.argv.length !== 3 || process.argv[2] !== '--test') {
-    console.error('Usage: node scripts/hybrid-runtime.mjs --test');
-    process.exitCode = 1;
-  } else {
-    runChecks().catch(error => { console.error(error); process.exitCode = 1; });
-  }
-}

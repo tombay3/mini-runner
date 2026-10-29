@@ -27,7 +27,7 @@ available for focused future work, but learned ranking, broad candidate-gap work
 and LLM comparisons require separate evidence and approval. The results do not
 establish general completion or safety.
 
-## Why this work is needed
+## Scoring background
 
 The numeric scores are fixed constants written by Codex. The user did not choose
 them, and they were neither learned from data nor mathematically optimized.
@@ -63,9 +63,7 @@ disagreements. This is too small to establish autonomous completion or safety.
 
 ## Conclusions
 
-The scores are hand-written constants, not learned or optimized weights. They
-affect candidate order, the seven-item shortlist, model context, and fallback
-selection, but the model may choose a lower-ranked candidate.
+Scores remain fixed heuristics; see the scoring background above.
 
 Candidate availability is the main coverage limit. More than half the original
 samples had no eligible candidate with the demonstrated key; scoring cannot rank

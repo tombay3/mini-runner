@@ -45,6 +45,14 @@ def _as_dict_list(value: Any) -> list[dict[str, Any]]:
     return [item for item in _as_list(value) if isinstance(item, dict)]
 
 
+def _candidate_reasons(value: Any) -> str:
+    return "; ".join(
+        reason.strip()
+        for reason in _as_list(value)
+        if isinstance(reason, str) and reason.strip()
+    )
+
+
 def _safe_int(value: Any, default: int = 0) -> int:
     try:
         if pd.isna(value):
@@ -71,8 +79,8 @@ def _step_event_flags(step: dict) -> dict[str, bool]:
     requested_id = decision.get("requestedId") or ""
     selected_id = decision.get("selectedId", "")
     suppressed_ids = {
-        str(item.get("id", ""))
-        for item in _as_dict_list(step.get("candidateEvents"))
+        str(item.get("candidateId", ""))
+        for item in _as_dict_list(step.get("excludedProposals"))
         if item.get("status") == "loop_suppressed"
     }
     candidate_replaced = bool(requested_id and str(requested_id) != str(selected_id))
@@ -93,26 +101,19 @@ def load_data(folder: str):
     folder_path = Path(folder)
     errors = []
 
-    recordings_raw = {}
-    traces_raw = {}
-
-    rec_path = folder_path / "recordings.json"
-    if rec_path.exists():
+    def read_store(name: str):
+        source = folder_path / name
+        if not source.exists():
+            errors.append(f"{name} not found in {folder}")
+            return {}
         try:
-            recordings_raw = json.loads(rec_path.read_text())
-        except (OSError, UnicodeError, json.JSONDecodeError) as e:
-            errors.append(f"recordings.json: {e}")
-    else:
-        errors.append(f"recordings.json not found in {folder}")
+            return json.loads(source.read_text())
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            errors.append(f"{name}: {exc}")
+            return {}
 
-    trace_path = folder_path / "agent-traces.json"
-    if trace_path.exists():
-        try:
-            traces_raw = json.loads(trace_path.read_text())
-        except (OSError, UnicodeError, json.JSONDecodeError) as e:
-            errors.append(f"agent-traces.json: {e}")
-    else:
-        errors.append(f"agent-traces.json not found in {folder}")
+    recordings_raw = read_store("recordings.json")
+    traces_raw = read_store("agent-traces.json")
 
     recordings_raw = _as_dict(recordings_raw)
     traces_raw = _as_dict(traces_raw)
@@ -127,6 +128,14 @@ def load_data(folder: str):
         "errors": errors,
     }
     return runs_df, steps_df, meta
+
+
+def _fmt_mm_ss(total_seconds: int | None) -> str:
+    if total_seconds is None:
+        return ""
+    m = total_seconds // 60
+    s = total_seconds % 60
+    return f"{m}:{s:02d}"
 
 
 def _build_dataframes(recordings_raw: dict, traces_raw: dict):
@@ -167,13 +176,6 @@ def _build_dataframes(recordings_raw: dict, traces_raw: dict):
         if updated_at and created_at:
             record_time_s = round((updated_at - created_at).total_seconds())
 
-        def _fmt_mm_ss(total_seconds: int | None) -> str:
-            if total_seconds is None:
-                return ""
-            m = total_seconds // 60
-            s = total_seconds % 60
-            return f"{m}:{s:02d}"
-
         record_time = _fmt_mm_ss(record_time_s)
         game_time_ticks = demo.get("time")
         try:
@@ -206,7 +208,7 @@ def _build_dataframes(recordings_raw: dict, traces_raw: dict):
                 or solver.get("modelProfile", ""),
                 "failureReason": solver.get("failureReason", ""),
                 "stepCount": len(trace_steps),
-                "latestAction": _as_dict(trace_steps[-1]).get("action") if trace_steps else None,
+                "latestAction": _as_dict(trace_steps[-1]).get("issuedAction") if trace_steps else None,
                 "godMode": bool(demo.get("godMode", 0)),
                 "averageCandidateCount": average_candidate_count,
                 "lowerScoreRequestCount": sum(
@@ -231,18 +233,18 @@ def _build_dataframes(recordings_raw: dict, traces_raw: dict):
         final_state = _as_dict(outcome.get("finalState"))
         for step_idx, step_value in enumerate(steps):
             step = _as_dict(step_value)
-            action = _as_dict(step.get("action"))
+            action = _as_dict(step.get("issuedAction"))
             loop = _as_dict(step.get("loop"))
-            events = _as_dict_list(step.get("candidateEvents"))
+            events = _as_dict_list(step.get("excludedProposals"))
             suppressed_by_id = {}
             for item in events:
                 if item.get("status") == "loop_suppressed":
-                    suppressed_by_id.setdefault(str(item.get("id")), item)
+                    suppressed_by_id.setdefault(str(item.get("candidateId")), item)
             suppressed_candidates = [
                 {
-                    "id": str(item.get("id")),
+                    "id": str(item.get("candidateId")),
                     "kind": item.get("kind"),
-                    "action": _as_dict(item.get("action")),
+                    "action": _as_dict(item.get("proposedAction")),
                     "reason": item.get("reason"),
                 }
                 for item in suppressed_by_id.values()
@@ -251,13 +253,13 @@ def _build_dataframes(recordings_raw: dict, traces_raw: dict):
             fallback = _as_dict(decision.get("fallback"))
             safety_rejections = [
                 {
-                    "candidateId": str(item.get("id")),
+                    "candidateId": str(item.get("candidateId")),
                     "kind": item.get("kind"),
                     "detail": str(item.get("reason") or "").strip(),
-                    "action_keyCode": _as_dict(item.get("action")).get(
+                    "action_keyCode": _as_dict(item.get("proposedAction")).get(
                         "keyCode"
                     ),
-                    "action_ticks": _as_dict(item.get("action")).get("ticks"),
+                    "action_ticks": _as_dict(item.get("proposedAction")).get("ticks"),
                 }
                 for item in events
                 if item.get("status") == "safety_rejection"
@@ -273,7 +275,7 @@ def _build_dataframes(recordings_raw: dict, traces_raw: dict):
             selected_kind = selected.get("kind", "")
             event_flags = _step_event_flags(step)
 
-            risk = state.get("risk", "")
+            risk = _as_dict(state.get("threat")).get("risk", "unknown")
             runner = _as_dict(state.get("runner"))
             after_state = (
                 _as_dict(_as_dict(steps[step_idx + 1]).get("state"))
@@ -281,7 +283,7 @@ def _build_dataframes(recordings_raw: dict, traces_raw: dict):
                 else final_state
             )
             after_runner = _as_dict(after_state.get("runner"))
-            after_risk = after_state.get("risk", "")
+            after_risk = _as_dict(after_state.get("threat")).get("risk", "unknown")
             state_gold = _as_dict(state.get("gold"))
             after_gold = _as_dict(after_state.get("gold"))
             is_final_step = step_idx + 1 == len(steps)
@@ -294,7 +296,7 @@ def _build_dataframes(recordings_raw: dict, traces_raw: dict):
                     "after_state_tick": after_state.get("tick"),
                     "action_keyCode": action.get("keyCode"),
                     "action_ticks": action.get("ticks"),
-                    "action_reason": _as_dict(selected.get("firstAction")).get("reason", ""),
+                    "action_reason": _candidate_reasons(selected.get("reasons")),
                     "selectedCandidateId": selected_id,
                     "selectedCandidateKind": selected_kind,
                     "requestedCandidateId": decision.get("requestedId")
@@ -324,7 +326,7 @@ def _build_dataframes(recordings_raw: dict, traces_raw: dict):
                     "runner_xOffset": runner.get("xOffset"),
                     "runner_yOffset": runner.get("yOffset"),
                     "risk_level": risk,
-                    "gold_remaining": state_gold.get("remainingCount"),
+                    "gold_remaining": state_gold.get("remaining"),
                     "gold_complete": state_gold.get("complete"),
                     "game_state": state.get("gameState", ""),
                     "after_runner_x": after_runner.get("x"),
@@ -332,7 +334,7 @@ def _build_dataframes(recordings_raw: dict, traces_raw: dict):
                     "after_runner_xOffset": after_runner.get("xOffset"),
                     "after_runner_yOffset": after_runner.get("yOffset"),
                     "after_risk_level": after_risk,
-                    "after_gold_remaining": after_gold.get("remainingCount"),
+                    "after_gold_remaining": after_gold.get("remaining"),
                     "after_gold_complete": after_gold.get("complete"),
                     "after_game_state": after_state.get("gameState", ""),
                     "terminal_result": outcome.get("result", "")
@@ -418,7 +420,7 @@ def _candidate_signatures(candidates: list[dict[str, Any]]) -> set[tuple[int, in
     return {
         signature
         for candidate in candidates
-        if (signature := _action_signature(candidate.get("firstAction"))) is not None
+        if (signature := _action_signature(candidate.get("offeredAction"))) is not None
     }
 
 
@@ -440,7 +442,7 @@ def _is_meaningful_lower_score_request(
     if requested is None:
         return False
     requested_score = _safe_number(requested.get("score"))
-    requested_signature = _action_signature(requested.get("firstAction"))
+    requested_signature = _action_signature(requested.get("offeredAction"))
     scored = [
         (candidate, score)
         for candidate in candidates
@@ -753,6 +755,9 @@ def _build_run_signals(
         progress_intervals.append(complete_interval)
     progress_interval = _longest_range(rows, progress_intervals)
     if progress_interval is not None:
+        # Keep the metric described by the trailing step range next to it.
+        range_part = progress_parts.pop(progress_intervals.index(progress_interval))
+        progress_parts.append(range_part)
         initial_gold = rows[0]["gold_remaining"]
         remaining_gold = rows[-1]["after_gold_remaining"]
         gold_prefix = (
@@ -908,7 +913,7 @@ def _build_run_signals(
             requested.get("score") if requested is not None else None
         )
         requested_signature = _action_signature(
-            requested.get("firstAction") if requested is not None else None
+            requested.get("offeredAction") if requested is not None else None
         )
         scored = [
             (candidate, score)
@@ -937,17 +942,16 @@ def _build_run_signals(
     if divergences:
         largest = max(divergences, key=lambda item: (item["gap"], -item["position"]))
         lane_changes = [item for item in divergences if item["lane_change"]]
-        target = lane_changes[0] if lane_changes else largest
         lane_change_detail = (
             f" · {len(lane_changes)} lane changes" if lane_changes else ""
         )
-        interval = (target["position"], target["position"])
+        interval = (largest["position"], largest["position"])
         signals.append(
             _signal(
                 "Model divergence",
                 f"{len(divergences)} lower-score requests on "
-                f"{choice['multi_action_decision']} multi-choices · "
-                f"largest score gap {largest['gap']:g}{lane_change_detail}",
+                f"{choice['multi_action_decision']} multi-choices{lane_change_detail} · "
+                f"largest score gap {largest['gap']:g}",
                 rows,
                 interval,
             )
@@ -998,36 +1002,33 @@ def _candidate_reason(
 ) -> str:
     """Prefix a candidate reason with compact semantic markers and context."""
     candidate_id = str(candidate.get("id") or "")
+    exposed = not candidate.get("_suppressed_only")
     markers = []
     semantic_reasons = []
 
-    if candidate_id == requested_id and requested_below_top_score:
+    if exposed and candidate_id == requested_id and requested_below_top_score:
         markers.append("✨")
-    if candidate_id == requested_id and candidate_replaced:
+    if exposed and candidate_id == requested_id and candidate_replaced:
         markers.append("⚠️")
         semantic_reasons.append(
-            f"Validation replaced this requested candidate; backend executed "
+            f"Validation replaced this requested candidate; backend selected "
             f"{selected_id or 'none'}."
         )
-    elif candidate_id == selected_id and fallback_used:
+    elif exposed and candidate_id == selected_id and fallback_used:
         markers.append("⚠️")
-        semantic_reasons.append(fallback_reason or "Fallback used.")
+        detail = str(fallback_reason or "").strip()
+        semantic_reasons.append(f"Validation: {detail}" if detail else "Fallback used.")
     if candidate_id in suppressed_ids:
         markers.append("🔁")
 
-    if candidate.get("_suppressed_only"):
-        original_reason = _as_dict(candidate.get("firstAction")).get("reason", "")
-    elif candidate_id == requested_id and requested_below_top_score:
-        original_reason = str(rationale or "").strip()
-    else:
-        original_reason = _as_dict(candidate.get("firstAction")).get("reason", "")
+    reason_parts = [_candidate_reasons(candidate.get("reasons"))]
+    model_reason = str(rationale or "").strip()
+    if exposed and candidate_id == requested_id and requested_below_top_score and model_reason:
+        reason_parts.append(f"Model: {model_reason}")
+    reason_parts.extend(semantic_reasons)
     return " ".join(
         part
-        for part in [
-            " ".join(markers),
-            *semantic_reasons,
-            str(original_reason or "").strip() or "No reason provided.",
-        ]
+        for part in [" ".join(markers), " · ".join(part for part in reason_parts if part)]
         if part
     )
 
@@ -1491,12 +1492,10 @@ with st.expander(_s2_label, expanded=_jump_matches, key=_s2_key):
                                                 "kind", "suppressed"
                                             ),
                                             "score": None,
-                                            "firstAction": {
-                                                **_as_dict(suppressed_candidate.get("action")),
-                                                "reason": suppressed_candidate.get(
-                                                    "reason", ""
-                                                )
+                                            "action": {
+                                                **_as_dict(suppressed_candidate.get("offeredAction")),
                                             },
+                                            "reasons": [suppressed_candidate.get("reason", "")],
                                             "_suppressed_only": True,
                                         }
                                     )
@@ -1567,7 +1566,17 @@ with st.expander(_s2_label, expanded=_jump_matches, key=_s2_key):
                                 ]
                             )
                             st.dataframe(
-                                cand_df,
+                                cand_df.style.apply(
+                                    lambda row: [
+                                        {
+                                            "progress": "color: #16803c",
+                                            "safety": "color: #dc2626",
+                                        }.get(display_candidates[row.name].get("lane"), "")
+                                        if column == "score" else ""
+                                        for column in row.index
+                                    ],
+                                    axis=1,
+                                ),
                                 width="stretch",
                                 hide_index=True,
                                 column_config={

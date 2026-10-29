@@ -47,6 +47,8 @@ The snapshot separates structural terrain from live state. It includes:
 - `runner` position, offsets, and action;
 - `guards` with position, offsets, motion, and carried-gold state;
 - `gold` with visible positions, carried gold, remaining count, and completion;
+- `exitTarget`, the next exit waypoint after gold completion when uniquely
+  identified; see [candidate context](./candidate-design.md);
 - `activeDig` and open-hole timing information;
 - `terrainGrid`, containing only structural terrain.
 
@@ -87,7 +89,7 @@ response is JSON with a `candidateId`. OpenAI profiles may also return a short r
 The model also receives a summary of the last eight history entries: movement, centering,
 gold changes and repeated-target progress. Missing observations remain unknown. This context
 does not change candidate generation or safety validation; its structured form is retained as
-`recentProgress` in the trace. At medium cross-row guard risk, the prompt no longer mandates
+`recentProgress` in the trace. At medium cross-row guard risk, the prompt does not mandate
 the higher-scored horizontal ladder choice; execution gates and safety guidance still apply.
 
 The rationale is diagnostic output, not hidden reasoning. Debug logging can correlate it with the
@@ -144,11 +146,32 @@ provenance; recordings and traces supply the underlying decisions. See
 [Agent evaluator](./evaluator.md) for run controls, and
 [Cohort workflow](./trace-cohort.md) for catalog maintenance.
 
-Keep exploratory fixtures separate from durable behavior changes. Apply the
-approval and commit boundaries of the specific workstream before live model runs
-or promotion; an offline regression establishes a local contract, while live runs
-test whether that contract improves actual play.
+### Commit buckets
 
-Manual commits without an `Experiment:`, `Candidate:`, or `Promotion:` subject
-prefix are durable by default. Preserve them during the next integration into
-`main` unless a later decision explicitly marks one as disposable.
+Commit buckets separate experimental work from changes intended for `main`, so
+an experiment can be closed without merging all its tooling and proposals.
+Choose by intent, not the file being edited or the method used to validate it.
+
+| Work | Subject prefix | Handling |
+| --- | --- | --- |
+| Concrete bug correction | `Fix:` | Durable correction to demonstrated incorrect behavior. Include related tests and documentation. |
+| Proposed behavior | `Candidate:` | A policy, score, or prompt change awaiting an acceptance decision. |
+| Experiment tooling | `Experiment:` | Exploratory harnesses, fixtures, and reports; not automatically included in `main`. |
+| Approved experiment result | `Promotion:` | The accepted changes and minimal support selected for integration into `main`. |
+| Documentation or other durable maintenance | `Docs:` or an ordinary subject | Durable by default. |
+
+Editing `agent/candidates.py` does not make a change a `Candidate:`. A confirmed
+candidate-generation bug can use `Fix:` directly; testing it with fixtures,
+replays, or live runs does not make it experimental. Conversely, a passing test
+does not turn a proposed policy improvement into a confirmed fix.
+
+Keep each bucket independently reviewable. Include necessary tests and docs with
+the change they support; separate unrelated exploratory tooling and reports.
+At closure, explicitly accept, defer, or drop experimental work. Reusable tooling
+may be retained by agreement; promoting a result does not require keeping the
+whole experiment. Paid runs, commits, pushes, and history changes still require
+the workstream's agreed approval.
+
+Commits without an `Experiment:`, `Candidate:`, or `Promotion:` subject prefix
+are durable by default. Preserve them when integrating into `main` unless a later
+decision explicitly marks one as disposable.

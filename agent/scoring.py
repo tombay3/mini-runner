@@ -8,6 +8,7 @@ from typing import Any
 LOW_RISK_GUARD_CLEARANCE_BONUS = 4
 MEDIUM_CROSS_ROW_CLEARANCE_PENALTY = 12
 SAME_BURST_OPPOSITE_LADDER_GOLD_BONUS = 4
+RECENT_LADDER_RETURN_PENALTY = 30
 
 
 # Existing values preserve the historical heuristic policy. New-family defaults
@@ -38,7 +39,6 @@ FIXED_SCORES = {
     "collect_current_tile_gold.base": 122,
     "collect_same_row_gold.god_mode": 106,
     "collect_same_row_gold.normal": 100,
-    "align_ladder.loop_target": 118,
     "align_ladder.fine_alignment": 104,
     "align_ladder.god_mode_base": 94,
     "align_ladder.normal_base": 90,
@@ -111,10 +111,8 @@ def caller_score(value: int, *, kind: str) -> ScoreSpec:
 
 
 def ladder_alignment_score(
-    distance: int, *, god_mode: bool, fine_align: bool, loop_target: bool
+    distance: int, *, god_mode: bool, fine_align: bool
 ) -> ScoreSpec:
-    if loop_target:
-        return fixed_score("align_ladder.loop_target")
     if fine_align:
         return fixed_score("align_ladder.fine_alignment")
     base_policy = (

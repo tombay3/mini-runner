@@ -78,10 +78,10 @@ function prepare(){
   assert.equal(record.traceId,id);
   const prefix=run.steps.filter(s=>s.state.tick<tick);
   assert.equal(run.steps[prefix.length]?.state.tick,tick,'Fork must be a recorded decision boundary');
-  const controlRevision=git('rev-parse','--verify',`${options.controlRef}^{commit}`).toString().trim();
+  const controlRevision=options.controlSource?null:git('rev-parse','--verify',`${options.controlRef}^{commit}`).toString().trim();
   const fixRevision=options.fixRef?git('rev-parse','--verify',`${options.fixRef}^{commit}`).toString().trim():null;
   const refFiles=ref=>git('ls-tree','-r','--name-only',ref,'app.py','agent','public/agent-config.json','public/LLM_GAME_RULES.md').toString().trim().split('\n').filter(n=>/\.(py|json|md)$/.test(n));
-  const controlFiles=refFiles(controlRevision);
+
   const files=['app.py','public/agent-config.json','public/LLM_GAME_RULES.md',
     ...fs.readdirSync(path.join(root,'agent')).filter(n=>/\.(py|json)$/.test(n)).map(n=>'agent/'+n)];
   const manifest={traceId:id,forkTick:tick,historicalProvenance:catalog.traces[id],
@@ -89,6 +89,7 @@ function prepare(){
       dirtyFingerprint:hash(git('diff','HEAD','--binary')),sourceHashes:hashes(files)},
     evidenceHashes:hashes(evidence),prefixDecisions:prefix.length,paidCeiling:options.paidBudget,
     model:run.model.name,profile:run.model.profile,controlRef:options.controlRef,controlRevision,
+    localProbeSteps:options.localProbeSteps??null,controlSource:options.controlSource??null,
     fixRef:options.fixRef??null,fixRevision,godMode,
     historyLimit:read(path.join(root,'public/agent-config.json')).agent.historyLimit,
     browser:options.browser,baseUrl:options.baseUrl,arms:{},createdAt:new Date().toISOString()};
@@ -99,7 +100,8 @@ function prepare(){
     const revision=arm==='control'?controlRevision:fixRevision;
     const armFiles=revision?refFiles(revision):files;
     for(const name of armFiles){
-      const bytes=revision?git('show',`${revision}:${name}`):fs.readFileSync(path.join(root,name));
+      const source=arm==='control'&&options.controlSource?options.controlSource:root;
+      const bytes=revision?git('show',`${revision}:${name}`):fs.readFileSync(path.join(source,name));
       fs.writeFileSync(path.join(dir,name),bytes,{flag:'wx'});
     }
     // Reuse existing environments and credentials without copying their contents.
@@ -127,9 +129,11 @@ function verifyHandoff(result,input){
   const old=input.run.steps[input.prefix.length].recentProgress?.entries ?? [];
   for(let i=0;i<old.length;i++){
     const h=result.history.slice(-old.length)[i], o=old[i];
-    assert.equal(h.candidateId,o.candidateId);assert.equal(h.keyCode,o.keyCode);assert.equal(h.ticks,o.ticks);
+    assert.equal(h.candidateId,o.candidateId);
+    assert.equal(({32:'stop',37:'left',38:'up',39:'right',40:'down',88:'dig_right',90:'dig_left'})[h.keyCode],o.issuedAction.name);
+    assert.equal(h.ticks,o.issuedAction.ticks);
     for(const side of ['before','after'])for(const f of ['x','y','xOffset','yOffset'])assert.equal(h[side].runner[f],o[side][f]);
-    assert.equal(h.after.goldCount-h.before.goldCount,o.goldCountDelta);
+    assert.equal(h.after.goldCount-h.before.goldCount,o.remainingGoldDelta);
   }
 }
 
@@ -145,17 +149,44 @@ async function withPage(callback){
   }finally{try{await browser?.close();}finally{await stopOwned(vite);}}
 }
 
-async function preflight(){
-  const input=read(path.join(here,'input.json')),manifest=checkFrozen();
+async function preflight() {
+  const input = read(path.join(here, 'input.json'));
+  const manifest = checkFrozen();
   assert.equal(status().paidStarted,0,'Do not replace paid-run preflight evidence');
-  const result=await withPage(page=>page.evaluate(handoff,{demo:input.record.demo,run:input.run,forkTick:tick,historyLimit:manifest.historyLimit}));
-  write('handoff.json',result);verifyHandoff(result,input);
-  for(const arm of ['control','fix']){
-    const source=manifest.arms[arm].root;
-    const payload={snapshot:result.after,history:result.history};write(`${arm}-preflight-input.json`,payload);
-    const code=`import json,sys,types; from pathlib import Path; p=types.ModuleType('_check'); p.__path__=[str(Path.cwd()/'agent')];sys.modules['_check']=p; from _check.candidates import generate_candidates; from _check.config import reload_dotenv_files,resolve_model_profile,load_public_agent_config; reload_dotenv_files(); m=resolve_model_profile(sys.argv[2],source='preflight'); d=json.load(open(sys.argv[1])); pool,a=generate_candidates(d['snapshot'],d['history']);print(json.dumps({'model':m.model,'profile':m.profile,'provider':m.provider,'config':load_public_agent_config(),'candidates':[{'id':c['id'],'kind':c['kind'],'action':c['firstAction']} for c in pool]}))`;
-    const out=JSON.parse(execFileSync(path.join(root,'.venv/bin/python'),['-B','-c',code,path.join(here,`${arm}-preflight-input.json`),manifest.profile],{cwd:source}));
-    assert.equal(out.model,manifest.model);assert.equal(out.profile,manifest.profile);
+  const result = await withPage(page => page.evaluate(handoff, {
+    demo: input.record.demo, run: input.run, forkTick: tick,
+    historyLimit: manifest.historyLimit,
+  }));
+  write('handoff.json', result);
+  verifyHandoff(result, input);
+  for (const arm of ['control', 'fix']) {
+    const source = manifest.arms[arm].root;
+    const payload = {snapshot: result.after, history: result.history};
+    const inputPath = path.join(here, `${arm}-preflight-input.json`);
+    write(`${arm}-preflight-input.json`, payload);
+    const code = `
+import json, sys, types
+from pathlib import Path
+package = types.ModuleType('_check')
+package.__path__ = [str(Path.cwd() / 'agent')]
+sys.modules['_check'] = package
+from _check.candidates import generate_candidates
+from _check.config import reload_dotenv_files, resolve_model_profile, load_public_agent_config
+reload_dotenv_files()
+model = resolve_model_profile(sys.argv[2], source='preflight')
+with open(sys.argv[1]) as source:
+    payload = json.load(source)
+pool, analysis = generate_candidates(payload['snapshot'], payload['history'])
+print(json.dumps({
+    'model': model.model, 'profile': model.profile, 'provider': model.provider,
+    'config': load_public_agent_config(),
+    'candidates': [{'id': c['id'], 'kind': c['kind'], 'action': c['action']} for c in pool],
+}))
+`;
+    const out = JSON.parse(execFileSync(path.join(root, '.venv/bin/python'),
+      ['-B', '-c', code, inputPath, manifest.profile], {cwd: source}));
+    assert.equal(out.model, manifest.model);
+    assert.equal(out.profile, manifest.profile);
     assert.deepEqual(out.config.backend,input.run.config);
     assert(out.candidates.length,'Candidate pool must be nonempty');
     assert.equal(out.config.agent.historyLimit,manifest.historyLimit);
@@ -168,7 +199,10 @@ async function preflight(){
     historyEntries:result.history.length,
     modelCalls:0,guardFuture:'native PLAY_MODERN',originalEvidencePreserved:true,
     checkedAt:new Date().toISOString()});
-  const s=status();s.status='preflight-passed';s.updatedAt=new Date().toISOString();write('state.json',s);
+  const state = status();
+  state.status = 'preflight-passed';
+  state.updatedAt = new Date().toISOString();
+  write('state.json', state);
   console.log('Prefix, native handoff, history and both model-free candidate pools passed.');
 }
 
@@ -218,7 +252,7 @@ async function trial(arm,pair,fake=false){
       const config=read(path.join(manifest.arms[arm].root,'public/agent-config.json'));
       const observations=[];let planner;
       const deadline=Date.now()+60*60*1000;
-      const max=fake?1:config.agent.maxSteps-input.prefix.length;
+      const max=fake?1:Math.min(config.agent.maxSteps-input.prefix.length,manifest.localProbeSteps??Infinity);
       for(let n=0;n<max;n++){
         if(Date.now()>deadline)throw Error('Continuation wall timeout after 60 minutes');
         const before=await page.evaluate(()=>window.lodeRunnerAgentHooks.snapshot());
@@ -249,6 +283,15 @@ async function trial(arm,pair,fake=false){
         observations.push(observed);item.lastTick=observed.after.tick;persist();
         write(`${label}/observations.json`,observations);
         if(['runner_dead','finish'].includes(observed.after.gameStateName))break;
+        if(!fake&&manifest.localProbeSteps){
+          const samePose=(a,b)=>['x','y','xOffset','yOffset'].every(k=>a.runner[k]===b.runner[k]);
+          const collected=observed.after.gold.remainingCount<setup.after.gold.remainingCount;
+          const moved=observations.some(o=>!samePose(o.after,setup.after));
+          const returned=moved&&samePose(observed.after,setup.after)
+            &&observed.after.gold.remainingCount===setup.after.gold.remainingCount;
+          if(collected||returned){item.probeStopReason=collected?'gold collected':'returned to fork pose without gold progress';persist();break;}
+          if(n===max-1){item.probeStopReason='local probe decision cap';persist();}
+        }
         if(await page.evaluate(async({snapshot,config})=>{
           const {_test}=await import('/src/agent.js');
           return _test.hasExceededPlaybackTime(snapshot,config);
@@ -278,10 +321,10 @@ async function trial(arm,pair,fake=false){
 
     item.status='completed';item.result=result.result;item.reason=result.reason;
     item.finalTick=result.snapshot.tick;item.gameTime=result.snapshot.time;
-    item.goldCollected=input.run.steps[input.prefix.length].state.gold.remainingCount-result.snapshot.gold.remainingCount;
+    item.goldCollected=input.run.steps[input.prefix.length].state.gold.remaining-result.snapshot.gold.remainingCount;
     item.steps=result.observations;item.firstSelected=trace.steps[0].decision.selectedId;
-    item.executedDigs=trace.steps.filter(s=>[88,90].includes(s.action.keyCode)).length;
-    item.movementSteps=trace.steps.filter(s=>[37,38,39,40].includes(s.action.keyCode)).length;
+    item.executedDigs=trace.steps.filter(s=>[88,90].includes(s.issuedAction.keyCode)).length;
+    item.movementSteps=trace.steps.filter(s=>[37,38,39,40].includes(s.issuedAction.keyCode)).length;
     item.finalState=result.snapshot;item.finishedAt=new Date().toISOString();
     write(`${label}/recording.json`,result.record);checkFrozen();persist();
     console.log(`${label}: ${item.reason}, ${item.steps} decisions, tick ${item.finalTick}`);
@@ -330,13 +373,20 @@ async function verifySmoke(){
     const recording=read(path.join(folder,'recording.json'));
     const trace=read(path.join(folder,'__data1/agent-traces.json')).runs[result.runId];
     const replay=await withPage(page=>page.evaluate(replayInBrowser,{demo:recording.demo}));
+    let startupPhaseOnlyDifferences=0;
     for(const step of [...input.prefix,...trace.steps]){
       const engine=replayStateAt(replay,step.state.tick);
-      assert.deepEqual(normalizeState(engine,true),normalizeState(step.state),`${arm}:${step.state.tick}`);
+      const actual=normalizeState(engine,true),expected=normalizeState(step.state);
+      // The demo clock does not encode the wrapper's duplicate WAITING UI
+      // observation at tick zero. Still verify all actors, gold and mode.
+      if(step.state.tick===0&&expected.gameState==='waiting'&&actual.gameState==='start'){
+        const {gameState:actualPhase,...a}=actual,{gameState:expectedPhase,...b}=expected;
+        assert.deepEqual(a,b,`${arm}:startup physical state`);startupPhaseOnlyDifferences++;
+      }else assert.deepEqual(actual,expected,`${arm}:${step.state.tick}`);
     }
     assert.deepEqual(normalizeState(replayStateAt(replay,result.finalTick,true),true),normalizeState(result.finalState,true));
     verified.push({arm,prefixMatched:input.prefix.length,continuationMatched:trace.steps.length,
-      finalTickMatched:result.finalTick,modelCalls:0});
+      finalTickMatched:result.finalTick,modelCalls:0,startupPhaseOnlyDifferences});
   }
   write('smoke-verification.json',{status:'passed',verified,paidStarted:status().paidStarted});
   console.log('Both generated smoke recordings replay the prefix, continuation and final state exactly.');
@@ -344,8 +394,9 @@ async function verifySmoke(){
 export const usage = `npm run eval:reproduce -- <command> --output __data3/<experiment>
 Commands: prepare, preflight, smoke, verify-smoke, pair N, review, finish, status
 prepare requires --trace ID_OR_PREFIX --tick N
-Prepare options: --control-ref REF (HEAD), --fix-ref REF (local worktree), --paid-budget N (0; even, maximum 100),
-          --browser PATH (/usr/bin/chromium), --base-url URL (http://127.0.0.1:8283/)`;
+Prepare options: --control-source DIR (frozen source tree; overrides control ref), --control-ref REF (HEAD), --fix-ref REF (local worktree), --paid-budget N (0; even, maximum 100),
+          --browser PATH (/usr/bin/chromium), --base-url URL (http://127.0.0.1:8283/),
+          --early-stop N (optional: stop on collection, return to fork pose, or N decisions)`;
 
 export function parseArgs(args) {
   if (args.length === 1 && args[0] === '--help') return { help: true };
@@ -359,7 +410,8 @@ export function parseArgs(args) {
     assert(Number.isInteger(result.pair) && result.pair > 0, 'Pair number must be a positive integer');
   }
   const names = { '--output':'output', '--trace':'trace', '--tick':'tick',
-    '--control-ref':'controlRef', '--fix-ref':'fixRef', '--paid-budget':'paidBudget', '--browser':'browser', '--base-url':'baseUrl' };
+    '--control-source':'controlSource', '--control-ref':'controlRef', '--fix-ref':'fixRef', '--paid-budget':'paidBudget', '--browser':'browser', '--base-url':'baseUrl',
+    '--early-stop':'localProbeSteps' };
   const seen = new Set();
   while (index < args.length) {
     const flag = args[index++], key = names[flag], value = args[index++];
@@ -375,12 +427,18 @@ export function parseArgs(args) {
   assert(['localhost','127.0.0.1','[::1]'].includes(url.hostname), 'Frontend must be local');
   result.baseUrl = url.href;
   if (result.command === 'prepare') {
+    if(result.controlSource) result.controlSource=path.resolve(root,result.controlSource);
     assert(result.trace, '--trace is required');
     result.tick = Number(result.tick);
     assert(Number.isInteger(result.tick) && result.tick > 0, '--tick must be a positive integer decision boundary');
     result.paidBudget = Number(result.paidBudget);
     assert(Number.isInteger(result.paidBudget) && result.paidBudget >= 0 &&
       result.paidBudget <= 100 && result.paidBudget % 2 === 0, '--paid-budget must be even, 0..100');
+    if(result.localProbeSteps!==undefined){
+      result.localProbeSteps=Number(result.localProbeSteps);
+      assert(Number.isInteger(result.localProbeSteps)&&result.localProbeSteps>0&&result.localProbeSteps<=300,
+        '--early-stop must be 1..300');
+    }
   }
   return result;
 }
@@ -388,7 +446,8 @@ export function parseArgs(args) {
 export async function main(args = process.argv.slice(2)) {
   options = parseArgs(args);
   if (options.help) { console.log(usage); return; }
-  here = options.output; viteUrl = options.baseUrl;
+  here = options.output;
+  viteUrl = options.baseUrl;
   const command = options.command;
   if (command === 'prepare') {
     assert(!fs.existsSync(here), 'Choose a fresh output directory; existing evidence is never overwritten');
@@ -397,8 +456,10 @@ export async function main(args = process.argv.slice(2)) {
     return;
   }
   const manifest = read(path.join(here,'manifest.json'));
-  id = manifest.traceId; tick = manifest.forkTick;
-  options.browser = manifest.browser; viteUrl = manifest.baseUrl;
+  id = manifest.traceId;
+  tick = manifest.forkTick;
+  options.browser = manifest.browser;
+  viteUrl = manifest.baseUrl;
   if (command === 'status') { console.log(JSON.stringify(status(),null,2)); return; }
   assert(!fs.existsSync(path.join(here,'runner.lock')), 'A runner lock exists: inspect its owner; do not duplicate or remove it blindly');
   if (['preflight','smoke','verify-smoke','pair'].includes(command))

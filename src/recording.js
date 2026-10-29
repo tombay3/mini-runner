@@ -13,6 +13,36 @@ const PLAYBACK_VIDEO_MIME_TYPES = [
   "video/mp4;codecs=avc1.42E01E",
   "video/mp4",
 ];
+const RAIL_BUTTONS = [
+  {
+    action: "agent", icon: "✨", label: "Solve with AI agent",
+    title: "Solve this game with the AI agent",
+  },
+  {
+    action: "play", icon: "▶", label: "Play stored recording",
+    onClick: (state, event) => void playOrToggleCurrentRecording(state, event),
+  },
+  {
+    action: "prev", icon: "⏮", label: "Previous stored run",
+    onClick: (state) => selectAdjacentRecord(state, -1),
+  },
+  {
+    action: "next", icon: "⏭", label: "Next stored run",
+    onClick: (state) => selectAdjacentRecord(state, 1),
+  },
+  {
+    action: "delete", icon: "✕", label: "Delete stored recording",
+    onClick: (state) => void deleteCurrentRecording(state),
+  },
+  {
+    action: "god", icon: "★", label: "Toggle god mode",
+    onClick: (state) => toggleGodModeFromRail(state),
+  },
+  {
+    action: "fullscreen", icon: "⛶", label: "Toggle full screen",
+    onClick: (state) => void toggleFullscreenFromRail(state),
+  },
+];
 
 const agentController = createAgentController({
   apiFetch,
@@ -228,6 +258,10 @@ function copyArray(value) {
   return Array.isArray(value) ? value.slice() : [];
 }
 
+function arrayLength(value) {
+  return Array.isArray(value) ? value.length : 0;
+}
+
 function createOverlay(state) {
   const existing = document.getElementById(OVERLAY_ID);
   if (existing) {
@@ -241,64 +275,20 @@ function createOverlay(state) {
   overlay.id = OVERLAY_ID;
   overlay.className = "recording-rail";
   overlay.setAttribute("aria-label", "Recording");
-  overlay.innerHTML = `
-    <button
-      type="button"
-      class="recording-rail-button"
-      data-action="agent"
-      data-icon="✨"
-      aria-label="Solve with AI agent"
-      title="Solve this game with the AI agent"
-    ></button>
-    <button
-      type="button"
-      class="recording-rail-button"
-      data-action="play"
-      data-icon="▶"
-      aria-label="Play stored recording"
-      title="Play stored recording"
-    ></button>
-    <button
-      type="button"
-      class="recording-rail-button"
-      data-action="prev"
-      data-icon="⏮"
-      aria-label="Previous stored run"
-      title="Previous stored run"
-    ></button>
-    <button
-      type="button"
-      class="recording-rail-button"
-      data-action="next"
-      data-icon="⏭"
-      aria-label="Next stored run"
-      title="Next stored run"
-    ></button>
-    <button
-      type="button"
-      class="recording-rail-button"
-      data-action="delete"
-      data-icon="✕"
-      aria-label="Delete stored recording"
-      title="Delete stored recording"
-    ></button>
-    <button
-      type="button"
-      class="recording-rail-button"
-      data-action="god"
-      data-icon="★"
-      aria-label="Toggle god mode"
-      title="Toggle god mode"
-    ></button>
-    <button
-      type="button"
-      class="recording-rail-button"
-      data-action="fullscreen"
-      data-icon="⛶"
-      aria-label="Toggle full screen"
-      title="Toggle full screen"
-    ></button>
-  `;
+  for (const { action, icon, label, title = label, onClick } of RAIL_BUTTONS) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "recording-rail-button";
+    button.dataset.action = action;
+    button.dataset.icon = icon;
+    button.setAttribute("aria-label", label);
+    button.title = title;
+    state.els[action] = button;
+    if (onClick) {
+      button.addEventListener("click", (event) => onClick(state, event));
+    }
+    overlay.appendChild(button);
+  }
   document.body.appendChild(overlay);
   const debugBar = document.createElement("div");
   debugBar.className = "recording-debug-bar";
@@ -308,33 +298,6 @@ function createOverlay(state) {
 
   state.els.overlay = overlay;
   state.els.debugBar = debugBar;
-  state.els.play = overlay.querySelector("[data-action='play']");
-  state.els.prev = overlay.querySelector("[data-action='prev']");
-  state.els.next = overlay.querySelector("[data-action='next']");
-  state.els.delete = overlay.querySelector("[data-action='delete']");
-  state.els.agent = overlay.querySelector("[data-action='agent']");
-  state.els.god = overlay.querySelector("[data-action='god']");
-  state.els.fullscreen = overlay.querySelector("[data-action='fullscreen']");
-
-  state.els.play.addEventListener(
-    "click",
-    (event) => void playOrToggleCurrentRecording(state, event),
-  );
-  state.els.prev.addEventListener("click", () =>
-    selectAdjacentRecord(state, -1),
-  );
-  state.els.next.addEventListener("click", () =>
-    selectAdjacentRecord(state, 1),
-  );
-  state.els.delete.addEventListener(
-    "click",
-    () => void deleteCurrentRecording(state),
-  );
-  state.els.god.addEventListener("click", () => toggleGodModeFromRail(state));
-  state.els.fullscreen.addEventListener(
-    "click",
-    () => void toggleFullscreenFromRail(state),
-  );
   window.addEventListener(
     "keydown",
     (event) => handlePlaybackDebugKeyDown(state, event),
@@ -362,13 +325,7 @@ async function refreshWhenLevelChanges(state) {
   syncOverlayState(state);
   if (!gameLevel && state.currentGameLevel) {
     state.currentGameLevel = "";
-    state.currentRecord = null;
-    state.records = [];
-    state.selectedRecordIndex = 0;
-    state.selectedTraceSummary = null;
-    clearSelectedTraceTicks(state);
-    stopPlaybackVideoRecording(state, { download: false });
-    clearPlaybackDebugState(state);
+    clearRecordSelection(state, { stopPlayback: true });
     finishUiAction(state);
   }
 }
@@ -433,13 +390,7 @@ async function refreshStatus(state, force = false, preferredRecordId = null) {
   const context = getCurrentContext();
   if (!context) {
     state.currentGameLevel = "";
-    state.currentRecord = null;
-    state.records = [];
-    state.selectedRecordIndex = 0;
-    state.selectedTraceSummary = null;
-    clearSelectedTraceTicks(state);
-    stopPlaybackVideoRecording(state, { download: false });
-    clearPlaybackDebugState(state);
+    clearRecordSelection(state, { stopPlayback: true });
     finishUiAction(state);
     return;
   }
@@ -474,13 +425,7 @@ async function refreshStatus(state, force = false, preferredRecordId = null) {
     finishUiAction(state);
   } catch (error) {
     if (error.status === 404) {
-      state.currentRecord = null;
-      state.records = [];
-      state.selectedRecordIndex = 0;
-      state.selectedTraceSummary = null;
-      clearSelectedTraceTicks(state);
-      stopPlaybackVideoRecording(state, { download: false });
-      clearPlaybackDebugState(state);
+      clearRecordSelection(state, { stopPlayback: true });
       finishUiAction(state);
       return;
     }
@@ -507,10 +452,7 @@ function clearRecordSelection(state, { stopPlayback = false } = {}) {
 function setRecordList(state, records, preferredRecordId = null) {
   state.records = records;
   if (!records.length) {
-    state.selectedRecordIndex = 0;
-    state.currentRecord = null;
-    state.selectedTraceSummary = null;
-    clearSelectedTraceTicks(state);
+    clearRecordSelection(state);
     return;
   }
 
@@ -785,9 +727,9 @@ function startStoredDemo(state, demo, context) {
 function createPlaybackSaveGuard(demo, context) {
   return {
     gameLevel: formatGameLevel(context),
-    actionLength: copyArray(demo?.action).length,
-    goldDropLength: copyArray(demo?.goldDrop).length,
-    bornPosLength: copyArray(demo?.bornPos).length,
+    actionLength: arrayLength(demo?.action),
+    goldDropLength: arrayLength(demo?.goldDrop),
+    bornPosLength: arrayLength(demo?.bornPos),
     time: Number(demo?.time ?? 0),
     expiresAt: Date.now() + 10 * 60 * 1000,
   };
@@ -808,15 +750,11 @@ function isStoredPlaybackSave(state, playData, level, demoDataInfo) {
     return false;
   }
 
-  const actionLength = copyArray(demoDataInfo?.action).length;
-  const goldDropLength = copyArray(demoDataInfo?.goldDrop).length;
-  const bornPosLength = copyArray(demoDataInfo?.bornPos).length;
-  const time = Number(demoDataInfo?.time ?? 0);
   const matchesPlayedDemo =
-    actionLength === guard.actionLength &&
-    goldDropLength === guard.goldDropLength &&
-    bornPosLength === guard.bornPosLength &&
-    time === guard.time;
+    arrayLength(demoDataInfo?.action) === guard.actionLength &&
+    arrayLength(demoDataInfo?.goldDrop) === guard.goldDropLength &&
+    arrayLength(demoDataInfo?.bornPos) === guard.bornPosLength &&
+    Number(demoDataInfo?.time ?? 0) === guard.time;
 
   if (
     matchesPlayedDemo ||
@@ -930,13 +868,24 @@ function getRecordNavigationDelta(event) {
 }
 
 function canNavigateStoredRecords(state) {
-  return Boolean(
-    Array.isArray(state.records) &&
-    state.backendStatus === "online" &&
-    !state.agentRunning &&
-    !state.busyAction &&
-    state.playbackPhase === "inactive",
-  );
+  return canNavigateRecordFacts({
+    ...state,
+    recordCount: Array.isArray(state.records) ? state.records.length : 0,
+    autoDemoActive: isLegacyAutoDemoActive(),
+  });
+}
+
+function isLegacyAutoDemoActive() {
+  const playMode = Number(window.playMode);
+  return playMode === Number(window.PLAY_AUTO) ||
+    playMode === Number(window.PLAY_DEMO);
+}
+
+function canNavigateRecordFacts(facts) {
+  return facts.recordCount >= 2 &&
+    facts.backendStatus === "online" &&
+    !facts.agentRunning && !facts.busyAction &&
+    !facts.autoDemoActive && facts.playbackPhase === "inactive";
 }
 
 function canStartStoredPlaybackFromHotkey(state) {
@@ -1042,108 +991,61 @@ function resumeStoredPlayback(
   return true;
 }
 
-function stepStoredPlaybackSegment(state) {
-  if (state.playbackPhase !== "paused" || !isWrapperPlaybackActive(state)) {
-    return;
-  }
-
-  const startRecordIdx = getFiniteNumber(window.demoRecordIdx);
-  const startTick = getFiniteNumber(window.demoTickCount);
+function startPlaybackStep(state, phase, reachedTarget, timeoutMessage) {
   state.playbackStepStartedAt = performance.now();
-  resumeStoredPlayback(state, { showTip: false, phase: "step-action" });
+  resumeStoredPlayback(state, { showTip: false, phase });
   syncOverlayState(state);
 
   const pollStep = (now) => {
-    if (state.playbackPhase !== "step-action") {
-      return;
-    }
+    if (state.playbackPhase !== phase) return;
     if (!isWrapperPlaybackActive(state)) {
       clearPlaybackDebugState(state);
       syncOverlayState(state);
       return;
     }
-
-    const currentRecordIdx = getFiniteNumber(window.demoRecordIdx);
-    const currentTick = getFiniteNumber(window.demoTickCount);
-    const advancedByRecord =
-      startRecordIdx !== null &&
-      currentRecordIdx !== null &&
-      currentRecordIdx > startRecordIdx;
-    const advancedByTick =
-      startRecordIdx === null &&
-      startTick !== null &&
-      currentTick !== null &&
-      currentTick > startTick;
-    const timedOut =
-      now - state.playbackStepStartedAt >= PLAYBACK_STEP_TIMEOUT_MS;
-
-    if (advancedByRecord || advancedByTick || timedOut) {
+    const reached = reachedTarget();
+    const timedOut = now - state.playbackStepStartedAt >= PLAYBACK_STEP_TIMEOUT_MS;
+    if (reached || timedOut) {
       state.playbackStepRaf = 0;
       pauseStoredPlayback(state, { showTip: !timedOut });
       if (timedOut && typeof window.showTipsText === "function") {
-        window.showTipsText("DEMO STEP TIMEOUT", 2500);
+        window.showTipsText(timeoutMessage, 2500);
       }
       syncOverlayState(state);
       return;
     }
-
     state.playbackStepRaf = window.requestAnimationFrame(pollStep);
   };
-
   state.playbackStepRaf = window.requestAnimationFrame(pollStep);
 }
 
-function stepStoredPlaybackTraceStep(state) {
-  if (state.playbackPhase !== "paused" || !isWrapperPlaybackActive(state)) {
-    return;
-  }
+function stepStoredPlaybackSegment(state) {
+  if (state.playbackPhase !== "paused" || !isWrapperPlaybackActive(state)) return;
+  const startRecordIdx = getFiniteNumber(window.demoRecordIdx);
+  const startTick = getFiniteNumber(window.demoTickCount);
+  startPlaybackStep(state, "step-action", () => {
+    const currentRecordIdx = getFiniteNumber(window.demoRecordIdx);
+    const currentTick = getFiniteNumber(window.demoTickCount);
+    return (startRecordIdx !== null && currentRecordIdx !== null && currentRecordIdx > startRecordIdx)
+      || (startRecordIdx === null && startTick !== null && currentTick !== null && currentTick > startTick);
+  }, "DEMO STEP TIMEOUT");
+}
 
+function stepStoredPlaybackTraceStep(state) {
+  if (state.playbackPhase !== "paused" || !isWrapperPlaybackActive(state)) return;
   const targetTick = getNextTraceStepTargetTick(state);
   if (targetTick === null) {
     if (typeof window.showTipsText === "function") {
-      const message =
-        state.selectedTraceId === state.currentRecord?.traceId &&
-        state.selectedTraceTicks.length
-          ? "TRACE STEP END"
-          : "NO TRACE STEP DATA";
+      const message = state.selectedTraceId === state.currentRecord?.traceId && state.selectedTraceTicks.length
+        ? "TRACE STEP END" : "NO TRACE STEP DATA";
       window.showTipsText(message, 2500);
     }
     return;
   }
-
-  state.playbackStepStartedAt = performance.now();
-  resumeStoredPlayback(state, { showTip: false, phase: "step-trace" });
-  syncOverlayState(state);
-
-  const pollStep = (now) => {
-    if (state.playbackPhase !== "step-trace") {
-      return;
-    }
-    if (!isWrapperPlaybackActive(state)) {
-      clearPlaybackDebugState(state);
-      syncOverlayState(state);
-      return;
-    }
-
+  startPlaybackStep(state, "step-trace", () => {
     const currentTick = getFiniteNumber(window.demoTickCount);
-    const reachedTarget = currentTick !== null && currentTick >= targetTick;
-    const timedOut =
-      now - state.playbackStepStartedAt >= PLAYBACK_STEP_TIMEOUT_MS;
-
-    if (reachedTarget || timedOut) {
-      state.playbackStepRaf = 0;
-      pauseStoredPlayback(state, { showTip: !timedOut });
-      if (timedOut && typeof window.showTipsText === "function") {
-        window.showTipsText("TRACE STEP TIMEOUT", 2500);
-      }
-      syncOverlayState(state);
-      return;
-    }
-
-    state.playbackStepRaf = window.requestAnimationFrame(pollStep);
-  };
-
-  state.playbackStepRaf = window.requestAnimationFrame(pollStep);
+    return currentTick !== null && currentTick >= targetTick;
+  }, "TRACE STEP TIMEOUT");
 }
 
 function getFiniteNumber(value) {
@@ -1366,11 +1268,8 @@ function getPlaybackVideoExtension(mimeType) {
 
 function getPlaybackVideoShortId(value) {
   const rawValue = String(value || "playback");
-  const identifier = rawValue.includes("-")
-    ? rawValue.split("-", 1)[0]
-    : rawValue;
   return (
-    identifier
+    rawValue.split("-", 1)[0]
       .trim()
       .replace(/[^a-zA-Z0-9_-]+/g, "-")
       .replace(/^-+|-+$/g, "")
@@ -1590,12 +1489,7 @@ function syncPlaybackState(state) {
     return false;
   }
 
-  const context = getCurrentContext();
-  const matchesContext = Boolean(
-    context && formatGameLevel(context) === playbackGameLevel,
-  );
-  const isDemoOnce = Number(window.playMode) === Number(window.PLAY_DEMO_ONCE);
-  const active = matchesContext && isDemoOnce;
+  const active = isWrapperPlaybackActive(state);
 
   if (!active) {
     state.playbackGameLevel = "";
@@ -1613,8 +1507,18 @@ function deriveOverlayViewModel(facts) {
   const playbackPhase = facts.playbackPhase;
   const playbackActive = playbackPhase !== "inactive";
   const playbackPaused = playbackPhase === "paused";
-  const canNavigateRecords = facts.backendStatus === "online" &&
-    !facts.agentRunning && !busy && !playbackActive;
+  const canNavigateRecords = canNavigateRecordFacts(facts);
+  const navigationBlockedTitle = facts.autoDemoActive
+    ? "Stop auto-demo before selecting another run"
+    : playbackActive
+      ? "Stop playback before selecting another run"
+      : null;
+  const navigationButton = (direction) => ({
+    disabled: !canNavigateRecords,
+    title: navigationBlockedTitle || (canNavigateRecords
+      ? `Refresh runs and select ${direction} stored run`
+      : `No ${direction} stored run`),
+  });
   const playTitle =
     playbackPhase === "step-action"
       ? "Stepping to next recorded action"
@@ -1656,22 +1560,8 @@ function deriveOverlayViewModel(facts) {
         icon: playbackPaused ? "▶" : playbackActive ? "⏸" : "▶",
         title: playTitle,
       },
-      prev: {
-        disabled: !canNavigateRecords,
-        title: playbackActive
-          ? "Stop playback before selecting another run"
-          : canNavigateRecords
-            ? "Refresh runs and select previous stored run"
-            : "No previous stored run",
-      },
-      next: {
-        disabled: !canNavigateRecords,
-        title: playbackActive
-          ? "Stop playback before selecting another run"
-          : canNavigateRecords
-            ? "Refresh runs and select next stored run"
-            : "No next stored run",
-      },
+      prev: navigationButton("previous"),
+      next: navigationButton("next"),
       delete: {
         disabled:
           !facts.hasRecord ||
@@ -1701,34 +1591,44 @@ function deriveOverlayViewModel(facts) {
 }
 
 function syncOverlayState(state) {
-  const overlay = state.els.overlay;
-  if (!overlay) {
+  if (!state.els.overlay) {
     return;
   }
 
-  const hasRecord = Boolean(state.currentRecord);
   syncPlaybackState(state);
-  const playbackActive = state.playbackPhase !== "inactive";
-  const godModeActive = Number(window.godMode) === 1;
-  const godModeSupported = typeof window.toggleGodMode === "function";
-  const fullscreenActive = isFullscreenActive();
-  const fullscreenSupported = isFullscreenSupported();
-  const view = deriveOverlayViewModel({
+  const facts = collectOverlayFacts(state);
+  const view = deriveOverlayViewModel(facts);
+  applyOverlayView(state.els, view);
+  syncDebugBar(state);
+  if (facts.playbackPhase !== "inactive") {
+    startDebugBarRefresh(state);
+  } else {
+    stopDebugBarRefresh(state);
+  }
+}
+
+function collectOverlayFacts(state) {
+  return {
     uiError: state.uiError,
     busyAction: state.busyAction,
     backendStatus: state.backendStatus,
-    hasRecord,
+    hasRecord: Boolean(state.currentRecord),
     recordPinned: state.currentRecord?.pinned === true,
     recordCount: state.records.length,
+    autoDemoActive: isLegacyAutoDemoActive(),
     playbackPhase: state.playbackPhase,
     videoRecording: state.videoRecording,
     agentRunning: state.agentRunning,
     agentButtonState: agentController.getButtonState(state),
-    godModeActive,
-    godModeSupported,
-    fullscreenActive,
-    fullscreenSupported,
-  });
+    godModeActive: Number(window.godMode) === 1,
+    godModeSupported: typeof window.toggleGodMode === "function",
+    fullscreenActive: isFullscreenActive(),
+    fullscreenSupported: isFullscreenSupported(),
+  };
+}
+
+function applyOverlayView(elements, view) {
+  const overlay = elements.overlay;
   overlay.dataset.error = view.attributes.error ? "true" : "false";
   overlay.dataset.backendStatus = view.attributes.backendStatus;
   overlay.dataset.hasRecord = view.attributes.hasRecord ? "true" : "false";
@@ -1749,19 +1649,13 @@ function syncOverlayState(state) {
   }
 
   for (const [name, buttonState] of Object.entries(view.buttons)) {
-    const button = state.els[name];
+    const button = elements[name];
     button.disabled = buttonState.disabled;
     button.title = buttonState.title;
     button.setAttribute("aria-label", buttonState.title);
     if (buttonState.icon) {
       button.dataset.icon = buttonState.icon;
     }
-  }
-  syncDebugBar(state);
-  if (playbackActive) {
-    startDebugBarRefresh(state);
-  } else {
-    stopDebugBarRefresh(state);
   }
 }
 
@@ -1789,10 +1683,13 @@ function formatDebugOverlay(state) {
   return (
     `${state.selectedRecordIndex + 1}/${Math.max(state.records.length, 1)}: ` +
     [
-      formatRecordTraceId(record),
-      `${formatSavedAt(record.savedAt)}`,
-      formatRecordResult(record?.result),
-      `${formatDemoTime(record.demo?.time)}`,
+      [
+        formatRecordTraceId(record),
+        record.pinned === true ? "📌" : "",
+        formatRecordResult(record.result),
+      ].filter(Boolean).join(" "),
+      formatSavedAt(record.savedAt),
+      formatDemoTime(record.demo?.time),
       formatPlaybackProgress(state),
     ].join(" | ")
   );
@@ -1872,49 +1769,29 @@ function formatPlaybackProgress(state) {
   return `keys ${demoStepCount}`;
 }
 
-function getTracePlaybackProgress(state, total) {
-  if (
-    state.selectedTraceId !== state.currentRecord?.traceId ||
-    !state.selectedTraceTicks.length
-  ) {
-    return "-";
+function traceStepPosition(state, currentTick) {
+  if (state.selectedTraceId !== state.currentRecord?.traceId || !state.selectedTraceTicks.length) {
+    return null;
   }
-  const currentTick = getFiniteNumber(window.demoTickCount);
-  if (currentTick === null) {
-    return 0;
-  }
+  if (currentTick === null) return 0;
   let count = 0;
   for (const tick of state.selectedTraceTicks) {
-    if (tick > currentTick) {
-      break;
-    }
+    if (tick > currentTick) break;
     count += 1;
   }
-  return Math.min(Math.max(count, 0), total);
+  return count;
+}
+
+function getTracePlaybackProgress(state, total) {
+  const progress = traceStepPosition(state, getFiniteNumber(window.demoTickCount));
+  return progress === null ? "-" : Math.min(Math.max(progress, 0), total);
 }
 
 function getNextTraceStepTargetTick(state) {
-  if (
-    state.selectedTraceId !== state.currentRecord?.traceId ||
-    !state.selectedTraceTicks.length
-  ) {
-    return null;
-  }
   const currentTick = getFiniteNumber(window.demoTickCount);
-  if (currentTick === null) {
-    return null;
-  }
-  const progress = getTracePlaybackProgress(
-    state,
-    state.selectedTraceTicks.length,
-  );
-  if (
-    !Number.isInteger(progress) ||
-    progress >= state.selectedTraceTicks.length
-  ) {
-    return null;
-  }
-  return state.selectedTraceTicks[progress];
+  if (currentTick === null) return null;
+  const progress = traceStepPosition(state, currentTick);
+  return progress === null ? null : state.selectedTraceTicks[progress] ?? null;
 }
 
 function getDemoRecordProgress(total) {
@@ -1926,8 +1803,7 @@ function getDemoRecordProgress(total) {
 }
 
 function getDemoStepCount(demo) {
-  const action = Array.isArray(demo?.action) ? demo.action : [];
-  return Math.floor(action.length / 2);
+  return Math.floor(arrayLength(demo?.action) / 2);
 }
 
 function getPositiveInteger(value) {
@@ -1951,6 +1827,11 @@ async function apiFetch(url, options) {
 }
 
 export const _test = {
+  startPlaybackStep,
+  stepStoredPlaybackSegment,
+  stepStoredPlaybackTraceStep,
+  clearRecordSelection,
+  refreshStatus,
   buildRecordingDeleteConfirmation,
   buildPlaybackVideoFileName,
   canNavigateStoredRecords,

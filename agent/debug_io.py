@@ -2,19 +2,16 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
-import os
 from pathlib import Path
 from typing import Any
+
+from .logging_utils import debug_log_enabled
 
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 DEBUG_LOG_PATH = ROOT_DIR / "__data1" / "agent-debug.log"
 DEBUG_ENTRY_LIMIT = 10
 ENTRY_PREFIX = "===== agent-model-io "
-
-
-def is_debug_enabled() -> bool:
-    return os.environ.get("AGENT_DEBUG_LOG", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def utc_now() -> str:
@@ -28,7 +25,7 @@ def append_model_io_debug(
     prompt: str,
     response: Any,
 ) -> None:
-    if not is_debug_enabled():
+    if not debug_log_enabled():
         return
 
     DEBUG_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)

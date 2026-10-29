@@ -29,7 +29,13 @@ export function createAgentController(deps) {
     },
 
     bindButton(state, button) {
-      button.addEventListener("click", () => void toggleAgent(state, deps));
+      button.addEventListener("click", () => {
+        void toggleAgent(state, deps).catch((error) => {
+          state.agentLastError = getErrorMessage(error);
+          deps.finishUiAction(state, { error: true });
+          void deps.checkBackendHealth(state);
+        });
+      });
     },
 
     getButtonState(state) {
@@ -232,11 +238,7 @@ async function runAgent(state, deps) {
     deps.finishUiAction(state, { error: true });
     await deps.checkBackendHealth(state);
   } finally {
-    hooks.stop({ resumeTicker: false });
-    state.agentRunning = false;
-    state.agentAbort = null;
-    state.agentRunId = null;
-    deps.syncOverlayState(state);
+    cleanupAgentRun(state, deps, hooks);
   }
 }
 
@@ -260,11 +262,22 @@ async function finishAgentRun(
       hooks.getTerminalSnapshot?.() ?? hooks.snapshot?.(),
     );
   } finally {
+    cleanupAgentRun(state, deps, hooks);
+  }
+}
+
+function cleanupAgentRun(state, deps, hooks) {
+  try {
     hooks.stop({ resumeTicker: false });
+  } finally {
     state.agentRunning = false;
     state.agentAbort = null;
     state.agentRunId = null;
-    deps.syncOverlayState(state);
+    if (state.busyAction === "agent") {
+      deps.finishUiAction(state, { error: true });
+    } else {
+      deps.syncOverlayState(state);
+    }
   }
 }
 

@@ -14,7 +14,9 @@
     "notebook": "node scripts/notebook.mjs",
     "cohorts:check": "node scripts/check-cohorts.mjs",
     "trace:pin": "node scripts/trace-pin.mjs pin",
-    "trace:unpin": "node scripts/trace-pin.mjs unpin"
+    "trace:unpin": "node scripts/trace-pin.mjs unpin",
+    "test:regression": "node scripts/regression.mjs",
+    "data:check": "node scripts/sanity_traces.mjs"
   },
   "devDependencies": {
     "playwright-core": "^1.62.1",

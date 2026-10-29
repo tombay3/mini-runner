@@ -14,7 +14,8 @@ sys.path.insert(0, str(ROOT))
 
 from agent import AgentRequestError, validate_agent_request
 from agent.candidates import generate_candidates
-from agent.traces import serialize_step_trace
+from agent.prompt import build_state_context, format_candidate
+from agent.traces import serialize_step_trace, summarize_state
 import app as backend
 
 
@@ -32,6 +33,10 @@ def isolated_client():
 
 def check_requests(client):
     assert client.get("/api/health").get_json()["ok"] is True
+    for invalid in ([1], "invalid", 7, True, None):
+        response = client.post("/api/agent/next-action", json=invalid)
+        assert response.status_code == 400
+        assert isinstance(response.get_json().get("error"), str)
     payload = {"playData": 1, "level": 1, "snapshot": {"playData": 1, "level": 1}, "history": []}
     snapshot, history, _ = validate_agent_request(payload)
     assert snapshot["level"] == 1 and history == []
@@ -47,9 +52,9 @@ def check_recording_and_trace(client):
     trace_id = "smoke-run"
     step = {
         "playData": 1, "level": 1, "model": None, "config": None,
-        "state": {"tick": 0, "risk": "low"},
-        "action": {"keyCode": 39, "ticks": 4},
-        "candidates": [], "candidateEvents": [],
+        "state": {"tick": 0, "threat": {"risk": "low"}},
+        "issuedAction": {"keyCode": 39, "ticks": 4},
+        "candidates": [], "excludedProposals": [],
         "decision": {"requestedId": None, "selectedId": None, "rationale": "", "fallback": None},
         "loop": {"active": False, "type": None},
     }
@@ -109,17 +114,39 @@ def check_candidate_output():
             assert isinstance(candidate["id"], str)
             assert candidate["lane"] in {"safety", "progress", "environment"}
             assert type(candidate["score"]) in {int, float} and math.isfinite(candidate["score"])
-            action = candidate["firstAction"]
+            action = candidate["action"]
             assert action["keyCode"] in {32, 37, 38, 39, 40, 88, 90}
             assert type(action["ticks"]) is int and 1 <= action["ticks"] <= 20
         selected = pool[0]
         trace = serialize_step_trace(
-            snapshot=state, action=selected["firstAction"], candidates=pool,
+            snapshot=state, action=selected["action"], candidates=pool,
             selected_candidate=selected, analysis=analysis,
             validation={"requestedCandidateId": selected["id"], "fallbackUsed": False},
         )
         assert trace["decision"]["selectedId"] == selected["id"]
-        assert trace["action"] == {k: selected["firstAction"][k] for k in ("keyCode", "ticks")}
+        assert trace["issuedAction"] == {k: selected["action"][k] for k in ("keyCode", "ticks")}
+        for candidate, saved in zip(pool, trace["candidates"]):
+            assert saved["target"] == candidate["target"]
+            assert set(saved) == {"id", "kind", "lane", "score", "target", "reasons", "offeredAction"}
+            assert set(saved["offeredAction"]) == {"keyCode", "ticks", "name"}
+            assert saved["reasons"] == format_candidate(candidate)["reasons"]
+        assert trace["state"]["gold"]["remaining"] == state["goldCount"]
+        assert trace["state"]["threat"]["risk"] == analysis["risk"]["risk"]
+        assert "threat" not in summarize_state(state)
+        proposal = {"candidateId": "repeated", "kind": "climb_ladder",
+                    "disposition": "safety_rejection",
+                    "proposedAction": {"keyCode": 38, "ticks": 6}, "detail": "blocked"}
+        excluded = serialize_step_trace(
+            snapshot=state, action=selected["action"], candidates=pool,
+            analysis={**analysis, "candidateAudit": [proposal, proposal]},
+        )["excludedProposals"]
+        assert len(excluded) == 2
+        assert all(row["candidateId"] == "repeated" and
+                   row["proposedAction"] == proposal["proposedAction"] for row in excluded)
+        if state["guards"]:
+            guards = build_state_context(state, analysis)["threat"]["guardAssessments"]
+            assert len(guards) == len(state["guards"])
+            assert guards[0]["x"] == state["guards"][0]["x"]
         json.dumps(trace, allow_nan=False)
 
 

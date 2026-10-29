@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from .prompt import build_state_context, format_candidate
+from .prompt import build_state_context, carrying_gold, format_candidate
 
 
 def utc_now() -> str:
@@ -35,7 +35,7 @@ def summarize_state(snapshot: dict[str, Any], analysis: dict[str, Any] | None = 
         guards.append({
             **{key: guard.get(key) for key in ("id", "x", "y", "xOffset", "yOffset")},
             "action": guard.get("actionName", guard.get("action")),
-            "carryingGold": bool(guard.get("hasGold", False)),
+            "carryingGold": carrying_gold(guard.get("hasGold")),
         })
     context = build_state_context(snapshot, analysis)
     return {
@@ -48,30 +48,26 @@ def summarize_state(snapshot: dict[str, Any], analysis: dict[str, Any] | None = 
         },
         "guards": guards,
         "gold": {
-            "remainingCount": gold.get("remainingCount", snapshot.get("goldCount")),
+            "remaining": gold.get("remainingCount", snapshot.get("goldCount")),
             "complete": gold.get("complete", snapshot.get("goldComplete")),
-            "visiblePositions": context.get("gold", {}).get("visible", []) if analysis else
+            "visible": context.get("gold", {}).get("visible", []) if analysis else
                                 [{"x": item.get("x"), "y": item.get("y")}
                                  for item in gold.get("visiblePositions", []) if isinstance(item, dict)],
         },
-        "risk": _dict(analysis.get("risk")).get("risk", "unknown"),
         **({key: context.get(key, {}) for key in
-            ("primaryProgressTarget", "threat", "movement", "route")}
+            ("goldTarget", "exitTarget", "threat", "movement", "route")}
            if analysis else {}),
     }
 
 
 def summarize_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
-    action = _dict(candidate.get("firstAction"))
+    action = _dict(candidate.get("action"))
     context = format_candidate(candidate)
     return {
         **{key: candidate.get(key) for key in ("id", "kind", "lane", "score")},
         "target": context.get("target"),
-        "intents": context.get("intents", []),
-        "targets": context.get("targets", []),
         "reasons": context.get("reasons", []),
-        "firstAction": {**_action(action), "name": context["action"]["name"],
-                        "reason": _text(action.get("reason"))},
+        "offeredAction": {**_action(action), "name": context["offeredAction"]["name"]},
     }
 
 
@@ -94,8 +90,8 @@ def serialize_step_trace(
         if item.get("disposition") in {"exposed", "proposed"}:
             continue
         events.append({
-            "id": item.get("candidateId"), "kind": item.get("kind"),
-            "status": item.get("disposition"), "action": _action(item.get("proposedAction")),
+            "candidateId": item.get("candidateId"), "kind": item.get("kind"),
+            "status": item.get("disposition"), "proposedAction": _action(item.get("proposedAction")),
             "reason": _text(item.get("detail")),
         })
     return {
@@ -109,8 +105,8 @@ def serialize_step_trace(
             "fallback": {"code": "candidate_fallback", "message": _text(validation.get("fallbackReason"))}
                         if validation.get("fallbackUsed") else None,
         },
-        "action": _action(action),
+        "issuedAction": _action(action),
         "loop": {"active": bool(loop.get("active")), "type": loop.get("type") if loop.get("active") else None,
                  "suppressedCount": len(_dict((analysis or {}).get("loopReport", loop)).get("suppressedCandidates") or [])},
-        "candidateEvents": events,
+        "excludedProposals": events,
     }

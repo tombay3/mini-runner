@@ -57,16 +57,30 @@ step, and terminal evidence; a mismatch is an evaluation failure.
 boundary, verifies the state/history, then can continue with normal model calls.
 The prefix is reproducible; model choices and native guard events after handoff
 remain variable. Control uses `--control-ref` (default `HEAD`); fix uses the local
-worktree unless `--fix-ref` selects an immutable revision. Both need the current
+worktree unless `--fix-ref` selects an immutable revision. For an uncommitted frozen
+baseline, `--control-source DIR` overrides the control ref and copies the explicit
+backend/config/prompt source files from that directory. Its revision is recorded as
+unknown (`null`); content hashes identify the copied arm. Both need the current
 V4 backend. Normal mode and god mode are supported. Recording, trace, and
 replayed game must agree on mode and Classic 1:1. Continuation checks mode/context
 before each request and after each action, and verifies recording mode before
 saving. Smoke replay distinguishes a natural terminal from a running decision
 boundary at the same tick. Original stores remain read-only.
 
-Focused offline checks: `node scripts/hybrid-runtime.mjs --test`.
-They cover both modes, context mismatches, terminal boundaries, and startup
-failures. Owned Vite is cleaned up even if browser shutdown fails.
+Focused offline checks: `npm run test:regression` (shared Python and JavaScript suites).
+
+For a bounded local decision comparison, prepare with `--early-stop N`.
+Both paid arms stop after gold collection, returning to the exact fork runner
+pose after movement without gold progress, or N continuation decisions. The
+bound is frozen in the experiment manifest and does not change the configured
+total gameplay limits. Stops finalize partial recordings for replay verification;
+returning to a pose is a probe endpoint, not proof of an unsafe or persistent loop.
+For historical traces with an extra tick-zero `waiting` observation, smoke
+verification reports that UI-phase difference separately while still requiring
+identical actors, gold, mode and context. Every positive-tick gameplay boundary
+and the final state must match exactly.
+The offline regressions cover both modes, context mismatches, terminal boundaries,
+and startup failures. Owned Vite is cleaned up even if browser shutdown fails.
 
 ```sh
 npm run eval:reproduce -- prepare --trace <trace-id-or-prefix> --tick <tick> \
@@ -79,8 +93,7 @@ checks before `pair 1`, the only command that starts paid continuations. The
 budget defaults to zero and is frozen at preparation; each continuation may
 make multiple requests. Model/profile must match the historical trace.
 
-Paid execution needs explicit budget and provider-data approval. Ask the owner
-to stop any existing Flask backend; the tool starts its own isolated backend,
+Paid execution needs explicit budget and provider-data approval. Follow the workstream's authorization to stop an existing Flask backend; the tool starts its own isolated backend,
 reuses running Vite, and keeps Chromium sandboxed. Generated source snapshots,
 traces, recordings and file-based `status` stay under ignored `__data3`.
 Snapshots contain private environment links; do not publish entire directories.

@@ -20,8 +20,7 @@ The rail is wrapper-owned UI and does not modify legacy menus.
 ### State And Availability
 
 The wrapper derives button state from the current game level, selected recording, active
-operation, playback phase, and backend availability. The composite game-level identity is
-named `currentGameLevel` and formatted as `<playData>:<level>`, for example `1:1`.
+operation, playback phase, and backend availability. State uses `currentGameLevel` to identify `<playData>:<level>`, such as `1:1`.
 
 - `AI` is disabled while backend availability is offline.
 - Clicking an active red `AI` button cancels the current agent run.
@@ -42,7 +41,7 @@ The wrapper loads `GET /api/recordings/<playData>/<level>/records` and keeps a s
 
 - Records are sorted newest-first.
 - Manual completions are saved as user records; agent completions are saved only by the agent flow.
-- Prev/next cycles through retained records.
+- Prev/next buttons and Tab/Shift-Tab shortcuts cycles through retained records
 - Play and delete operate on the selected record.
 - Delete asks for confirmation before sending the selected record id; agent record ids are their trace ids.
 
@@ -64,8 +63,12 @@ video recording.
 ## Debug Overlay
 The top debug line appears as UI overlay when a stored run is selected, except while an AI run is
 being recorded. It shows selected-run metadata and playback progress.
+The ribbon groups the run ID, optional `📌` pin marker, and result icon before the saved time,
+demo duration, and playback progress: `1/9: b86760a1 📌 ✅ | 10-25 01:14 | 0:49 | steps 149`.
 
-For agent recordings, progress is aligned by comparing `window.demoTickCount` with trace step ticks loaded from `/api/agent/traces/<traceId>`. For user recordings without traces, progress uses the legacy demo action cursor: `keys <demoRecordIdx>/<demo.action.length / 2>`.
+Agent playback compares `window.demoTickCount` with ticks loaded from
+`/api/agent/traces/<traceId>`. User playback uses the demo action cursor:
+`keys <demoRecordIdx>/<demo.action.length / 2>`.
 
 ## Playback Debug Controls
 Keyboard shortcuts (hotkeys) control the selected stored recording:
@@ -76,7 +79,8 @@ Keyboard shortcuts (hotkeys) control the selected stored recording:
 - `,`: while paused, advance one recorded key/action segment (`demo.action` in `recordings.json`) → pause again.
 - `.`: while paused, advance one trace step (`run.steps` in `agent-traces.json`) → pause again.
 
-Trace stepping is aligned by trace step tick, which can cross zero, one, or many recorded demo action segments because trace steps and demo key events are different timelines.
+Trace steps and demo key events have different boundaries. One trace step may
+cross zero, one, or several recorded action segments.
 
 ## Fullscreen Restart
 The legacy game computes canvas and icon geometry during `init()`. Entering or leaving fullscreen

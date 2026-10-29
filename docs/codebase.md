@@ -11,7 +11,7 @@ short actions, and save the result.
 - `app.py`: Flask API for recordings, traces, model calls, and local JSON stores.
 - `agent/*`: candidate-agent backend analysis, prompting, model calls, traces, and loop filtering.
 - `trace-dash.py`: read-only Streamlit and pandas trace dashboard.
-- `scripts/*`: direct sanity checks, real-browser agent evaluator, and development launchers.
+- `scripts/*`: smoke/regression checks, browser evaluator, hybrid reproducer, and launchers.
 - `trace-analytics.ipynb`: read-only trace analytics notebook.
 
 ### Bootstrap Flow
@@ -89,9 +89,8 @@ The frontend provides:
 
 ### Runtime Flow
 
-Legacy snapshot → deterministic analysis → legal candidate generation/scoring → LLM selects
-`candidateId` → generic validation fallback → legacy `keyCode`/`ticks` execution →
-recording and trace persistence.
+Snapshot → analysis and candidates → model selects `candidateId` → backend validation
+→ engine executes `keyCode`/`ticks` → recording and trace storage.
 
 1. [src/agent.js](../src/agent.js) starts the configured game context through [public/game/lodeRunner.agentHooks.js](../public/game/lodeRunner.agentHooks.js).
 2. The hook starts the legacy game in Training/Modern playback context, stops the normal ticker, and exposes manual `snapshot()` / `step()` control.
@@ -117,14 +116,13 @@ the decision flow.
 
 ### Backend Modules
 
-- [agent/config.py](../agent/config.py): constants, allowed keycodes, model normalization, default model lookup.
+- [agent/config.py](../agent/config.py): config defaults, provider profiles, model resolution, and environment loading.
 - [agent/service.py](../agent/service.py): request validation, `aisuite` client wrapper, one model call, candidate selection, and generic validation fallback.
 - [agent/candidates.py](../agent/candidates.py): normalized analysis and candidate generation/ranking.
 - [agent/reasoning_tools.py](../agent/reasoning_tools.py): deterministic snapshot helpers for movement, guard pressure, digging, route access, and progress facts.
 - [agent/loop_tools.py](../agent/loop_tools.py): compact stationary, horizontal, and vertical cycle detection plus candidate suppression.
 - [agent/prompt.py](../agent/prompt.py): compact candidate-selection prompt.
-- [agent/traces.py](../agent/traces.py): compact trace serialization for `state`, candidates,
-  selection, validation, action, and loop-monitor evidence.
+- [agent/traces.py](../agent/traces.py): compact state, candidates, decisions, actions, loop status, and nonexposed events.
 - [agent/errors.py](../agent/errors.py): request/config/execution error types.
 - [agent/logging_utils.py](../agent/logging_utils.py): low-noise Python logging setup.
 

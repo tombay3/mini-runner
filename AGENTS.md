@@ -20,6 +20,7 @@
 - `__data1/recordings.json` and `__data1/agent-traces.json` use flat stores. Recordings retain all pinned runs plus the newest 10 unpinned runs; traces retain runs linked by pinned recordings plus the newest 10 other runs. Agent recording IDs match their trace IDs.
 - Do not rewrite generated data unless the task explicitly targets runtime data or schemas.
 - New traces do not store Git provenance. Record it in a launch manifest before experiments and link it through the cohort catalog; otherwise mark it unknown.
+- Pin new agent runs created during evaluations or experiments by default, unless the user requests otherwise. Use the recording pin API/CLI after persistence; recordings remain the pin authority.
 - Before trace/cohort review, run `npm run cohorts:check` (read-only). Report uncataloged runs or stale links rather than assuming the catalog is complete. See `docs/trace-cohort.md` for catalog maintenance.
 - When a requested run-review or campaign includes cataloging, reconcile with `npm run cohorts:check -- --write`, record evidence-backed provenance/classification for the reviewed run, and check again before reporting completion. Never infer a historical source revision from current HEAD. Pin changes require no catalog edit.
 
@@ -27,6 +28,7 @@
 
 - Inspect the affected code before editing and preserve unrelated worktree changes.
 - Prefer focused changes; update the relevant existing document when public behavior, APIs, config, or schemas change.
+- Choose commit buckets by intent: `Candidate:` is for experimental proposals; concrete bug fixes use `Fix:`. See [commit buckets](docs/llm-agent.md#commit-buckets).
 - Keep `npm test` smoke-only, with shared small fixtures; avoid source-code inspection, exact wording assertions, and exhaustive gameplay matrices. Passing it does not establish gameplay improvement.
 - Run `npm test`, `npm run build` for frontend changes, and Python compilation checks for backend changes.
 - Run `git diff --check` before handoff, and report any checks that could not run.

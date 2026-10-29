@@ -11,6 +11,31 @@ from .reasoning_tools import (
 )
 
 
+KNOWN_CANDIDATE_KINDS = (
+    "collect_same_row_gold",
+    "collect_current_tile_gold",
+    "route_access_follow",
+    "route_access_dig",
+    "retreat_from_guard",
+    "escape_through_open_hole",
+    "evade_edge_ladder",
+    "evade_open_hole",
+    "exit_ladder_route",
+    "defensive_dig",
+    "climb_ladder",
+    "align_ladder",
+    "descend_route",
+    "wait_and_recheck",
+    "wait_for_guard_clearance",
+    "wait_for_floor_refill",
+    "wait_for_dig_completion",
+    "wait_for_trap_resolution",
+    "emergency_hold",
+    "god_mode_progress",
+    "low_risk_horizontal_progress",
+)
+
+
 ENVIRONMENT_PROGRESS_KINDS = {
     "emergency_hold",
     "retreat_from_guard",
@@ -23,19 +48,34 @@ ENVIRONMENT_PROGRESS_KINDS = {
 def build_loop_report(
     analysis: dict[str, Any], history: list[dict[str, Any]], window: int = 10
 ) -> dict[str, Any]:
-    recent = [item for item in history[-window:] if isinstance(item, dict)]
-    positions = collect_positions(recent)
-    candidate_ids = collect_candidate_ids(recent)
-    key_codes = collect_key_codes(recent)
-    gold_counts = collect_gold_counts(recent)
+    # A gap breaks the evidence window: skipping it could join unrelated actions
+    # or manufacture a cycle across an unobserved transition.
+    recent, positions, candidate_ids, key_codes, gold_counts = [], [], [], [], []
+    for item in reversed(history[-window:]):
+        if not isinstance(item, dict):
+            break
+        candidate_id = item.get("candidateId")
+        key_code = to_int(item.get("keyCode"))
+        after = dict_value(item.get("after"))
+        position = runner_position(after)
+        gold_count = to_int(after.get("goldCount"))
+        if not isinstance(candidate_id, str) or key_code is None or position is None or gold_count is None:
+            break
+        recent.append(item)
+        positions.append(position)
+        candidate_ids.append(candidate_id)
+        key_codes.append(key_code)
+        gold_counts.append(gold_count)
+    for values in (recent, positions, candidate_ids, key_codes, gold_counts):
+        values.reverse()
     repeated_id = candidate_ids[-1] if candidate_ids else None
-    repeated_kind = candidate_kind(repeated_id)
+    candidate_kinds = [candidate_kind(candidate_id) for candidate_id in candidate_ids]
+    repeated_kind = candidate_kinds[-1] if candidate_kinds else None
     repeated_progress = assess_repeated_candidate_progress(recent, repeated_id)
     same_candidate_streak = count_tail_equal(candidate_ids)
     environment_progress = repeated_kind in ENVIRONMENT_PROGRESS_KINDS
     environment_progress_count = sum(
-        candidate_kind(candidate_id) in ENVIRONMENT_PROGRESS_KINDS
-        for candidate_id in candidate_ids
+        kind in ENVIRONMENT_PROGRESS_KINDS for kind in candidate_kinds
     )
     environment_progress_dominated = bool(
         environment_progress_count >= 3
@@ -58,28 +98,25 @@ def build_loop_report(
     row_values = {y for _x, y in positions}
     x_values = [x for x, _y in positions]
     no_row_change = len(row_values) == 1
-    no_gold_change = len(set(gold_counts)) <= 1 if gold_counts else True
+    no_gold_change = report["evidence"]["noGoldChange"]
     x_range = max(x_values) - min(x_values)
     direction_changes = count_direction_changes(key_codes)
     same_tile_streak = count_tail_equal(positions)
     stop_streak = count_tail_equal(key_codes) if key_codes[-1:] == [STOP_KEYCODE] else 0
     recent_horizontal_cycle = detect_recent_horizontal_cycle(positions, key_codes)
     safety_retreat_count = sum(
-        candidate_kind(candidate_id) == "retreat_from_guard"
-        for candidate_id in candidate_ids
+        kind == "retreat_from_guard" for kind in candidate_kinds
     )
     safety_retreat_dominated = bool(
         safety_retreat_count >= 3
         and safety_retreat_count * 2 > len(candidate_ids)
     )
     horizontal_cycle = (
-        no_row_change
-        and no_gold_change
+        no_gold_change
         and not environment_progress
-        and repeated_kind != "retreat_from_guard"
         and not safety_retreat_dominated
         and (
-            (len(positions) >= 6 and x_range <= 4 and direction_changes >= 4)
+            (no_row_change and len(positions) >= 6 and x_range <= 4 and direction_changes >= 4)
             or recent_horizontal_cycle
         )
     )
@@ -88,36 +125,18 @@ def build_loop_report(
         key_codes=key_codes,
         candidate_ids=candidate_ids,
         no_gold_change=no_gold_change,
-        primary_target=dict_value(analysis.get("primaryProgressTarget")),
+        gold_target=dict_value(analysis.get("goldTarget")),
         movement=dict_value(analysis.get("movement")),
     )
     stationary_repeat = (
-        no_gold_change
-        and no_row_change
-        and repeated_id is not None
-        and (
-            (
-                not environment_progress
-                and not environment_progress_dominated
-            )
-            or (
-                repeated_kind == "emergency_hold"
-                and same_tile_streak >= 6
-                and any(
-                    candidate_kind(candidate_id) == "wait_and_recheck"
-                    for candidate_id in candidate_ids[-6:]
-                )
-            )
-        )
-        and (
-            (repeated_kind == "route_access_dig" and same_candidate_streak >= 2)
-            or (repeated_kind == "wait_and_recheck" and stop_streak >= 3)
-            or (
-                same_candidate_streak >= 4
-                and not repeated_progress["madeProgress"]
-                and not repeated_progress["targetReached"]
-            )
-            or same_tile_streak >= 6
+        no_gold_change and no_row_change and repeated_id is not None
+        and _is_stationary_repeat(
+            candidate_kinds=candidate_kinds,
+            environment_progress_dominated=environment_progress_dominated,
+            same_tile_streak=same_tile_streak,
+            same_candidate_streak=same_candidate_streak,
+            stop_streak=stop_streak,
+            repeated_progress=repeated_progress,
         )
     )
 
@@ -160,9 +179,18 @@ def build_loop_report(
     suppress_kinds: list[str] = []
     suppress_directions: list[str] = []
     preserve_safety_retreat = repeated_kind == "retreat_from_guard"
+    if loop_type == "horizontal_cycle":
+        # Suppression needs subtile motion; public target-distance observations
+        # and loop detection intentionally remain tile-based.
+        report["evidence"]["horizontalOffsetProgress"] = (
+            _made_horizontal_offset_progress(recent, repeated_id)
+        )
     preserve_horizontal_progress = bool(
         loop_type == "horizontal_cycle"
-        and repeated_progress["madeProgress"]
+        and (
+            repeated_progress["madeProgress"]
+            or report["evidence"].get("horizontalOffsetProgress")
+        )
         and not repeated_progress["targetReached"]
     )
     if repeated_id and not preserve_safety_retreat and not preserve_horizontal_progress:
@@ -184,6 +212,33 @@ def build_loop_report(
     return report
 
 
+def _is_stationary_repeat(
+    *, candidate_kinds: list[str | None], environment_progress_dominated: bool,
+    same_tile_streak: int, same_candidate_streak: int, stop_streak: int,
+    repeated_progress: dict[str, Any],
+) -> bool:
+    repeated_kind = candidate_kinds[-1]
+    emergency_repeat = (
+        repeated_kind == "emergency_hold"
+        and same_tile_streak >= 6
+        and "wait_and_recheck" in candidate_kinds[-6:]
+    )
+    if not emergency_repeat and (
+        repeated_kind in ENVIRONMENT_PROGRESS_KINDS or environment_progress_dominated
+    ):
+        return False
+    return (
+        (repeated_kind == "route_access_dig" and same_candidate_streak >= 2)
+        or (repeated_kind == "wait_and_recheck" and stop_streak >= 3)
+        or (
+            same_candidate_streak >= 4
+            and not repeated_progress["madeProgress"]
+            and not repeated_progress["targetReached"]
+        )
+        or same_tile_streak >= 6
+    )
+
+
 def candidate_suppression_reason(
     candidate: dict[str, Any], loop_report: dict[str, Any]
 ) -> str | None:
@@ -201,7 +256,10 @@ def candidate_suppression_reason(
     if (
         loop_report.get("type") == "horizontal_cycle"
         and candidate_id == evidence.get("repeatedCandidateId")
-        and evidence.get("targetProgress") is True
+        and (
+            evidence.get("targetProgress") is True
+            or evidence.get("horizontalOffsetProgress") is True
+        )
         and evidence.get("targetReached") is not True
     ):
         return None
@@ -219,6 +277,8 @@ def candidate_suppression_reason(
         loop_target = loop_report.get("target") or dict_value(
             loop_report.get("evidence")
         ).get("target")
+        if isinstance(loop_target, dict):
+            loop_target = (to_int(loop_target.get("x")), to_int(loop_target.get("y")))
         if (
             target is not None
             and isinstance(loop_target, (list, tuple))
@@ -343,7 +403,7 @@ def detect_vertical_cycle(
     key_codes: list[int],
     candidate_ids: list[str],
     no_gold_change: bool,
-    primary_target: dict[str, Any],
+    gold_target: dict[str, Any],
     movement: dict[str, Any],
 ) -> dict[str, Any]:
     if len(positions) < 6 or not no_gold_change:
@@ -362,10 +422,7 @@ def detect_vertical_cycle(
     if len(x_values) != 1 or len(set(y_values)) not in {2, 3} or len(vertical_keys) < 6:
         return {"detected": False}
     direction_runs = collapse_direction_runs(vertical_keys)
-    alternating_runs = len(direction_runs) >= 4 and all(
-        direction_runs[index] != direction_runs[index - 1]
-        for index in range(1, len(direction_runs))
-    )
+    alternating_runs = len(direction_runs) >= 4
     ladder_actions = bool(candidate_ids) and all(
         candidate_kind(candidate_id)
         in {"climb_ladder", "descend_route", "retreat_from_guard"}
@@ -380,9 +437,9 @@ def detect_vertical_cycle(
             if candidate_kind(candidate_id) in {"climb_ladder", "descend_route"}
         }
     )
-    target_y = to_int(primary_target.get("y"))
+    target_y = to_int(gold_target.get("y"))
     preferred = "up" if target_y is not None and target_y < current_y else "down" if target_y is not None and target_y > current_y else None
-    direction = primary_target.get("direction")
+    direction = gold_target.get("direction")
     exit_direction = (
         direction
         if direction in {"left", "right"}
@@ -447,8 +504,8 @@ def assess_repeated_candidate_progress(
     end = runner_position(dict_value(repeated_tail[-1].get("after"))) if repeated_tail else None
     if start is None or end is None:
         return result
-    start_distance = candidate_distance(candidate_id, start, target)
-    end_distance = candidate_distance(candidate_id, end, target)
+    start_distance = candidate_distance(start, target)
+    end_distance = candidate_distance(end, target)
     result.update(
         {
             "startDistance": start_distance,
@@ -460,11 +517,46 @@ def assess_repeated_candidate_progress(
     return result
 
 
+def _made_horizontal_offset_progress(
+    recent: list[dict[str, Any]], candidate_id: str | None
+) -> bool:
+    target = candidate_target(candidate_id)
+    if target is None:
+        return False
+    tail = []
+    for item in reversed(recent):
+        if item.get("candidateId") != candidate_id:
+            break
+        if item.get("keyCode") not in {LEFT_KEYCODE, RIGHT_KEYCODE}:
+            return False
+        tail.append(item)
+    if not tail:
+        return False
+    before = dict_value(dict_value(tail[-1].get("before")).get("runner"))
+    after = dict_value(dict_value(tail[0].get("after")).get("runner"))
+    # Missing offsets must not manufacture progress or weaken suppression.
+    if any(
+        type(actor.get(key)) is not int
+        for actor in (before, after)
+        for key in ("x", "y", "xOffset", "yOffset")
+    ):
+        return False
+    if (
+        before["y"] != target[1] or after["y"] != target[1]
+        or before["yOffset"] != after["yOffset"]
+    ):
+        return False
+    start = abs((target[0] - before["x"]) * 40 - before["xOffset"])
+    end = abs((target[0] - after["x"]) * 40 - after["xOffset"])
+    return end < start
+
+
 def find_cycle_target(
     analysis: dict[str, Any], positions: list[tuple[int, int]]
 ) -> dict[str, Any] | None:
     xs = [x for x, _y in positions]
     row = positions[-1][1]
+    min_x, max_x = min(xs), max(xs)
     for kind, items in (
         ("ladder", analysis.get("rowLadders") or []),
         ("gold", analysis.get("nearestGold") or []),
@@ -472,7 +564,7 @@ def find_cycle_target(
         for item in items:
             x = to_int(item.get("x"))
             y = to_int(item.get("y"))
-            if x is not None and y == row and min(xs) <= x <= max(xs):
+            if x is not None and y == row and min_x <= x <= max_x:
                 return {"x": x, "y": y, "kind": kind}
     return None
 
@@ -499,47 +591,22 @@ def candidate_target(candidate_id: str | None) -> tuple[int, int] | None:
 
 
 def candidate_distance(
-    candidate_id: str, position: tuple[int, int], target: tuple[int, int]
+    position: tuple[int, int], target: tuple[int, int]
 ) -> int:
-    if candidate_kind(candidate_id) == "align_ladder" and position[1] == target[1]:
-        return abs(position[0] - target[0])
     return abs(position[0] - target[0]) + abs(position[1] - target[1])
 
 
 def candidate_kind(candidate_id: str | None) -> str | None:
     if not candidate_id:
         return None
-    known_kinds = [
-        "collect_same_row_gold",
-        "collect_current_tile_gold",
-        "route_access_follow",
-        "route_access_dig",
-        "retreat_from_guard",
-        "escape_through_open_hole",
-        "evade_edge_ladder",
-        "evade_open_hole",
-        "exit_ladder_route",
-        "defensive_dig",
-        "climb_ladder",
-        "align_ladder",
-        "descend_route",
-        "wait_and_recheck",
-        "wait_for_guard_clearance",
-        "wait_for_floor_refill",
-        "wait_for_dig_completion",
-        "wait_for_trap_resolution",
-        "emergency_hold",
-        "god_mode_progress",
-        "low_risk_horizontal_progress",
-    ]
-    for kind in known_kinds:
+    for kind in KNOWN_CANDIDATE_KINDS:
         if candidate_id == kind or candidate_id.startswith(f"{kind}_"):
             return kind
     return candidate_id.rsplit("_", 1)[0]
 
 
 def action_direction(candidate: dict[str, Any]) -> str | None:
-    key_code = to_int(dict_value(candidate.get("firstAction")).get("keyCode"))
+    key_code = to_int(dict_value(candidate.get("action")).get("keyCode"))
     return {
         LEFT_KEYCODE: "left",
         RIGHT_KEYCODE: "right",
@@ -549,44 +616,22 @@ def action_direction(candidate: dict[str, Any]) -> str | None:
     }.get(key_code)
 
 
-def collect_positions(recent: list[dict[str, Any]]) -> list[tuple[int, int]]:
-    positions: list[tuple[int, int]] = []
-    for item in recent:
-        position = runner_position(dict_value(item.get("after")))
-        if position is not None:
-            positions.append(position)
-    return positions
-
-
-def collect_gold_counts(recent: list[dict[str, Any]]) -> list[int]:
-    values: list[int] = []
-    for item in recent:
-        value = to_int(dict_value(item.get("after")).get("goldCount"))
-        if value is not None:
-            values.append(value)
-    return values
-
-
-def collect_candidate_ids(recent: list[dict[str, Any]]) -> list[str]:
-    return [item["candidateId"] for item in recent if isinstance(item.get("candidateId"), str)]
-
-
-def collect_key_codes(recent: list[dict[str, Any]]) -> list[int]:
-    return [value for item in recent if (value := to_int(item.get("keyCode"))) is not None]
+def runner_coordinates(
+    runner: dict[str, Any], *, include_offsets: bool = False,
+) -> tuple[int | None, ...]:
+    fields = ("x", "y", "xOffset", "yOffset") if include_offsets else ("x", "y")
+    return tuple(to_int(runner.get(field)) for field in fields)
 
 
 def runner_position(state: dict[str, Any]) -> tuple[int, int] | None:
     runner = dict_value(state.get("runner"))
-    x = to_int(runner.get("x"))
-    y = to_int(runner.get("y"))
+    x, y = runner_coordinates(runner)
     return (x, y) if x is not None and y is not None else None
 
 
 def count_direction_changes(key_codes: list[int]) -> int:
     horizontal = [key for key in key_codes if key in {LEFT_KEYCODE, RIGHT_KEYCODE}]
-    return sum(
-        1 for index in range(1, len(horizontal)) if horizontal[index] != horizontal[index - 1]
-    )
+    return max(0, len(collapse_direction_runs(horizontal)) - 1)
 
 
 def count_tail_equal(items: list[Any]) -> int:

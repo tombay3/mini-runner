@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import Any
 
 
@@ -26,18 +27,19 @@ def _get_runner(snapshot: dict[str, Any]) -> dict[str, Any]:
     return runner if isinstance(runner, dict) else {}
 
 
-def _get_terrain_grid(snapshot: dict[str, Any]) -> list[str]:
-    rows = snapshot.get("terrainGrid") or []
+def _get_grid(snapshot: dict[str, Any], field: str) -> list[str]:
+    rows = snapshot.get(field) or []
     if not isinstance(rows, list):
         return []
     return [row if isinstance(row, str) else str(row) for row in rows]
+
+
+def _get_terrain_grid(snapshot: dict[str, Any]) -> list[str]:
+    return _get_grid(snapshot, "terrainGrid")
 
 
 def _get_active_grid(snapshot: dict[str, Any]) -> list[str]:
-    rows = snapshot.get("grid") or []
-    if not isinstance(rows, list):
-        return []
-    return [row if isinstance(row, str) else str(row) for row in rows]
+    return _get_grid(snapshot, "grid")
 
 
 def _is_gold_complete(snapshot: dict[str, Any]) -> bool:
@@ -158,20 +160,25 @@ def _display_tile(tile: str | None) -> str:
     return "." if tile == " " else tile
 
 
-def _visible_gold_set(snapshot: dict[str, Any]) -> set[tuple[int, int]]:
+def _gold_position_set(snapshot: dict[str, Any]) -> set[tuple[int, int]]:
     return {(item["x"], item["y"]) for item in _get_gold_positions(snapshot)}
 
 
-def _guard_position_set(snapshot: dict[str, Any]) -> set[tuple[int, int]]:
-    positions = set()
+def _guards_with_coordinates(
+    snapshot: dict[str, Any],
+) -> Iterator[tuple[dict[str, Any], int, int]]:
+    """Yield observed guards with valid coordinates, preserving their order."""
     for guard in snapshot.get("guards") or []:
         if not isinstance(guard, dict):
             continue
         x = _to_int(guard.get("x"))
         y = _to_int(guard.get("y"))
         if x is not None and y is not None:
-            positions.add((x, y))
-    return positions
+            yield guard, x, y
+
+
+def _guard_position_set(snapshot: dict[str, Any]) -> set[tuple[int, int]]:
+    return {(x, y) for _guard, x, y in _guards_with_coordinates(snapshot)}
 
 
 def _can_enter_tile(
@@ -321,6 +328,13 @@ def get_ladder_affordance(
     elif adjacent and nearest:
         recommended_action = nearest["direction"]
 
+    def ladder_destination() -> str:
+        return (
+            f"entry above ({nearest['x']},{nearest['ladderY']})"
+            if nearest.get("entryDirection") == "down"
+            else f"({nearest['x']},{nearest['y']})"
+        )
+
     if on_exit_ladder:
         detail = (
             f"Runner is standing on the revealed exit ladder `S` at ({runner_x},{runner_y}); "
@@ -337,22 +351,14 @@ def get_ladder_affordance(
             f"({nearest['x']},{nearest['ladderY']}); use down to enter it."
         )
     elif adjacent and nearest:
-        destination = (
-            f"entry above ({nearest['x']},{nearest['ladderY']})"
-            if nearest.get("entryDirection") == "down"
-            else f"({nearest['x']},{nearest['y']})"
-        )
+        destination = ladder_destination()
         detail = (
             f"Runner is adjacent to a visible ladder `{nearest['tile']}` {destination}; "
             f"move {nearest['direction']} to line up, then "
             f"{'descend' if nearest.get('entryDirection') == 'down' else 'climb'}."
         )
     elif nearest:
-        destination = (
-            f"entry above ({nearest['x']},{nearest['ladderY']})"
-            if nearest.get("entryDirection") == "down"
-            else f"({nearest['x']},{nearest['y']})"
-        )
+        destination = ladder_destination()
         detail = (
             f"Nearest visible ladder `{nearest['tile']}` route is {destination}, "
             f"{nearest['distance']} tiles to the {nearest['direction']}."
@@ -550,7 +556,7 @@ def _nearest_open_hole_state(
                     "x": x,
                     "y": y,
                     "distance": distance,
-                    "frameIndex": _to_int(hole.get("frameIndex")) or 0,
+                    "frameIndex": _to_int(hole.get("frameIndex")),
                     "frameTime": _to_int(hole.get("frameTime")) or 0,
                     "occupiedByTrappedGuard": (x, y) in trapped_guard_cells,
                 }
@@ -573,23 +579,29 @@ def get_dig_affordance(
     )
     rows = _get_terrain_grid(snapshot)
     active_rows = _get_active_grid(snapshot) or rows
-    gold_positions = _visible_gold_set(snapshot)
+    gold_positions = _gold_position_set(snapshot)
     guard_positions = _guard_position_set(snapshot)
     risk = risk if risk is not None else assess_guard_risk(snapshot)
-    pressure_guard = risk.get("pressureGuard") or {}
+    pressure_guard = risk.get("primaryThreat") or {}
     nearest_guard = next(
         (
             guard
-            for guard in risk.get("nearbyGuards") or []
+            for guard in risk.get("guards") or []
             if guard.get("relativeY") == "same"
         ),
         {},
     )
+    pressure_distance = _to_int(pressure_guard.get("distance")) or 99
+    same_row_distance = _to_int(nearest_guard.get("distance"))
+    # A distant same-row guard must not hide a nearer descending trap threat.
     if (
-        not nearest_guard
-        and pressure_guard.get("relativeY") == "above"
+        pressure_guard.get("relativeY") == "above"
         and pressure_guard.get("motion") in {"down", "fall"}
-        and (_to_int(pressure_guard.get("distance")) or 99) <= 3
+        and pressure_distance <= 3
+        and (
+            not nearest_guard
+            or (same_row_distance is not None and pressure_distance < same_row_distance)
+        )
     ):
         nearest_guard = pressure_guard
 
@@ -641,7 +653,7 @@ def get_dig_affordance(
             <= (
                 5
                 if risk.get("runnerOnEdge")
-                and nearest_guard.get("closing")
+                and nearest_guard.get("approachingOnSameRow")
                 else 4
             )
         )
@@ -682,6 +694,13 @@ def get_dig_affordance(
     }
 
 
+def defensive_dig_available(dig: dict[str, Any], side: str) -> bool:
+    item = dig.get(side) or {}
+    return bool(dig.get("canDigLeft" if side == "left" else "canDigRight")) or bool(
+        item.get("canDefensiveDig") and item.get("guardCouldFall")
+    )
+
+
 def get_route_access_affordance(
     snapshot: dict[str, Any],
     *,
@@ -707,69 +726,74 @@ def get_route_access_affordance(
     row_ladders = [item for item in row_ladders if item["visible"] and item["tile"] == "H"]
     off_row_gold = _nearest_off_row_gold(snapshot)
 
-    if runner_x is None or runner_y is None:
+    def unavailable(reason: str, **context: Any) -> dict[str, Any]:
         return {
             "available": False,
             "recommendedAction": None,
             "offRowGoldTarget": off_row_gold,
-            "reason": "runner coordinates unavailable",
-        }
-    if _is_gold_complete(snapshot):
-        return {
-            "available": False,
-            "recommendedAction": None,
-            "offRowGoldTarget": off_row_gold,
-            "reason": "all gold is collected; use exit routing",
-        }
-    if same_row_gold:
-        return {
-            "available": False,
-            "recommendedAction": None,
-            "offRowGoldTarget": off_row_gold,
-            "reason": "same-row gold is available; collect it before access digging",
-        }
-    if row_ladders and not ladder_route_is_blocked_for_lower_gold(snapshot, off_row_gold):
-        return {
-            "available": False,
-            "recommendedAction": None,
-            "offRowGoldTarget": off_row_gold,
-            "reason": "same-row ladder is available; use ladder route before access digging",
-        }
-    if not off_row_gold or off_row_gold["verticalDirection"] != "below":
-        return {
-            "available": False,
-            "recommendedAction": None,
-            "followAvailable": False,
-            "followAction": None,
-            "offRowGoldTarget": off_row_gold,
-            "reason": "no lower off-row gold target needs access digging",
+            "reason": reason,
+            **context,
         }
 
+    if runner_x is None or runner_y is None:
+        return unavailable("runner coordinates unavailable")
+    if _is_gold_complete(snapshot):
+        return unavailable("all gold is collected; use exit routing")
+    if same_row_gold:
+        return unavailable("same-row gold is available; collect it before access digging")
+    if row_ladders and not ladder_route_is_blocked_for_lower_gold(snapshot, off_row_gold):
+        return unavailable("same-row ladder is available; use ladder route before access digging")
+    if not off_row_gold or off_row_gold["verticalDirection"] != "below":
+        return unavailable(
+            "no lower off-row gold target needs access digging",
+            followAvailable=False, followAction=None,
+        )
+
+    god_mode = _is_god_mode(snapshot)
     preferred_side = off_row_gold.get("direction")
-    opened_options = []
+
+    def option_key(item: dict[str, Any]) -> tuple[bool, int, bool]:
+        return (
+            bool(item["dropThreat"].get("unsafe")) and not god_mode,
+            item.get("distanceToGoldX", 0),
+            item["side"] != preferred_side,
+        )
+
+    opened_options, options = [], []
     for side in ("left", "right"):
         item = dig.get(side)
-        if not isinstance(item, dict) or item.get("canDig"):
+        if not isinstance(item, dict):
             continue
         target_cell = item.get("targetCell") or {}
-        side_cell = item.get("sideCell") or {}
-        if target_cell.get("tile") != "." or side_cell.get("tile") != ".":
+        if not item.get("canDig"):
+            side_cell = item.get("sideCell") or {}
+            if target_cell.get("tile") == "." and side_cell.get("tile") == ".":
+                opened_options.append({
+                    "side": side, "targetCell": target_cell,
+                    "dropThreat": assess_access_drop_threat(snapshot, target_cell),
+                })
             continue
-        drop_threat = assess_access_drop_threat(snapshot, target_cell)
-        opened_options.append(
+        target_x = _to_int(target_cell.get("x"))
+        if target_x is None:
+            continue
+        action = f"dig_{side}"
+        options.append(
             {
+                "action": action,
                 "side": side,
                 "targetCell": target_cell,
-                "dropThreat": drop_threat,
-                "unsafe": bool(drop_threat.get("unsafe")) and not _is_god_mode(snapshot),
-                "preferred": side == preferred_side,
+                "distanceToGoldX": abs(target_x - off_row_gold["x"]),
+                "reason": (
+                    f"{action} opens a lower access hole at ({target_cell.get('x')},{target_cell.get('y')}) "
+                    f"toward off-row gold at ({off_row_gold['x']},{off_row_gold['y']})"
+                ),
             }
         )
     if opened_options:
-        opened_options.sort(key=lambda item: (item["unsafe"], not item["preferred"]))
+        opened_options.sort(key=option_key)
         opened = opened_options[0]
         target_cell = opened["targetCell"]
-        if opened["unsafe"]:
+        if option_key(opened)[0]:
             threat = opened["dropThreat"].get("nearestThreat") or {}
             return {
                 "available": False,
@@ -799,49 +823,19 @@ def get_route_access_affordance(
             ),
         }
 
-    options = []
-    for action, side in (("dig_left", "left"), ("dig_right", "right")):
-        item = dig.get(side)
-        if not isinstance(item, dict) or not item.get("canDig"):
-            continue
-        target_cell = item.get("targetCell") or {}
-        target_x = _to_int(target_cell.get("x"))
-        if target_x is None:
-            continue
-        options.append(
-            {
-                "action": action,
-                "side": side,
-                "targetCell": target_cell,
-                "distanceToGoldX": abs(target_x - off_row_gold["x"]),
-                "dropThreat": assess_access_drop_threat(
-                    snapshot, target_cell, vertical_limit=8, intercept_limit=10
-                ),
-                "reason": (
-                    f"{action} opens a lower access hole at ({target_cell.get('x')},{target_cell.get('y')}) "
-                    f"toward off-row gold at ({off_row_gold['x']},{off_row_gold['y']})"
-                ),
-            }
-        )
-
     if not options:
-        return {
-            "available": False,
-            "recommendedAction": None,
-            "followAvailable": False,
-            "followAction": None,
-            "offRowGoldTarget": off_row_gold,
-            "reason": "off-row gold is below, but no legal access dig is available",
-        }
-
-    options.sort(
-        key=lambda item: (
-            bool(item["dropThreat"].get("unsafe")) and not _is_god_mode(snapshot),
-            item["distanceToGoldX"],
-            0 if item["side"] == off_row_gold["direction"] else 1,
+        return unavailable(
+            "off-row gold is below, but no legal access dig is available",
+            followAvailable=False, followAction=None,
         )
-    )
-    if options[0]["dropThreat"].get("unsafe") and not _is_god_mode(snapshot):
+
+    # An existing opening returns above; assess new digs only when needed.
+    for option in options:
+        option["dropThreat"] = assess_access_drop_threat(
+            snapshot, option["targetCell"], vertical_limit=8, intercept_limit=10
+        )
+    options.sort(key=option_key)
+    if option_key(options[0])[0]:
         threat = options[0]["dropThreat"].get("nearestThreat") or {}
         target_cell = options[0]["targetCell"]
         return {
@@ -883,12 +877,8 @@ def assess_access_drop_threat(
         return {"unsafe": False, "nearestThreat": None, "threats": []}
 
     threats = []
-    for guard in snapshot.get("guards") or []:
-        if not isinstance(guard, dict):
-            continue
-        guard_x = _to_int(guard.get("x"))
-        guard_y = _to_int(guard.get("y"))
-        if guard_x is None or guard_y is None or guard_y <= target_y:
+    for guard, guard_x, guard_y in _guards_with_coordinates(snapshot):
+        if guard_y <= target_y:
             continue
         horizontal_distance = abs(guard_x - target_x)
         vertical_distance = guard_y - target_y
@@ -930,13 +920,7 @@ def assess_emergency_hole_escape_threat(
         return {"unsafe": True, "reason": "escape hole coordinates unavailable", "threats": []}
 
     threats = []
-    for guard in snapshot.get("guards") or []:
-        if not isinstance(guard, dict):
-            continue
-        guard_x = _to_int(guard.get("x"))
-        guard_y = _to_int(guard.get("y"))
-        if guard_x is None or guard_y is None:
-            continue
+    for guard, guard_x, guard_y in _guards_with_coordinates(snapshot):
         if guard_y not in {target_y, target_y + 1} or abs(guard_x - target_x) > 1:
             continue
         threats.append(
@@ -955,7 +939,7 @@ def assess_emergency_hole_escape_threat(
     hole_row_guard = any(item["holeRow"] for item in threats)
     adjacent_guard = any(not item["exactColumn"] for item in threats)
     return {
-        "unsafe": exact or pinched or hole_row_guard or adjacent_guard,
+        "unsafe": bool(threats),
         "reason": (
             "guard occupies or borders the open escape row"
             if hole_row_guard
@@ -990,23 +974,16 @@ def ladder_route_is_blocked_for_lower_gold(
 
 def assess_guard_risk(snapshot: dict[str, Any]) -> dict[str, Any]:
     runner = _get_runner(snapshot)
-    guards = snapshot.get("guards") or []
     grid = _get_terrain_grid(snapshot)
     width = _grid_width(grid)
 
     runner_x = _to_int(runner.get("x"))
     runner_y = _to_int(runner.get("y"))
     if runner_x is None or runner_y is None:
-        return {"risk": "unknown", "pressureGuard": None, "nearbyGuards": []}
+        return {"risk": "unknown", "primaryThreat": None, "guards": []}
 
-    nearby_guards = []
-    for guard in guards:
-        if not isinstance(guard, dict):
-            continue
-        guard_x = _to_int(guard.get("x"))
-        guard_y = _to_int(guard.get("y"))
-        if guard_x is None or guard_y is None:
-            continue
+    assessed_guards = []
+    for guard, guard_x, guard_y in _guards_with_coordinates(snapshot):
         distance = abs(guard_x - runner_x) + abs(guard_y - runner_y)
         motion = str(guard.get("actionName") or "unknown")
         guard_info = {
@@ -1022,17 +999,17 @@ def assess_guard_risk(snapshot: dict[str, Any]) -> dict[str, Any]:
             "motion": motion,
             "hasGold": _to_int(guard.get("hasGold")) or 0,
         }
-        guard_info["closing"] = (
+        guard_info["approachingOnSameRow"] = (
             guard_info["relativeY"] == "same"
             and (
                 (guard_info["relativeX"] == "left" and guard_info["motion"] == "right")
                 or (guard_info["relativeX"] == "right" and guard_info["motion"] == "left")
             )
         )
-        nearby_guards.append(guard_info)
+        assessed_guards.append(guard_info)
     risk_order = {"critical": 4, "high": 3, "medium": 2, "low": 1}
     pressure_guard = min(
-        nearby_guards,
+        assessed_guards,
         key=lambda item: (
             -risk_order.get(str(item.get("risk")), 0),
             0 if item.get("relativeY") == "same" else 1,
@@ -1043,8 +1020,8 @@ def assess_guard_risk(snapshot: dict[str, Any]) -> dict[str, Any]:
     risk = pressure_guard.get("risk") if pressure_guard else "low"
     return {
         "risk": risk,
-        "pressureGuard": pressure_guard,
-        "nearbyGuards": sorted(nearby_guards, key=lambda item: item["distance"]),
+        "primaryThreat": pressure_guard,
+        "guards": sorted(assessed_guards, key=lambda item: item["distance"]),
         "runnerOnEdge": _is_edge(runner_x, width),
     }
 

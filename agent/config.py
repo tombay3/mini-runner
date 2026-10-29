@@ -30,7 +30,6 @@ AGENT_LEVEL = 1
 AGENT_MAX_TICKS = 20
 MAX_CANDIDATE_LIMIT = 20
 AGENT_TEMPERATURE = 0.5
-AGENT_MODEL_PROFILES = {"openai", "minimax", "gemini"}
 GEMINI_DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 PUBLIC_AGENT_CONFIG_DEFAULTS: dict[str, Any] = {
     "agent": {
@@ -212,13 +211,7 @@ def resolve_model_profile(profile: str | None, *, source: str) -> ResolvedAgentM
         raise ValueError(
             f"unsupported modelProfile '{normalized}'. Supported profiles: {sorted(AGENT_MODEL_PROFILES)}"
         )
-    if normalized == "openai":
-        return resolve_openai_profile(source=source)
-    if normalized == "minimax":
-        return resolve_minimax_profile(source=source)
-    if normalized == "gemini":
-        return resolve_gemini_profile(source=source)
-    raise ValueError(f"unsupported modelProfile '{normalized}'")
+    return AGENT_MODEL_PROFILES[normalized](source=source)
 
 
 def resolve_openai_profile(*, source: str) -> ResolvedAgentModel:
@@ -231,10 +224,7 @@ def resolve_openai_profile(*, source: str) -> ResolvedAgentModel:
     api_key = get_env_value("OPENAI_API_KEY")
     if not api_key:
         raise ValueError("OPENAI_API_KEY must be configured for openai profile")
-    provider_config: dict[str, Any] = {"api_key": api_key}
-    base_url = get_env_value("OPENAI_BASE_URL")
-    if base_url:
-        provider_config["base_url"] = base_url
+    provider_config = _provider_config("openai")
     return ResolvedAgentModel(
         profile="openai",
         provider="openai",
@@ -253,10 +243,7 @@ def resolve_minimax_profile(*, source: str) -> ResolvedAgentModel:
     api_key = get_env_value("MINIMAX_API_KEY")
     if not api_key:
         raise ValueError("MINIMAX_API_KEY must be configured for minimax profile")
-    provider_config: dict[str, Any] = {"api_key": api_key}
-    base_url = get_env_value("MINIMAX_BASE_URL", "MINIMAX_API_BASE")
-    if base_url:
-        provider_config["base_url"] = base_url
+    provider_config = _provider_config("minimax")
     return ResolvedAgentModel(
         profile="minimax",
         provider="minimax",
@@ -288,23 +275,28 @@ def resolve_gemini_profile(*, source: str) -> ResolvedAgentModel:
     )
 
 
+AGENT_MODEL_PROFILES = {
+    "openai": resolve_openai_profile,
+    "minimax": resolve_minimax_profile,
+    "gemini": resolve_gemini_profile,
+}
+
+
+def _provider_config(provider: str) -> dict[str, Any]:
+    prefix = provider.upper()
+    config = {}
+    api_key = get_env_value(f"{prefix}_API_KEY")
+    if api_key:
+        config["api_key"] = api_key
+    base_names = ("OPENAI_BASE_URL",) if provider == "openai" else ("MINIMAX_BASE_URL", "MINIMAX_API_BASE")
+    base_url = get_env_value(*base_names)
+    if base_url:
+        config["base_url"] = base_url
+    return config
+
+
 def get_explicit_provider_configs(provider: str) -> dict[str, dict[str, Any]]:
-    if provider == "openai":
-        provider_config: dict[str, Any] = {}
-        api_key = get_env_value("OPENAI_API_KEY")
-        if api_key:
-            provider_config["api_key"] = api_key
-        base_url = get_env_value("OPENAI_BASE_URL")
-        if base_url:
-            provider_config["base_url"] = base_url
-        return {"openai": provider_config} if provider_config else {}
-    if provider == "minimax":
-        provider_config = {}
-        api_key = get_env_value("MINIMAX_API_KEY")
-        if api_key:
-            provider_config["api_key"] = api_key
-        base_url = get_env_value("MINIMAX_BASE_URL", "MINIMAX_API_BASE")
-        if base_url:
-            provider_config["base_url"] = base_url
-        return {"minimax": provider_config} if provider_config else {}
-    return {}
+    if provider not in {"openai", "minimax"}:
+        return {}
+    config = _provider_config(provider)
+    return {provider: config} if config else {}

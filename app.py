@@ -86,6 +86,15 @@ def normalize_id(value: str, name: str) -> str:
     return str(parsed)
 
 
+def normalize_context(play_data: str, level: str) -> tuple[str, str]:
+    return normalize_id(play_data, "playData"), normalize_id(level, "level")
+
+
+def matches_context(item: Any, play_data: str, level: str) -> bool:
+    return (isinstance(item, dict) and str(item.get("playData")) == play_data
+            and str(item.get("level")) == level)
+
+
 def load_json_store(path: Path, empty_factory) -> dict[str, Any]:
     if not path.exists():
         return empty_factory()
@@ -203,33 +212,24 @@ def load_pinned_trace_ids() -> set[str]:
         return pinned_trace_ids_from_store(load_store())
 
 
+def _matching_recordings(store: dict[str, Any], play_data: str, level: str):
+    records = store.get("records", {})
+    if isinstance(records, dict):
+        for _record_id, record in sorted_record_items(records):
+            if matches_context(record, play_data, level):
+                yield record
+
+
 def find_latest_recording(
     store: dict[str, Any], play_data: str, level: str
 ) -> dict[str, Any] | None:
-    records = store.get("records", {})
-    if not isinstance(records, dict):
-        return None
-    for _record_id, record in sorted_record_items(records):
-        if (
-            str(record.get("playData")) == play_data
-            and str(record.get("level")) == level
-        ):
-            return record
-    return None
+    return next(_matching_recordings(store, play_data, level), None)
 
 
 def find_recordings(
     store: dict[str, Any], play_data: str, level: str
 ) -> list[dict[str, Any]]:
-    records = store.get("records", {})
-    if not isinstance(records, dict):
-        return []
-    return [
-        record
-        for _record_id, record in sorted_record_items(records)
-        if str(record.get("playData")) == play_data
-        and str(record.get("level")) == level
-    ]
+    return list(_matching_recordings(store, play_data, level))
 
 
 def resolve_recording_id(
@@ -241,9 +241,7 @@ def resolve_recording_id(
     matching_ids = [
         str(record_id)
         for record_id, record in records.items()
-        if isinstance(record, dict)
-        and str(record.get("playData")) == play_data
-        and str(record.get("level")) == level
+        if matches_context(record, play_data, level)
         and str(record_id).startswith(record_id_prefix)
     ]
     if record_id_prefix in matching_ids:
@@ -280,14 +278,13 @@ def load_trace_store() -> dict[str, Any]:
             if (not isinstance(step, dict) or not isinstance(step.get("decision"), dict)
                     or not isinstance(step.get("state"), dict)
                     or not isinstance(step.get("candidates"), list)
-                    or not isinstance(step.get("candidateEvents"), list)
-                    or not isinstance(step.get("action"), dict)
-                    or not isinstance(step.get("loop"), dict)
-                    or any(key in step for key in ("candidateAudit", "loopMonitor", "modelSelection", "validation", "stepIndex"))):
+                    or not isinstance(step.get("excludedProposals"), list)
+                    or not isinstance(step.get("issuedAction"), dict)
+                    or not isinstance(step.get("loop"), dict)):
                 raise ValueError("malformed v4 trace decision")
             state = step["state"]
             if any(key in state and not isinstance(state[key], dict)
-                   for key in ("primaryProgressTarget", "threat", "movement", "route")):
+                   for key in ("goldTarget", "exitTarget", "threat", "movement", "route")):
                 raise ValueError("malformed v4 trace model state context")
             if "suppressedCount" in step["loop"] and (
                     type(step["loop"]["suppressedCount"]) is not int or step["loop"]["suppressedCount"] < 0):
@@ -295,7 +292,7 @@ def load_trace_store() -> dict[str, Any]:
             for candidate in step["candidates"]:
                 if not isinstance(candidate, dict) or any(
                         key in candidate and not isinstance(candidate[key], list)
-                        for key in ("intents", "targets", "reasons")):
+                        for key in ("reasons",)):
                     raise ValueError("malformed v4 trace model candidate context")
     return data
 
@@ -369,20 +366,20 @@ def validate_solver(value: Any) -> dict[str, Any] | None:
     return solver or None
 
 
-def validate_trace_id(value: Any) -> str | None:
+def _optional_id(value: Any, name: str) -> str | None:
     if value is None:
         return None
     if not isinstance(value, str) or not value.strip():
-        raise ValueError("traceId must be a string")
+        raise ValueError(f"{name} must be a string")
     return value.strip()
+
+
+def validate_trace_id(value: Any) -> str | None:
+    return _optional_id(value, "traceId")
 
 
 def validate_record_id(value: Any) -> str | None:
-    if value is None:
-        return None
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError("id must be a string")
-    return value.strip()
+    return _optional_id(value, "id")
 
 
 def trace_model_summary(planner: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -431,17 +428,19 @@ def prune_trace_runs(
     )
 
 
-def summarize_trace_run(trace_id: str, run: dict[str, Any]) -> dict[str, Any]:
+def _trace_summary(trace_id: str, run: dict[str, Any]) -> dict[str, Any]:
     return {
         "traceId": trace_id,
-        "playData": run.get("playData"),
-        "level": run.get("level"),
         "createdAt": run.get("createdAt"),
         "updatedAt": run.get("updatedAt"),
         "stepCount": len(run["steps"]),
-        "latestAction": run["steps"][-1]["action"] if run["steps"] else None,
+        "latestAction": run["steps"][-1]["issuedAction"] if run["steps"] else None,
         "model": run.get("model"),
     }
+
+
+def summarize_trace_run(trace_id: str, run: dict[str, Any]) -> dict[str, Any]:
+    return {**_trace_summary(trace_id, run), "playData": run.get("playData"), "level": run.get("level")}
 
 
 def summarize_record_trace(
@@ -456,14 +455,7 @@ def summarize_record_trace(
     run = runs.get(trace_id)
     if not isinstance(run, dict):
         return None
-    return {
-        "traceId": trace_id,
-        "createdAt": run.get("createdAt"),
-        "updatedAt": run.get("updatedAt"),
-        "stepCount": len(run["steps"]),
-        "latestAction": run["steps"][-1]["action"] if run["steps"] else None,
-        "model": run.get("model"),
-    }
+    return _trace_summary(trace_id, run)
 
 
 def find_latest_trace_run(
@@ -477,7 +469,7 @@ def find_latest_trace_run(
     for trace_id, run in runs.items():
         if not isinstance(run, dict):
             continue
-        if str(run.get("playData")) != play_data or str(run.get("level")) != level:
+        if not matches_context(run, play_data, level):
             continue
         if latest is None or trace_sort_key(run) > trace_sort_key(latest[1]):
             latest = (trace_id, run)
@@ -582,8 +574,7 @@ def get_recordings():
 @app.get("/api/recordings/<play_data>/<level>")
 def get_recording(play_data: str, level: str):
     try:
-        play_data_key = normalize_id(play_data, "playData")
-        level_key = normalize_id(level, "level")
+        play_data_key, level_key = normalize_context(play_data, level)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
 
@@ -598,8 +589,7 @@ def get_recording(play_data: str, level: str):
 @app.get("/api/recordings/<play_data>/<level>/records")
 def get_recording_records(play_data: str, level: str):
     try:
-        play_data_key = normalize_id(play_data, "playData")
-        level_key = normalize_id(level, "level")
+        play_data_key, level_key = normalize_context(play_data, level)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
 
@@ -620,8 +610,7 @@ def get_recording_records(play_data: str, level: str):
 @app.put("/api/recordings/<play_data>/<level>")
 def put_recording(play_data: str, level: str):
     try:
-        play_data_key = normalize_id(play_data, "playData")
-        level_key = normalize_id(level, "level")
+        play_data_key, level_key = normalize_context(play_data, level)
         payload = request.get_json(silent=True)
         if not isinstance(payload, dict):
             raise ValueError("request body must be an object")
@@ -718,8 +707,7 @@ def put_recording(play_data: str, level: str):
 @app.patch("/api/recordings/<play_data>/<level>/pin")
 def set_recording_pin(play_data: str, level: str):
     try:
-        play_data_key = normalize_id(play_data, "playData")
-        level_key = normalize_id(level, "level")
+        play_data_key, level_key = normalize_context(play_data, level)
         payload = request.get_json(silent=True)
         if not isinstance(payload, dict):
             raise ValueError("request body must be an object")
@@ -758,6 +746,7 @@ def set_recording_pin(play_data: str, level: str):
 @app.post("/api/agent/next-action")
 def next_agent_action():
     payload = request.get_json(silent=True)
+    logging_context = payload if isinstance(payload, dict) else {}
     try:
         snapshot, history, options = validate_agent_request(payload)
         run_id = options.get("runId") or f"trace-{utc_now()}"
@@ -770,7 +759,7 @@ def next_agent_action():
             LOGGER,
             logging.WARNING,
             "agent_request_invalid",
-            trace_id=(payload or {}).get("runId"),
+            trace_id=logging_context.get("runId"),
             error=exc,
         )
         return jsonify({"error": str(exc)}), 400
@@ -779,7 +768,7 @@ def next_agent_action():
             LOGGER,
             logging.ERROR,
             "agent_config_error",
-            trace_id=(payload or {}).get("runId"),
+            trace_id=logging_context.get("runId"),
             error=exc,
         )
         return jsonify({"error": str(exc)}), 503
@@ -788,7 +777,7 @@ def next_agent_action():
             LOGGER,
             logging.ERROR,
             "agent_execution_failed",
-            trace_id=(payload or {}).get("runId"),
+            trace_id=logging_context.get("runId"),
             error=exc,
         )
         return jsonify({"error": "agent execution failed", "detail": str(exc)}), 502
@@ -849,8 +838,7 @@ def get_agent_trace(trace_id: str):
 @app.get("/api/agent/runs/<play_data>/<level>")
 def get_agent_run(play_data: str, level: str):
     try:
-        play_data_key = normalize_id(play_data, "playData")
-        level_key = normalize_id(level, "level")
+        play_data_key, level_key = normalize_context(play_data, level)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
 
@@ -868,8 +856,7 @@ def get_agent_run(play_data: str, level: str):
 @app.delete("/api/recordings/<play_data>/<level>")
 def delete_recording(play_data: str, level: str):
     try:
-        play_data_key = normalize_id(play_data, "playData")
-        level_key = normalize_id(level, "level")
+        play_data_key, level_key = normalize_context(play_data, level)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
 
@@ -893,9 +880,7 @@ def delete_recording(play_data: str, level: str):
                 candidate = records.get(record_key)
                 record = (
                     candidate
-                    if isinstance(candidate, dict)
-                    and str(candidate.get("playData")) == play_data_key
-                    and str(candidate.get("level")) == level_key
+                    if matches_context(candidate, play_data_key, level_key)
                     else None
                 )
             else:

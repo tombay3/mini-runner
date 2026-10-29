@@ -7,10 +7,9 @@ produced them, what behavior they show, and which runs are useful comparisons. A
 of traces used to investigate the same behavior or evaluate a change. A trace can belong to more
 than one group.
 
-The coding agent checks this catalog before investigating a trace to reuse earlier findings and
-avoid treating an already-addressed defect as a new problem. Findings must still be checked against
-the recorded evidence and current code. Dashboard and notebook anomaly flags are starting points,
-not confirmed bugs.
+Read the catalog before investigating a trace. Reuse earlier findings, then check
+them against the recording and current code. Dashboard and notebook flags suggest
+where to look; they do not confirm a defect.
 
 ## Data ownership
 
@@ -88,9 +87,9 @@ The expected workflow in `AGENTS.md` is:
    links, and cohort membership. Record unknown provenance explicitly; do not infer it from HEAD.
 4. Check again and report any runs still needing review.
 
-This is not automatic: there is no watcher or evaluator hook. The command catches missing entries
-and stale references, but cannot diagnose runs or verify existing interpretations. Natural-language
-requests are sufficient; the coding agent can run the commands for you.
+There is no automatic watcher. The checker finds missing entries and stale links;
+it does not diagnose runs or verify findings. Ask the coding agent to run these
+steps when reviewing or cataloging evidence.
 
 ## Reuse Evidence Before Rerunning
 
