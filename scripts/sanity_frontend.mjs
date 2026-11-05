@@ -2,6 +2,52 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
+import { reconcileCohorts } from "./check-cohorts.mjs";
+
+// Historical findings survive store deletion; an archive needs a matching full pair.
+const archivedRun = { id: "run", playData: 1, level: 1,
+  steps: [{ state: { tick: 0 } }], outcome: { finalState: { tick: 8, godMode: false } } };
+const archivedRecord = { id: "run", traceId: "run", playData: 1, level: 1,
+  demo: { time: 8, action: [0, 39], goldDrop: [], bornPos: [] } };
+const historicalCatalog = { traces: { run: { findings: ["observed behavior"], cohortIds: ["group"],
+  archive: { recording: { path: "pair.json", keys: ["recording"] },
+    trace: { path: "pair.json", keys: ["trace"] } } } },
+  cohorts: { group: { traceIds: ["run"] } } };
+const archiveOptions = { verifyArchives: true, referenceExists: () => true,
+  readReference: ref => ({ recording: archivedRecord, trace: archivedRun })[ref.keys[0]] };
+const historicalResult = reconcileCohorts(historicalCatalog, { version: 4, runs: {} }, { records: {} }, archiveOptions);
+assert.equal(historicalResult.catalog.traces.run.dataStatus, "archived");
+assert.deepEqual(historicalResult.catalog.traces.run.findings, historicalCatalog.traces.run.findings);
+assert.deepEqual(historicalResult.catalog.cohorts, historicalCatalog.cohorts);
+assert.deepEqual(historicalResult.errors, []);
+assert.equal(reconcileCohorts(historicalResult.catalog, { version: 4, runs: {} },
+  { records: {} }, archiveOptions).changed, false);
+const liveResult = reconcileCohorts(historicalCatalog, { version: 4, runs: { run: archivedRun } },
+  { records: { run: archivedRecord } }, archiveOptions);
+assert.equal(liveResult.catalog.traces.run.dataStatus, "live");
+const brokenArchive = reconcileCohorts(historicalCatalog, { version: 4, runs: {} }, { records: {} },
+  { verifyArchives: true, referenceExists: () => true,
+    readReference: ref => ref.keys[0] === "recording" ? { ...archivedRecord, traceId: "different" } : archivedRun });
+assert.equal(brokenArchive.errors.length, 1);
+assert.equal(brokenArchive.catalog.traces.run.dataStatus, "missing");
+assert.deepEqual(brokenArchive.catalog.traces.run.findings, historicalCatalog.traces.run.findings);
+const quickCheck = reconcileCohorts(historicalCatalog, { version: 4, runs: {} }, { records: {} },
+  { referenceExists: () => true, readReference: () => { throw new Error("quick check must not read archive contents"); } });
+assert.deepEqual(quickCheck.errors, []);
+assert.equal(quickCheck.catalog.traces.run.dataStatus, "archived");
+const missingCheck = reconcileCohorts(historicalCatalog, { version: 4, runs: {} }, { records: {} },
+  { referenceExists: () => false });
+assert.deepEqual(missingCheck.errors, []);
+assert.deepEqual(missingCheck.warnings, []);
+assert.deepEqual(missingCheck.catalog.traces.run.findings, historicalCatalog.traces.run.findings);
+
+// Active or orphaned traces do not become catalog review work without a full pair.
+const emptyCatalog = { traces: {}, cohorts: {} };
+assert.deepEqual(reconcileCohorts(emptyCatalog, { version: 4, runs: { run: archivedRun } }).uncataloged, []);
+assert.deepEqual(reconcileCohorts(emptyCatalog, { version: 4, runs: { run: { ...archivedRun, outcome: null } } },
+  { records: { run: archivedRecord } }).uncataloged, []);
+assert.deepEqual(reconcileCohorts(emptyCatalog, { version: 4, runs: { run: archivedRun } },
+  { records: { run: archivedRecord } }).uncataloged, ["run"]);
 
 // Exercise the real hook with revealed H tiles and an S in the source map.
 const runtime = vm.createContext({
