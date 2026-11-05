@@ -1,181 +1,204 @@
-# Cohort catalog and workflow
+# Trace cohorts
 
-## Purpose
+The catalog at `__data1/trace-cohorts.json` keeps findings from game runs, links to
+saved data, and groups of runs used to answer the same question. These groups are
+called **cohorts**; a run can belong to several.
 
-The cohort catalog records what we have learned from retained game runs: which code and controls
-produced them, what behavior they show, and which runs are useful comparisons. A cohort is a group
-of traces used to investigate the same behavior or evaluate a change. A trace can belong to more
-than one group.
+**Keep the recording and trace if you may need to reproduce a bug.** The catalog
+preserves what we learned after live data is deleted, but cannot reproduce gameplay
+by itself. Archiving is a separate, explicit operation.
 
-Read the catalog before investigating a trace. Reuse earlier findings, then check
-them against the recording and current code. Dashboard and notebook flags suggest
-where to look; they do not confirm a defect.
+## Files and ownership
 
-## Data ownership
-
-All three files are local to `__data1/`; the catalog is transient and does not need a Git commit.
-
-| File | Owns |
+| Location | Contents |
 | --- | --- |
-| `recordings.json` | Pin state |
-| `agent-traces.json` | Available traces and recorded decisions |
-| `trace-cohorts.json` | Reviewed provenance, findings, group membership, and comparisons |
+| `__data1/recordings.json` | Live recordings and pin state |
+| `__data1/agent-traces.json` | Live traces with recorded decisions |
+| `__data1/trace-cohorts.json` | Findings, source-code information, groups, comparisons, and archive links |
+| `__data3/` | Machine-local archives and investigation files |
 
-Pin changes require no catalog update. Unpinned traces remain subject to rolling retention.
-The dashboard reads the recording and trace stores, not the cohort catalog.
+These files do not need a Git commit. Deleting live data must preserve catalog
+entries and groups. Pin changes need no catalog edit; unpinned data can age out
+through rolling retention. The dashboard reads the live stores, not the catalog.
+See [store retention](backend-spec.md) and [dashboard views](trace-dashboard.md).
 
-## Create a cohort
+## Check the catalog
 
-Start with one concrete question, such as whether a change reduces repeated waits without losing
-gold progress. Use existing Classic 1:1 traces first. Create separate cohorts for baseline and
-changed code when comparing them; keep mode, model, and controls matched or explain differences.
+Run `npm run cohorts:check` before reviewing traces.
 
-1. Run `npm run cohorts:check`. If the catalog is missing, initialize it with
-   `npm run cohorts:check -- --write`. This creates an empty catalog; traces still need review.
-2. Choose a stable cohort ID, such as `20261007-wait-review-baseline`. Add its title, question,
-   and full trace IDs under `cohorts`. Every ID must exist in `agent-traces.json`.
-3. Review each trace and add or update its entry under `traces`. Use the recorded launch manifest
-   or existing catalog evidence for provenance; never use current HEAD as a substitute.
-   Preserve earlier findings and list every applicable cohort in the trace's `cohortIds`.
-4. Record observations with display-step numbers (starting at 1) or exact game ticks. Separate
-   observed behavior from suspected causes; state sample size and missing evidence. Update the
-   cohort's `result` with the conclusion, or say the review is incomplete.
-5. Update `updatedAt`, then run `npm run cohorts:check` again. Resolve stale links and report
-   unreviewed traces. `--write` performs mechanical cleanup, not interpretation or cohort creation.
+| Command | What it does |
+| --- | --- |
+| `npm run cohorts:check` | Read-only check of live pairs, catalog membership, and archive paths. Reports complete live pairs without catalog entries. Does not read archive contents. |
+| `npm run cohorts:check -- --write` | Creates a missing catalog or updates its availability status. Preserves historical entries and findings; backs up an existing catalog as `.bak`. Does not review or catalog new runs for you. |
+| `npm run cohorts:check -- --verify-archives` | Reads linked local archives and checks that the recording and trace match. Use before reproduction or after transferring archives. |
 
-An empty catalog is:
+No command scans archive folders or creates an archive. Missing local archives and
+historical member IDs without detailed entries are quietly skipped and preserved.
+Malformed references and inconsistent membership are still reported.
+
+Active or orphaned traces without a complete recording/trace pair are excluded
+from new-run review lists. Do not add them to gameplay cohorts or replay archives;
+keep infrastructure failures in campaign logs and reports. `--write` does not
+delete live data, archive files, or historical findings when a pair is unavailable.
+
+“Catalog availability or policy needs updating” means saved `dataStatus` values
+or checker-maintained policy differ from the current check. For example, a deleted
+live pair may now be available only in an archive. `--write` saves those updates;
+it does not diagnose runs, repair archive contents, or remove obsolete files.
+
+All modes use `AGENT_DATA_DIR` when set; otherwise they use `__data1`. Missing live
+store files count as empty stores and are not recreated. Avoid `--write` while
+another task is editing the catalog.
+
+Archive verification checks IDs, recording streams, trace decisions, final tick,
+level, and mode. It does **not** replay gameplay, confirm findings, or prove that a
+recording will replay correctly against another code revision.
+
+## Review runs and update findings
+
+1. **Check and read.** Run the quick check, then read earlier catalog findings and
+   the relevant recording and trace. Dashboard signals identify places to inspect;
+   they do not prove a bug.
+2. **Define the question.** For example: does a change reduce repeated waits without
+   losing gold progress? Use existing Classic 1:1 runs first. Compare matching mode,
+   model, and controls, and explain any code or configuration differences.
+3. **Record the evidence.** Add findings under `traces[full UUID]`, citing display
+   steps (starting at 1) or game ticks. Separate observations from suspected causes.
+   Use the launch manifest or recorded historical evidence for the source revision,
+   never the current HEAD. Mark missing information as unknown.
+4. **Group comparisons.** Add a cohort with a stable ID, such as
+   `20261007-wait-review-baseline`. Keep both its `traceIds` and each run's `cohortIds`
+   consistent. Use separate groups for baseline and changed code where useful.
+   Record the conclusion, sample size, and limits—or state that review is incomplete.
+5. **Save and check.** When cataloging is requested, run `--write`, update findings
+   and `updatedAt`, then check again. Report any live runs still needing review.
+
+Preserve earlier findings. The checker does not judge their accuracy or whether a
+comparison is fair. Cataloging does not authorize gameplay changes, pin changes,
+or paid evaluations.
+
+## When to archive a live run
+
+**Archive selected runs with a concrete future use, not every completed run.**
+Saving, pinning, cataloging, or requesting debugging does not automatically create
+or require an archive. Review with the user is not a prerequisite; the deciding
+question is what investigation or comparison needs the full data.
+
+| Trigger | When to archive | Examples |
+| --- | --- | --- |
+| Preserve campaign evidence | A selected run supports a finding or future comparison. | Representative baseline, evidence of a fix, suspected regression, or distinct unresolved failure. |
+| Prepare a reproducer | A run is selected for replay or testing alternative decisions. | Save the original pair before a hybrid comparison; its preparation step captures both in `input.json`. |
+| Remove useful live data | A run still has a debugging purpose but is about to be unpinned or deleted. | Verify an existing archive or save the pair before removing an unresolved example or needed baseline. |
+
+Keep ordinary completed or unreviewed runs in the live stores and pin new evaluation
+runs by default. Pinned runs survive rolling retention, so retention alone does not
+justify an archive copy. Routine successes and duplicate failures usually need no
+separate archive.
+
+Keep the campaign launch manifest and aggregate report for its setup and results.
+Archive full pairs only for selected supporting examples, unless the user explicitly
+requests every run. Record the reason in the catalog findings so later work can
+understand why the archive was kept.
+
+Save both objects under `__data3`, in a bundle or separate store backups. Keep the
+full run UUID and available launch manifest. Add `archive` references to the catalog
+and run `--verify-archives`. A report alone is not a replay backup; an existing
+complete archive does not need another copy.
+
+Archives differ between machines. When transferring an investigation, copy the
+recording, trace, and catalog references together.
+
+## Find historical replay data
+
+Look up the full run UUID in the catalog. Try the live stores first, then follow
+its `archive` references. For a bundle containing both objects:
+
+```json
+"archive": {
+  "recording": {"path": "__data3/example/evidence.json", "keys": ["recording"]},
+  "trace": {"path": "__data3/example/evidence.json", "keys": ["trace"]}
+}
+```
+
+`keys` identifies the object inside the JSON file. For separate store backups,
+use `["records", "<full UUID>"]` and `["runs", "<full UUID>"]`. Paths are relative
+to the repository root, even when `AGENT_DATA_DIR` is set.
+
+If links are missing, manually search catalogs and backups under `__data3` and
+verify the pair before adding references. Older `evidence` and `artifacts` fields
+are notes, not links the checker follows. Keep original archives unchanged and
+record a fresh launch manifest for any new continuation.
+
+## Catalog fields
+
+An empty catalog starts as:
 
 ```json
 {"version": 1, "updatedAt": null, "cohorts": {}, "traces": {}}
 ```
 
-Catalog fields follow this convention; the checker validates only part of it:
-
-| Location | Fields |
+| Location | Fields and meaning |
 | --- | --- |
-| Root | `version: 1`, `updatedAt` (UTC timestamp), `cohorts`, `traces`; `policy` is maintained by reconciliation |
-| `cohorts[cohortId]` | `title`, `question`, `traceIds` (full IDs), `result` (concise conclusion and evidence limits) |
-| `traces[traceId]` | `reviewedAt`, `sourceRevision`, `sourceState` (`clean`, `dirty`, or `unknown`), `sourceFingerprint`, `context`, `outcome`, `classification`, `cohortIds`, `evidenceLimit` |
-| Optional trace findings | `findings` (brief observations with steps/ticks), `compareWith` (full trace IDs) |
+| Root | `version: 1`, `updatedAt` (UTC), `cohorts`, `traces`. The checker maintains `policy`. |
+| `cohorts[id]` | `title`, `question`, `traceIds` (full UUIDs), `result` (conclusion and limits). |
+| `traces[id]` | `reviewedAt`, `classification`, `cohortIds`, `findings` (steps/ticks), optional `compareWith` (full UUIDs). |
+| Run source | `sourceRevision`, `sourceState` (`clean`, `dirty`, or `unknown`), `sourceFingerprint`, `evidenceLimit`. Use null for unavailable source values and explain uncertainty. |
+| Run context and result | `context`: level, mode, model, controls. `outcome`: result, decision count, final tick, remaining gold where known. These are review notes, not a replacement for the trace. |
+| `archive` | Recording and trace references as shown above. |
+| `dataStatus` | Checker-maintained: `live` means a matching live pair; `archived` means linked files exist locally; `missing` means neither is available. Not proof of successful replay. |
 
-`sourceRevision` and `sourceFingerprint` belong to reviewed catalog evidence, not trace fields.
-Experiment launchers should capture the revision and local-change fingerprint in a manifest
-before running. Cataloging is not automatic: without recorded evidence, use null values and
-`sourceState: "unknown"`, and explain uncertainty in `evidenceLimit`. `context` records level,
-mode, model and relevant controls; `outcome` summarizes
-the recorded result, decision count, terminal tick, and remaining gold where available. These are
-review notes, not replacements for the original trace. Do not duplicate pin state in the catalog.
+Record source revision and local changes in a launch manifest before experiments;
+new traces do not store them. Do not duplicate pin state in the catalog.
 
-Keep membership consistent in both directions: a cohort's `traceIds` and each trace's `cohortIds`.
-The checker does not enforce that agreement or verify provenance, findings, or comparison fairness;
-the reviewing agent must check them. Cataloging does not authorize fresh runs or gameplay changes.
+## Choose the next investigation
 
-## Maintenance
-
-- `npm run cohorts:check` — read-only; reports a missing catalog, stale links, and uncataloged
-  traces. Exits nonzero when attention is needed.
-- `npm run cohorts:check -- --write` — cleans existing links
-  and retention metadata. Backs up an existing catalog as `.bak`; does not review traces.
-
-Both commands respect `AGENT_DATA_DIR`. Do not reconcile while another task edits the catalog.
-
-The expected workflow in `AGENTS.md` is:
-
-1. Check the catalog and read relevant findings before investigating.
-2. Review the trace against its source revision, mode, model, and controls.
-3. When cataloging is requested, reconcile and update the run's full-ID entry, evidence, comparison
-   links, and cohort membership. Record unknown provenance explicitly; do not infer it from HEAD.
-4. Check again and report any runs still needing review.
-
-There is no automatic watcher. The checker finds missing entries and stale links;
-it does not diagnose runs or verify findings. Ask the coding agent to run these
-steps when reviewing or cataloging evidence.
-
-## Reuse Evidence Before Rerunning
-
-Use existing traces to explain recorded behavior and fixtures to test current logic against the
-same inputs. Request a fresh run when the unanswered question concerns actual changed gameplay,
-recurrence, or evidence that cannot be recovered. A summary is not a complete engine checkpoint,
-and an old failure does not prove a current defect.
-
-Before rerunning, state: **What question will this run answer that existing evidence cannot?**
-Compare matching modes, models, and controls, identifying code differences explicitly.
-
-| Question | Starting point |
+| Question | Start with |
 | --- | --- |
-| What happened in this run? | Trace and recording |
-| Have we seen or addressed this pattern? | Catalog, supporting traces, and current code |
-| Does current candidate logic handle the same input differently? | Deterministic fixture with sufficient reconstructed state/history |
-| Does a change improve actual gameplay? | Fresh run on fixed code with matching controls |
-| Is the failure intermittent or more general? | Additional matched runs |
-| Is evidence incomplete or invalid? | Recover missing evidence first; rerun if necessary |
+| What happened, and have we seen it before? | Recording, trace, earlier findings, and current code |
+| Does current logic handle this state differently? | Offline fixture with the required state and history |
+| Does a change improve gameplay or reduce recurrence? | Matched replay or new runs, stating what the comparison can establish |
+| Is evidence missing? | Recover archives before considering another run |
 
-## Whole-store goals
+Before rerunning, state what question existing evidence cannot answer. An old
+failure does not prove a current bug, and a summary is not an engine checkpoint.
 
-| Goal | Useful request |
-| --- | --- |
-| Anomaly triage | Identify suspicious behavior across retained traces. Rank investigation candidates, distinguish addressed defects from potentially current issues, and cite steps. |
-| Regression review | Compare recent runs with relevant baselines, accounting for revision, mode, model, and controls. Flag uncontrolled comparisons. |
-| Coverage review | Identify well-tested behaviors, missing evidence, and the question that would justify another run. |
-| Retention review | Recommend redundant traces to unpin while preserving useful baselines and unresolved examples. Wait for approval before unpinning. |
+Useful request examples:
 
-Add scope explicitly: “Update the catalog,” “diagnosis only,” or “propose a fix.” Diagnosis does not
-authorize gameplay changes, pin changes, or paid evaluations.
+- **Review and catalog:** “Review `<trace IDs>` for `<question>`. Cite steps, update
+  findings and groups, and check the catalog. Do not change gameplay or start runs.”
+- **Diagnose:** “Debug `<trace ID>`, steps `<start–end>`. Observed `<behavior>`;
+  expected `<behavior>`. Check previous findings. Propose a fix without applying it.”
+- **Review the store:** “Rank unresolved anomalies and possible regressions across
+  retained runs. Note comparison limits and missing coverage. Update the catalog.”
+- **Review retention:** “Recommend redundant runs to unpin while preserving useful
+  baselines and unresolved examples. Wait for approval before changing pins.”
 
-## Pointing out an anomaly
+Include the run ID and scope when handing work to another session. Run Signals
+help locate an issue but do not replace the full data.
 
-Send the trace ID, suspicious display-step range if known, observed versus expected behavior, and
-the requested scope. Copying the dashboard's **Run Signals** is a useful handoff, but it does not
-replace the full trace. The trace ID alone is enough to start if its data remains available.
+## Future simplification — not implemented
 
-Pin evidence that must survive an investigation. When switching conversations, include the ID and
-scope again rather than relying on shared chat memory.
+The main weakness is that saving data, adding findings, and maintaining archive
+links are separate manual tasks. More checks alone cannot recover missing data.
+A simpler workflow would use:
 
-## Copyable Prompts
+- **One archive folder per run**, named by its full UUID, containing the recording,
+  trace, and available launch information. Predictable paths replace custom JSON
+  references for new archives.
+- **One command to preserve a run.** Copy both objects, verify them, then update the
+  catalog. Failure leaves live data untouched; repeating the command is safe.
+- **A catalog focused on findings and groups.** Check local availability when needed
+  instead of storing a status that can become stale. Keep historical findings even
+  when their data is unavailable on this machine.
 
-### Check Or Repair The Catalog
+Keep routine checks fast: check structure and expected files. Read archive contents
+only for explicit verification, such as before reproduction or after transfer.
+Unavailable historical data should not fail routine tests.
 
-> Check whether the cohort catalog matches the current stores. Report uncataloged traces and stale
-> references. Do not change any files or pin states.
+Introduce the folder convention and preservation command first, use them for new
+investigations, then simplify the catalog once the workflow proves reliable. Avoid
+a large archive migration or another supervisor. Existing archives and links must
+remain usable during the transition.
 
-> Reconcile the cohort catalog with the current stores. Preserve diagnostic findings, report runs
-> still needing review, and do not change recordings, traces, or pin states.
-
-### Review A New Run And Catalog It
-
-> Create a cohort to investigate `<question>` using `<trace IDs>`. Follow the creation convention
-> above, review recorded provenance and controls, and record findings with steps/ticks and evidence
-> limits. Update the catalog and check it afterward. Do not change gameplay or start new runs.
-
-> Review `<trace ID>` against its relevant baselines. Verify provenance and controls, identify the
-> strongest findings with display-step references, and update its cohort entry and membership.
-> Mark uncertain provenance explicitly. Do not change gameplay or start new runs.
-
-### Triage The Entire Store
-
-> Review all retained traces for suspicious anomalies. Rank the strongest investigation candidates,
-> distinguish historical addressed defects from potentially current unresolved issues, and cite
-> representative steps. Update the cohort catalog, but do not change gameplay or run evaluations.
-
-> Compare recent traces against relevant baselines for possible regressions. Account for source
-> revision, mode, model, and controls. State where comparisons are not controlled.
-
-> Review coverage across the retained traces. Which behaviors are well evidenced, which evidence
-> is redundant, and what unanswered question would justify the next run? Do not run it yet.
-
-### Diagnose A Specific Anomaly
-
-> Diagnose `<trace ID>`, steps `<start–end>`. I observed `<behavior>` but expected `<behavior>`.
-> Use the attached Run Signals as a starting point. Check prior findings and current code;
-> classify the cause as coverage, scoring/selection, state, validation/execution, or loop handling
-> where evidence permits. Do not implement a fix or start an evaluator run.
-
-> Investigate the highest-priority unresolved anomaly and, if practical, add a focused deterministic
-> regression fixture. Propose the smallest correction, but pause before changing gameplay behavior.
-
-### Retention Review
-
-> Recommend redundant traces to unpin, preserving distinct current baselines and unresolved failure
-> examples. Explain each recommendation. Do not change retention until I approve.
-
-Related: [Trace dashboard](trace-dashboard.md) · [Candidate design](candidate-design.md)
+Related: [Evaluator workflow](evaluator.md) · [Trace dashboard](trace-dashboard.md) ·
+[Candidate design](candidate-design.md)

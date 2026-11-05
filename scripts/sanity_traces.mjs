@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { reconcileCohorts, pairProblem } from "./check-cohorts.mjs";
 
 // Read-only sanity check of local evidence, without gameplay or detailed schema tests.
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -52,17 +53,15 @@ for (const [id, run] of Object.entries(traces?.runs || {})) {
   if (!object(run)) continue;
   check(run.id === id && Array.isArray(run.steps), `agent-traces.json: invalid run ${id}`);
 }
-for (const id of Object.keys(catalog?.traces || {})) {
-  check(hasTrace(id), `trace-cohorts.json: stale trace ${id}`);
+if (catalog) {
+  const result = reconcileCohorts(catalog, traces ?? { version: 4, runs: {} },
+    recordings ?? { records: {} }, { root });
+  for (const error of result.errors) check(false, `trace-cohorts.json: ${error}`);
+  for (const warning of result.warnings) console.warn(`trace-cohorts.json: ${warning}`);
+  console.log(`Catalog: ${result.counts.live} live pairs, ${result.counts.archived} local archive references`);
 }
-for (const [id, cohort] of Object.entries(catalog?.cohorts || {})) {
-  if (!object(cohort)) continue;
-  check(Array.isArray(cohort.traceIds), `trace-cohorts.json: invalid cohort ${id}`);
-  for (const traceId of Array.isArray(cohort.traceIds) ? cohort.traceIds : []) {
-    check(hasTrace(traceId), `trace-cohorts.json: cohort ${id} links missing trace ${traceId}`);
-  }
-}
-const uncataloged = Object.keys(traces?.runs || {}).filter((id) => !Object.hasOwn(catalog?.traces || {}, id));
+const uncataloged = Object.keys(traces?.runs || {}).filter((id) =>
+  !Object.hasOwn(catalog?.traces || {}, id) && !pairProblem(id, recordings?.records?.[id], traces.runs[id]));
 if (uncataloged.length) console.warn(`Uncataloged traces: ${uncataloged.length}; review with npm run cohorts:check.`);
 
 const logPath = path.join(directory, "agent-debug.log");
