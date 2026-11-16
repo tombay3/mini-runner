@@ -1,164 +1,94 @@
 # Mini Runner
 
-Mini Runner is an LLM-driven game agent for
-[Lode Runner Total Recall](https://github.com/SimonHung/LodeRunner_TotalRecall), an HTML5
-remake of the classic 1983 game **Lode Runner**. The project preserves the original game as
-the authoritative executor while adding a candidate agent, recording and replay
-tools, an agent evaluator, and a trace dashboard for decision-level debugging.
-
-## Architecture
-
-- **Legacy game engine:** `public/game/*` owns physics, guard behavior, digging, death, level
-  completion, rendering, demo recording, and demo playback.
-- **Wrapper frontend:** `src/*` provides Vite bootstrapping, AI controls, stored-run playback,
-  trace-aligned stepping, and the debug overlay.
-- **Python backend:** `app.py` exposes Flask APIs for planning, recordings, traces, model
-  profiles, and local JSON stores.
-- **Candidate agent:** `agent/*` analyzes each snapshot, generates and scores legal actions,
-  asks the LLM to choose a candidate ID, validates the choice, and translates it into legacy
-  key/tick input.
-- **Trace tooling:** `trace-dash.py` provides a read-only Streamlit and pandas view of retained runs, individual decisions, outcomes, loop events, and candidate selection.
-
-```text
-public/game/*             Legacy Lode Runner runtime, levels, rendering, and demos
-src/*                     Vite wrapper, recording/playback UI, and browser agent loop
-agent/*                   Analysis, candidate generation, prompting, validation, and traces
-app.py                    Flask APIs for planning, tracing, and recordings
-trace-dash.py             Streamlit and pandas agent-trace dashboard
-scripts/*                 Sanity checks, evaluator, and offline trace analytics
-__data1/                  Local recordings, traces, evaluation reports, and debug logs
-```
+Mini Runner lets an LLM play Classic Lode Runner level 1 and lets you replay each decision. The
+browser runs the original HTML5 game,
+[Lode Runner Total Recall](https://github.com/SimonHung/LodeRunner_TotalRecall). Python proposes
+short actions, the model chooses one, and the game determines what happens.
 
 ## Getting Started
 
-### Prerequisites
-
-- Node.js
-- Python 3.11+
-- An API key for one supported LLM provider
-
-### Install dependencies
+Install Git, Node.js with npm, and Python 3.11 or later. To run the agent, you also need
+credentials for a supported model provider.
 
 ```bash
 git clone https://github.com/tombay3/mini-runner.git
 cd mini-runner
-
-python -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
-
-npm install
+python -m pip install -r requirements.txt
+npm ci
 ```
 
-### Configure a model
+Create `.env.local` in the repository root. One example uses the OpenAI profile.
 
-Create `.env.local` with one model profile. For example:
-
-```bash
+```dotenv
 AGENT_MODEL_PROFILE=openai
 OPENAI_MODEL=gpt-5-nano
 OPENAI_API_KEY=your_openai_api_key
 ```
 
-Supported profiles are `openai`, `minimax`, and `gemini`. Secrets belong in `.env` or
-`.env.local`; non-secret experiment controls belong in `public/agent-config.json`.
+The supported profiles are `openai`, `gemini`, `openai-decisions`, and `openrouter`. Keep credentials in the environment
+files. Set public controls such as the decision limit, action duration, and history length in
+[agent-config.json](public/agent-config.json). To override the profile for one browser page, open
+`http://localhost:8283/?profile=gemini`. See
+[model profiles and configuration](docs/backend-spec.md#model-profiles).
 
-The browser URL can override the configured profile for runs started from that page:
-
-```text
-http://localhost:8283/?profile=minimax
-```
-
-### Start Game
-
-Start the backend and frontend in separate terminals:
+Run these commands in separate terminals from the repository root.
 
 ```bash
-npm run api
+npm run api    # Flask on port 8485
 ```
 
 ```bash
-npm run dev
+npm run dev    # Vite on port 8283
 ```
 
-Open [http://localhost:8283](http://localhost:8283). Click `AI` to start or cancel an agent
-run. Use `Play`, `Prev`, `Next`, and `Delete` to inspect retained recordings.
+Open the [local game](http://localhost:8283). On Classic level 1, **AI** starts or cancels a run.
+**Prev** and **Next** select a saved recording. **Play** replays it. During paused playback, press
+comma to advance one recorded key segment or period to advance one agent decision. The two
+boundaries can differ. [Playback controls](docs/record-playback.md)
 
-## Trace Dashboard
+## How it works
 
-Use the read-only trace dashboard to compare runs and inspect each decision: state,
-candidates, model request, backend selection, issued input, and observed result.
-It reads existing stores without requiring the frontend or backend.
+1. The browser wrapper in `src/` starts the legacy runtime in `public/game/`. Before each decision
+   it sends a snapshot and recent action history to Flask.
+2. The planner in `agent/` uses terrain, guard motion, gold, and recent progress to generate and
+   rank candidates. It filters unsafe moves and confirmed loops before exposing the shortlist.
+3. The model requests a `candidateId`. The backend validates it, records the decision, and returns
+   a key and tick count. The browser steps the engine. The next snapshot or terminal state shows
+   the result.
 
-Start it in another terminal with the Python environment activated:
+The agent supports Classic `playData=1`, `level=1`. The engine owns physics, guard behavior, and
+completion across the bundled game modes. [Codebase map](docs/codebase.md) ·
+[Agent lifecycle](docs/llm-agent.md) · [Candidate rules](docs/candidate-design.md) ·
+[Legacy runtime](docs/legacy-runtime.md) · [Game rules](docs/puzzle-game.md)
 
-```bash
-npm run dash
-```
+## Inspect a game run
 
-Open [http://localhost:8601](http://localhost:8601). It reads `__data1` by default; use
-`AGENT_DATA_DIR` or the sidebar path to choose another folder. Press **Reload data** after the
-JSON changes. See [Trace dashboard](docs/trace-dashboard.md).
-
-## Observability And Local Data
-
-The wrapper stores replayable demos in `__data1/recordings.json`. Agent recordings link to
-decision traces in `__data1/agent-traces.json` through `traceId`. See
-[Trace API and store](docs/backend-spec.md#trace-api-and-store) for stored data.
-
-Set `AGENT_DEBUG_LOG=1` to write the latest 10 raw model I/O turns to
-`__data1/agent-debug.log`. Raw prompts and model responses are excluded from normal traces.
-
-For aggregate offline analysis, `trace-analytics.ipynb` reads recordings, runs, steps,
-candidates, outcomes, loop events, and fallbacks without changing them.
-
-To launch the trace notebook interface, run `npm run notebook` and open `http://127.0.0.1:8081/`.
-
-## Testing And Evaluation
-
-### Sanity checks
-
-Run the backend and frontend quick checks with:
-
-```bash
-npm test
-```
-
-These smoke checks use small fixtures and the Flask test client. They make no model calls.
-
-| Command | Purpose |
+| File under `__data1/` | What it tells you |
 | --- | --- |
-| `npm test` | Fast code smoke checks |
-| `npm run test:regression` | Focused Python and JavaScript regressions |
-| `npm run data:check` | Read-only checks of local recordings, traces, cohorts, and debug log |
-| `npm run cohorts:check` | Check cohort links and uncataloged traces |
+| `recordings.json` | Recorded input for playback and pin status. An agent recording shares its ID with its trace. |
+| `agent-traces.json` | V4 decisions, including the observed state, exposed candidates, requested and selected IDs, excluded proposals, and issued input. |
+| `trace-cohorts.json` | Reviewed findings, comparison groups, launch provenance, and links to archived recording/trace pairs. |
+| `agent-debug.log` | The latest ten model I/O entries when `AGENT_DEBUG_LOG=1` is enabled. |
+| `metrics.sqlite3` | Measured games, model calls, timing and token usage for comparisons. |
 
-See [Testing](docs/sanity-tests.md) for coverage and limitations.
+Run `npm run notebook` for comparisons or `npm run dash` to inspect a recording. [Analytics guide](analytics/README.md) · [Cohort and archive workflow](analytics/cohorts.md) · [Trace contract](docs/backend-spec.md#trace-api-and-store)
 
-### Agent evaluator
+## Test and evaluate
 
-Run repeatable attempts against the real browser game and configured model:
+| Command | Use |
+| --- | --- |
+| `npm test` | Run fast backend and frontend smoke checks on small fixtures. |
+| `npm run test:regression` | Run focused planner, wrapper, and tooling regressions. |
+| `npm run data:check` | Check the structure and links in local data stores. |
+| `npm run cohorts:check` | Check catalog availability and find complete live pairs awaiting review. |
+| `npm run eval -- --smoke` | Check startup in Chrome or Chromium without a model call. |
 
-```bash
-npm run eval -- --runs 5
-```
-
-Use `npm run eval -- --smoke` to verify the browser, wrapper, backend, and legacy runtime
-without calling the model. See [Agent evaluator](docs/evaluator.md).
-
-## Documentation
-
-- [Codebase overview](docs/codebase.md): architecture, boot flow, and module map.
-- [LLM agent](docs/llm-agent.md): snapshot flow, prompt, candidate selection, and loop filtering.
-- [Candidate design](docs/candidate-design.md): scoring, action coverage, and validation.
-- [Backend spec](docs/backend-spec.md): Flask APIs, JSON stores, model profiles, and logging.
-- [Trace dashboard](docs/trace-dashboard.md): run signals, stepping debugger, and candidate analysis.
-- [Recording and playback](docs/record-playback.md): wrapper UI buttons, and run selection.
-- [Testing](docs/sanity-tests.md): smoke, regressions, data checks, and planner validation.
-- [Agent evaluator](docs/evaluator.md): repeatable real-runtime trials and reports.
-- [Puzzle game](docs/puzzle-game.md): Lode Runner rules and puzzle-solving concepts.
-- [Legacy runtime](docs/legacy-runtime.md): original CreateJS architecture and features.
-
+For real gameplay evaluations, `npm run eval -- --runs 5` starts five attempts using the
+configured provider and can incur charges. The hybrid reproducer can replay an existing recording
+to a verified decision before testing a continuation. [Test coverage](docs/sanity-tests.md) ·
+[Evaluator and reproducer](docs/evaluator.md)
 ## Screenshots
 
 ![Screenshot 1](public/Screenshot1.png)
@@ -167,4 +97,5 @@ without calling the model. See [Agent evaluator](docs/evaluator.md).
 ## Credits
 
 The game runtime is based on
-[SimonHung/LodeRunner_TotalRecall](https://github.com/SimonHung/LodeRunner_TotalRecall).
+[SimonHung/LodeRunner_TotalRecall](https://github.com/SimonHung/LodeRunner_TotalRecall),
+an HTML5 remake of the classic 1983 game ***Lode Runner***.

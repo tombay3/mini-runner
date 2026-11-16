@@ -117,6 +117,8 @@ async function runAgent(state, deps) {
   state.agentPlanner = null;
   state.agentTraceId = null;
   state.agentRunId = createRunId();
+  state.metricsStarted = performance.now();
+  state.metrics = { partial: false };
   state.agentLastError = null;
   state.agentRequestOptions = getAgentRequestOptions(config);
   deps.beginUiAction(state, "agent");
@@ -161,6 +163,7 @@ async function runAgent(state, deps) {
           level,
           snapshot: before,
           history,
+          metrics: state.metrics,
           runId: state.agentRunId,
           ...state.agentRequestOptions,
         }),
@@ -171,6 +174,7 @@ async function runAgent(state, deps) {
         step: stepCount,
         elapsedMs: Math.round(performance.now() - requestStarted),
       });
+      state.metrics.partial ||= response.metricsPartial === true;
       const action = normalizeAgentAction(response.action, config);
       state.agentPlanner = response.planner ?? null;
       state.agentTraceId = response.traceId ?? state.agentRunId;
@@ -216,6 +220,7 @@ async function runAgent(state, deps) {
         ? "agent safety step limit reached"
         : failureReason;
   } catch (error) {
+    state.metrics.partial ||= error?.metricsPartial !== false;
     failureReason = getErrorMessage(error);
     if (error?.name !== "AbortError") {
       await deps.checkBackendHealth(state);
@@ -380,14 +385,12 @@ async function saveAgentResult(
   const requestedProfile =
     state.agentRequestOptions?.modelProfile ?? config.agent.modelProfile;
   const solver = {
-    modelProfile: state.agentPlanner?.modelProfile ?? requestedProfile ?? null,
-    provider:
-      state.agentPlanner?.provider ??
-      (requestedModel?.includes(":")
-        ? requestedModel.split(":", 1)[0]
-        : requestedProfile) ??
-      null,
-    model: state.agentPlanner?.model ?? requestedModel,
+    profile: state.agentPlanner?.profile ?? requestedProfile ?? null,
+    provider: state.agentPlanner?.provider ??
+      (requestedModel?.includes(":") ? requestedModel.split(":", 1)[0] : null),
+    modelId: state.agentPlanner?.modelId ??
+      (requestedModel ? requestedModel.split(":").slice(1).join(":") : null),
+    api: state.agentPlanner?.api ?? null,
     generatedAt: state.agentPlanner?.generatedAt ?? new Date().toISOString(),
     responseId: state.agentPlanner?.responseId ?? null,
     traceId: traceId ?? null,
@@ -404,6 +407,7 @@ async function saveAgentResult(
         result,
         solver,
         traceId: traceId ?? null,
+        metrics: { ...state.metrics, wallMs: performance.now() - state.metricsStarted },
         finalSnapshot: summarizeTerminalSnapshot(finalSnapshot),
       }),
     },

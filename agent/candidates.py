@@ -257,6 +257,14 @@ class CandidateBuilder:
             ),
         ):
             audit["disposition"] = "physical_rejection"
+            direction = ACTION_NAMES[key_code]
+            detail = _dict(_dict(movement.get("details")).get(direction))
+            if key_code in (LEFT_KEYCODE, RIGHT_KEYCODE) and movement.get(
+                "canMoveLeft" if key_code == LEFT_KEYCODE else "canMoveRight"
+            ):
+                audit["detail"] = f"{direction} would reach an open hole"
+            else:
+                audit["detail"] = detail.get("reason") or f"{direction} unavailable from the current position"
             return False
         guard_rejection_detail = action_guard_safety_rejection_detail(
             action, self.analysis, candidate_kind=kind, snapshot=self.snapshot

@@ -10,9 +10,8 @@ short actions, and save the result.
 - `src/*`: Vite wrapper frontend, recording/playback rail, browser AI loop, and host styles.
 - `app.py`: Flask API for recordings, traces, model calls, and local JSON stores.
 - `agent/*`: candidate-agent backend analysis, prompting, model calls, traces, and loop filtering.
-- `trace-dash.py`: read-only Streamlit and pandas trace dashboard.
+- [Analytics](../analytics/README.md): Streamlit trace dashboard and notebooks for gameplay, cost and candidate analysis.
 - `scripts/*`: smoke/regression checks, browser evaluator, hybrid reproducer, and launchers.
-- `trace-analytics.ipynb`: read-only trace analytics notebook.
 
 ### Bootstrap Flow
 1. Vite serves `index.html`.
@@ -96,7 +95,7 @@ Snapshot → analysis and candidates → model selects `candidateId` → backend
 2. The hook starts the legacy game in Training/Modern playback context, stops the normal ticker, and exposes manual `snapshot()` / `step()` control.
 3. The browser sends `playData`, `level`, `snapshot`, bounded `history`, `runId`, and optional model selection to `/api/agent/next-action`.
 4. [app.py](../app.py) validates the request and calls `plan_next_action()`.
-5. [agent/service.py](../agent/service.py) resolves the model and orchestrates candidate planning.
+5. [agent/planner.py](../agent/planner.py) resolves the model and orchestrates candidate planning.
 6. [agent/candidates.py](../agent/candidates.py), [agent/reasoning_tools.py](../agent/reasoning_tools.py), and [agent/loop_tools.py](../agent/loop_tools.py) analyze the snapshot/history, remove confirmed loop actions, and produce ranked eligible candidates.
 7. [agent/prompt.py](../agent/prompt.py) asks the LLM to choose one candidate by ID.
 8. The backend validates the selected candidate, applies one generic fallback for malformed or unsafe selection, and returns one bounded legacy action.
@@ -117,7 +116,8 @@ the decision flow.
 ### Backend Modules
 
 - [agent/config.py](../agent/config.py): config defaults, provider profiles, model resolution, and environment loading.
-- [agent/service.py](../agent/service.py): request validation, `aisuite` client wrapper, one model call, candidate selection, and generic validation fallback.
+- [agent/planner.py](../agent/planner.py) validates requests, selects candidates and applies fallback.
+- [agent/llm_client.py](../agent/llm_client.py) sends Chat Completions and Decisions requests and parses their responses.
 - [agent/candidates.py](../agent/candidates.py): normalized analysis and candidate generation/ranking.
 - [agent/reasoning_tools.py](../agent/reasoning_tools.py): deterministic snapshot helpers for movement, guard pressure, digging, route access, and progress facts.
 - [agent/loop_tools.py](../agent/loop_tools.py): compact stationary, horizontal, and vertical cycle detection plus candidate suppression.
@@ -152,6 +152,6 @@ inspectable.
 - [LLM game agent](./llm-agent.md)
 - [Candidate design](./candidate-design.md)
 - [Backend spec](./backend-spec.md)
-- [Trace dashboard](./trace-dashboard.md)
+- [Trace dashboard](../analytics/README.md)
 - [Recording and playback](./record-playback.md)
 - [Sanity tests](./sanity-tests.md)

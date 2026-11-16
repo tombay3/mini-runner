@@ -22,6 +22,7 @@ def append_model_io_debug(
     *,
     trace_id: str | None,
     model: str,
+    model_profile: str | None = None,
     prompt: str,
     response: Any,
 ) -> None:
@@ -32,6 +33,7 @@ def append_model_io_debug(
     entry = format_model_io_entry(
         trace_id=trace_id,
         model=model,
+        model_profile=model_profile,
         prompt=prompt,
         response=response,
     )
@@ -57,15 +59,17 @@ def format_model_io_entry(
     *,
     trace_id: str | None,
     model: str,
+    model_profile: str | None = None,
     prompt: str,
     response: Any,
 ) -> str:
     message = get_response_message(response)
+    model_label = f"{model_profile}:{model.split(':', 1)[-1]}" if model_profile else model
     return "\n".join(
         [
             f"{ENTRY_PREFIX}{utc_now()} =====",
             f"traceId: {trace_id or ''}",
-            f"model: {model}",
+            f"model: {model_label}",
             "",
             "--- prompt ---",
             prompt,

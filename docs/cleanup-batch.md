@@ -42,12 +42,12 @@ IDs remain stable as the user approves, defers, or removes items.
 | P1 | agent/candidates.py | Consolidate mirrored horizontal retreat construction. | Implemented and verified | Preserve left/right order, scores, reasons, eligibility. |
 | P2 | agent/candidates.py | Calculate ladder target direction once and reuse for reason and scoring. | Implemented and verified | Preserve values and candidate order. |
 | P3 | agent/loop_tools.py | Move known candidate kinds to a module-level tuple. | Implemented and verified | Preserve matching order and existing unknown-kind handling. |
-| A1 | agent/service.py | Share identical Markdown-fence removal in response parsers. | Implemented and verified | Keep distinct validation and errors. |
+| A1 | agent/llm_client.py | Share identical Markdown-fence removal in response parsers. | Implemented and verified | Keep distinct validation and errors. |
 | A2 | agent/config.py | Share credential/base-URL assembly and use one profile-to-resolver dispatch map. | Implemented and verified | Keep profile-required versus explicit-optional credentials and environment precedence. |
 | A3 | agent/logging_utils.py, agent/debug_io.py | Share debug and numeric log-level resolution; remove identical format branches. | Implemented and verified | Preserve valid levels/aliases and debug override; unknown levels consistently use INFO. |
 | A4 | agent/prompt.py | Remove unused state/candidate formatting wrappers. | Implemented and verified | Recheck callers before removal. |
-| A5 | agent/service.py | Consolidate optional string-field validation. | Implemented and verified | Preserve validation order and errors. |
-| A6 | agent/service.py | Remove dead post-fallback assignments and redundant error-class reassignment. | Implemented and verified | No fallback-policy change. |
+| A5 | agent/planner.py | Consolidate optional string-field validation. | Implemented and verified | Preserve validation order and errors. |
+| A6 | agent/planner.py | Remove dead post-fallback assignments and redundant error-class reassignment. | Implemented and verified | No fallback-policy change. |
 | C1 | src/recording.js | Share action/trace stepping lifecycle and numeric trace-position lookup. | Implemented and verified | Keep completion conditions, messages, scheduling, cancellation, and timeout behavior. Largest item. |
 | C2 | src/agent.js | Share identical agent-run cleanup. | Implemented and verified | Keep existing finally boundaries and cleanup order. |
 | C3 | src/recording.js | Consolidate repeated recording-selection resets. | Implemented and verified | Preserve caller differences in stopping playback and finishing UI actions. |
@@ -55,7 +55,7 @@ IDs remain stable as the user approves, defers, or removes items.
 | C5 | app.py | Share ordered recording lookup/filtering and context matching across recording/trace operations. | Implemented and verified | Preserve timestamp ties, ordering, and early-return efficiency. |
 | C6 | app.py | Share optional-ID validation and game-context normalization. | Implemented and verified | Preserve field-specific errors and endpoint handling. |
 | C7 | scripts/api.mjs, scripts/notebook.mjs | Share virtualenv discovery and Python process forwarding. | Implemented and verified | Preserve arguments, installation guidance, signals, and exit codes. |
-| C8 | trace-dash.py | Share repeated JSON loading; hoist duration formatter out of record loop. | Implemented and verified | Preserve errors, formatting, and malformed-data handling. |
+| C8 | analytics/trace-dashboard.py | Share repeated JSON loading; hoist duration formatter out of record loop. | Implemented and verified | Preserve errors, formatting, and malformed-data handling. |
 | C9 | app.py: next_agent_action() | Normalize logging context to a dictionary before reading runId in error handlers. | Implemented and verified | Invalid non-object JSON must return the intended 400 response; retain other error statuses/messages. Concrete bug fix. |
 | D1 | agent/loop_tools.py, agent/candidates.py | Local detector/recovery structural cleanup; see expanded proposal below. | Implemented and verified | Small changes with demonstrated simplification; any behavior difference must be explicit and approved. |
 | DOC1 | docs/*.md and README.md | Review every document and rewrite dense, repetitive, or jargon-heavy content in plain, concise, scannable prose after implementation; see closing-work instructions. | Implemented and verified | Preserve meaningful rules, rationale, limitations, and evidence links; verify against final code. |

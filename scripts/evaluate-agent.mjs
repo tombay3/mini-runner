@@ -3,6 +3,8 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { createHash, randomUUID } from "node:crypto";
+import { projectPython } from "./launch-python.mjs";
 import { chromium } from "playwright-core";
 
 const scriptsDir = path.dirname(fileURLToPath(import.meta.url));
@@ -37,7 +39,44 @@ function decisionClass(step) {
 
 if (isMain) await main();
 
+function launchMetadata() {
+  const git = (...args) => spawnSync("git", args, { cwd: rootDir, encoding: "utf8" });
+  const head = git("rev-parse", "HEAD");
+  const diff = git("diff", "HEAD", "--binary");
+  return { launcherRevision: head.status === 0 ? head.stdout.trim() : null,
+    launcherDiffHash: diff.status === 0 ? createHash("sha256").update(diff.stdout).digest("hex") : null,
+    backendSource: "unknown", profile: options.profile, godMode: options.godMode,
+    controls: JSON.parse(readFileSync(path.join(rootDir, "public/agent-config.json"), "utf8")) };
+}
+
 async function main() {
+  const batchId = randomUUID();
+  const launch = launchMetadata();
+  const startedAt = new Date().toISOString();
+  let attemptStarts = 0;
+  function closeMetrics(failed = false) {
+    if (options.smoke) return null;
+    const ids = attempts.map(a => a.traceId).filter(Boolean);
+    let found = [];
+    let verificationError = null;
+    if (!options.godMode && ids.length) {
+      try {
+        const args = ids.flatMap(id => ["--run", id]);
+        const result = spawnSync(projectPython("Metrics verification requires Python"),
+          ["-m", "agent.metrics", "verify", ...args], { cwd: rootDir, encoding: "utf8", timeout: 10000 });
+        if (result.status !== 0) throw new Error("Unable to verify metrics database");
+        found = JSON.parse(result.stdout);
+      } catch (error) {
+        verificationError = error.message;
+      }
+    }
+    const missingIds = options.godMode ? [] : ids.filter(id => !found.includes(id));
+    return { batchId, launch, startedAt, endedAt: new Date().toISOString(), expected: options.runs,
+      attemptsStarted: attemptStarts, attemptsWithoutResult: attemptStarts - attempts.length,
+      runIds: ids, missingIds, verificationError, skippedGodMode: options.godMode,
+      partial: failed || attemptStarts !== attempts.length || !!verificationError ||
+        missingIds.length > 0 || (!options.godMode && attempts.some(a => !a.traceId || a.metricsPartial)) };
+  }
 try {
   await ensureServer("backend", "http://127.0.0.1:8485/api/health", ["run", "api"]);
   await ensureServer("frontend", options.baseUrl, ["run", "dev", "--", "--host", "127.0.0.1"]);
@@ -75,6 +114,7 @@ try {
     let result;
     try {
       await waitForAttemptReady(page);
+      attemptStarts += 1;
       result = await runAttemptWithTimeout(page, options.godMode);
     } catch (error) {
       // A wrapper reload can destroy Playwright's execution context between
@@ -85,8 +125,16 @@ try {
       }
       await page.goto(url.href, { waitUntil: "domcontentloaded" });
       await waitForAttemptReady(page);
+      attemptStarts += 1;
       result = await runAttemptWithTimeout(page, options.godMode);
     }
+    await page.evaluate(async recordId => {
+      const response = await fetch('/api/recordings/1/1/pin', {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ recordId, pinned: true }),
+      });
+      if (!response.ok) throw new Error('Could not pin the persisted evaluation recording');
+    }, result.id);
     const trace = result.traceId ? await fetchTraceAfterPersistence(page, result.traceId) : null;
     const attempt = summarizeAttempt(index + 1, startedAt, result, trace, options);
     attempts.push(attempt);
@@ -104,6 +152,7 @@ try {
   }
 
   const report = buildReport(options, attempts, executablePath);
+  report.metrics = closeMetrics();
   process.stdout.write(`${JSON.stringify(report.summary, null, 2)}\n`);
   if (options.output) {
     const outputPath = path.resolve(rootDir, options.output);
@@ -119,9 +168,11 @@ try {
   }
 } catch (error) {
   console.error(error instanceof Error ? error.stack || error.message : String(error));
+  const metrics = closeMetrics(true);
   if (options.output) {
     const outputPath = path.resolve(rootDir, options.output);
     const failureReport = {
+      metrics,
       options,
       executablePath,
       attempts,
@@ -243,8 +294,8 @@ function nonempty(value, label) {
 async function runAttemptWithTimeout(page, godMode) {
   let timer;
   const attempt = page.evaluate(
-    (requestedGodMode) => window.__lodeRunnerEvaluation.runAttempt({ godMode: requestedGodMode }),
-    godMode,
+    (controls) => window.__lodeRunnerEvaluation.runAttempt(controls),
+    { godMode },
   );
   const timeout = new Promise((_, reject) => {
     timer = setTimeout(() => {
@@ -506,6 +557,7 @@ export function summarizeAttempt(number, startedAt, result, trace, config) {
   );
   return {
     number,
+    metricsPartial: result.metricsPartial ?? true,
     startedAt,
     finishedAt: new Date().toISOString(),
     id: result.id,
@@ -514,7 +566,7 @@ export function summarizeAttempt(number, startedAt, result, trace, config) {
     failureReason: result.failureReason,
     demoTime: result.demoTime,
     stepCount: steps.length,
-    model: trace?.model ? { profile: trace.model.profile, provider: trace.model.provider, name: trace.model.name } : null,
+    model: trace?.model ? { profile: trace.model.profile, provider: trace.model.provider, modelId: trace.model.modelId, api: trace.model.api } : null,
     normalMode: recordedGodMode === 0 && terminalGodMode === false,
     requestedMode: requestedGodMode ? "god" : "normal",
     recordedGodMode: Number.isFinite(recordedGodMode) ? recordedGodMode : null,

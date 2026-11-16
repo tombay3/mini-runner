@@ -71,7 +71,7 @@ This is maintainer reference, not prompt text. The active prompt rules are in
 
 ## Backend planner and candidate generation
 
-`agent/service.py` validates the request, resolves the model, generates candidates, asks the model
+`agent/planner.py` validates the request, resolves the model, generates candidates, asks the model
 to choose one, validates that choice, and records the step.
 
 `agent/candidates.py` builds the candidate list. It checks movement and guard safety, records why
@@ -120,7 +120,7 @@ for data fields and [Agent evaluator](./evaluator.md) for evaluation and retenti
 ## Development experiment workflow
 
 Use a saved trace to identify a specific decision and its observed result. Run
-`npm run cohorts:check` and read the [cohort catalog](./trace-cohort.md) before
+`npm run cohorts:check` and read the [cohort catalog](../analytics/cohorts.md) before
 investigating so the source revision, run controls, earlier findings, and missing
 evidence are clear. Candidate audits
 show whether an action was absent, filtered, or offered but not selected. The next
@@ -144,7 +144,7 @@ evidence-backed findings, then check again. The catalog records findings and
 provenance; recordings and traces supply the underlying decisions. See
 [Candidate design](./candidate-design.md#failure-classification) for defect classes,
 [Agent evaluator](./evaluator.md) for run controls, and
-[Cohort workflow](./trace-cohort.md) for catalog maintenance.
+[Cohort workflow](../analytics/cohorts.md) for catalog maintenance.
 
 ### Commit buckets
 

@@ -148,6 +148,7 @@ function installEvaluationApi(state) {
       }
       return {
         id: record.id,
+        metricsPartial: record.metricsPartial,
         traceId: record.traceId,
         playData: record.playData,
         level: record.level,
@@ -1821,6 +1822,7 @@ async function apiFetch(url, options) {
     const detail = typeof body?.detail === "string" ? body.detail : null;
     const error = new Error(detail || body?.error || response.statusText);
     error.status = response.status;
+    error.metricsPartial = body?.metricsPartial;
     throw error;
   }
   return body;

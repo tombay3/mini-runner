@@ -86,12 +86,20 @@ for (const result of ["success", "failure"]) {
   let releaseRefresh, enterRefresh;
   const entered = new Promise(resolve => { enterRefresh = resolve; });
   const pending = new Promise(resolve => { releaseRefresh = resolve; });
-  const state = { agentRunning: true, agentRunId: "run", busyAction: "agent" };
+  const identity = { profile: "openai-decisions", provider: "openai", modelId: "gpt-6-luna", api: "decisions" };
+  const state = { agentRunning: true, agentRunId: "run", busyAction: "agent", agentPlanner: identity };
   const record = { id: "run", source: "agent", result };
   let settled = false, saves = 0;
   const deps = {
     normalizeDemo: () => ({}),
-    apiFetch: async () => { saves++; return record; },
+    apiFetch: async (_url, options) => {
+      const solver = JSON.parse(options.body).solver;
+      for (const [key, value] of Object.entries(identity)) assert.equal(solver[key], value);
+      assert.equal(Object.hasOwn(solver, "modelProfile"), false);
+      assert.equal(Object.hasOwn(solver, "model"), false);
+      saves++;
+      return record;
+    },
     recordingApiBase: "/api/recordings",
     formatGameLevel: () => "1:1",
     finishUiAction: s => { s.busyAction = ""; },

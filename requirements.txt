@@ -1,6 +1,5 @@
 Flask>=3.0,<4
-aisuite @ git+https://github.com/joor0x/aisuite.git@4b07ed91ef8a8fdcccb6a7a89823d38386c54f82
-openai>=2.35,<3
+openai>=3.46,<4
 pydantic>=2.13,<3
 python-dotenv>=1.0,<2
 jupyter>=1.0,<2

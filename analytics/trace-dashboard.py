@@ -1,5 +1,4 @@
 import json
-import os
 from datetime import datetime, timezone
 from html import escape
 from pathlib import Path
@@ -8,6 +7,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import pandas as pd
 import streamlit as st
+
+from data_paths import DATA_DIR, repository_path
 
 
 # ── Data loading and DataFrame builders ─────────────────────────────────────
@@ -202,10 +203,10 @@ def _build_dataframes(recordings_raw: dict, traces_raw: dict):
                 "playData": rec.get("playData"),
                 "savedAt": saved_at,
                 "createdAt": created_at,
-                "model": model_info.get("name") or solver.get("model", ""),
+                "model": model_info.get("modelId") or solver.get("modelId", ""),
                 "provider": model_info.get("provider") or solver.get("provider", ""),
                 "modelProfile": model_info.get("profile")
-                or solver.get("modelProfile", ""),
+                or solver.get("profile", ""),
                 "failureReason": solver.get("failureReason", ""),
                 "stepCount": len(trace_steps),
                 "latestAction": _as_dict(trace_steps[-1]).get("issuedAction") if trace_steps else None,
@@ -343,7 +344,7 @@ def _build_dataframes(recordings_raw: dict, traces_raw: dict):
                     "terminal_reason": outcome.get("reason", "")
                     if is_final_step
                     else "",
-                    "model": model_info.get("name", ""),
+                    "model": model_info.get("modelId", ""),
                     "provider": model_info.get("provider", ""),
                     "candidates_raw": candidates,
                 }
@@ -422,6 +423,18 @@ def _candidate_signatures(candidates: list[dict[str, Any]]) -> set[tuple[int, in
         for candidate in candidates
         if (signature := _action_signature(candidate.get("offeredAction"))) is not None
     }
+
+
+def _lane_actions(candidates: list[dict[str, Any]]) -> dict[str, set[tuple[int, int]]]:
+    return {
+        lane: _candidate_signatures([c for c in candidates if c.get("lane") == lane])
+        for lane in ("safety", "progress")
+    }
+
+
+def _has_mixed_actions(actions: dict[str, set[tuple[int, int]]]) -> bool:
+    return bool(actions["safety"] - actions["progress"]
+                and actions["progress"] - actions["safety"])
 
 
 def _is_meaningful_lower_score_request(
@@ -514,7 +527,7 @@ def _candidates_text(choice: dict[str, int]) -> str:
         "Candidates: "
         f"safety only {choice['safety_only']} · "
         f"progress only {choice['progress_only']} · "
-        f"both lanes {choice['both']} · "
+        f"mixed lanes {choice['mixed']} · "
         f"{choice['candidate_singleton']} singletons · "
         f"{choice['forced_safety']} forced safety · "
         f"{choice['forced_progress']} forced progress"
@@ -554,7 +567,7 @@ def _build_run_signals(
         "steps": len(rows),
         "safety_only": 0,
         "progress_only": 0,
-        "both": 0,
+        "mixed": 0,
         "candidate_singleton": 0,
         "forced_safety": 0,
         "forced_progress": 0,
@@ -573,17 +586,9 @@ def _build_run_signals(
         lanes = {str(candidate.get("lane") or "other") for candidate in candidates}
         has_safety = "safety" in lanes
         has_progress = "progress" in lanes
-        availability = (
-            "both"
-            if has_safety and has_progress
-            else "safety_only"
-            if has_safety
-            else "progress_only"
-            if has_progress
-            else None
-        )
-        if availability is not None:
-            choice[availability] += 1
+        choice["safety_only"] += has_safety and not has_progress
+        choice["progress_only"] += has_progress and not has_safety
+        choice["mixed"] += _has_mixed_actions(_lane_actions(candidates))
         choice["candidate_singleton"] += len(candidates) == 1
         if len(candidates) == 1:
             singleton = candidates[0]
@@ -604,13 +609,11 @@ def _build_run_signals(
 
     # Safety rejection pressure, including the longest repeated kind/action.
     rejection_step_positions = []
-    safety_rejected_count = 0
     rejection_positions: dict[tuple[str, int, int], list[int]] = {}
     for position, row in enumerate(rows):
         rejections = _as_dict_list(row.get("candidateSafetyRejections"))
         if rejections:
             rejection_step_positions.append(position)
-            safety_rejected_count += len(rejections)
         step_signatures = set()
         for rejection in rejections:
             key_code = _safe_number(rejection.get("action_keyCode"))
@@ -646,8 +649,7 @@ def _build_run_signals(
         signals.append(
             _signal(
                 "Safety constraints",
-                f"{safety_rejected_count} safety rejections on "
-                f"{len(rejection_step_positions)} steps{detail}",
+                f"{len(rejection_step_positions)} steps with safety rejection(s){detail}",
                 rows,
                 rejection_interval,
             )
@@ -761,9 +763,10 @@ def _build_run_signals(
         initial_gold = rows[0]["gold_remaining"]
         remaining_gold = rows[-1]["after_gold_remaining"]
         gold_prefix = (
-            f"{int(initial_gold - remaining_gold)} golds · "
+            f"{int(initial_gold - remaining_gold)}/{int(initial_gold)} gold · "
             if initial_gold is not None
             and remaining_gold is not None
+            and initial_gold > 0
             and initial_gold >= remaining_gold >= 0
             and initial_gold % 1 == 0
             and remaining_gold % 1 == 0
@@ -926,17 +929,18 @@ def _build_run_signals(
         top_candidates = [
             candidate for candidate, score in scored if score == top_score
         ]
-        requested_lane = str(
-            (requested.get("lane") or "other") if requested is not None else "other"
+        actions = _lane_actions(candidates)
+        top_actions = _candidate_signatures(top_candidates)
+        lane_change = _has_mixed_actions(actions) and any(
+            requested_signature in actions[lane] - actions[other]
+            and top_actions <= actions[other] - actions[lane]
+            for lane, other in (("safety", "progress"), ("progress", "safety"))
         )
-        top_lanes = {
-            str(candidate.get("lane") or "other") for candidate in top_candidates
-        }
         divergences.append(
             {
                 "position": position,
                 "gap": top_score - requested_score,
-                "lane_change": requested_lane not in top_lanes,
+                "lane_change": lane_change,
             }
         )
     if divergences:
@@ -950,7 +954,7 @@ def _build_run_signals(
             _signal(
                 "Model divergence",
                 f"{len(divergences)} lower-score requests on "
-                f"{choice['multi_action_decision']} multi-choices{lane_change_detail} · "
+                f"{choice['multi_action_decision']} steps{lane_change_detail} · "
                 f"largest score gap {largest['gap']:g}",
                 rows,
                 interval,
@@ -1050,9 +1054,6 @@ KEY_MAP = {
     83: "S (dig-right)",
 }
 
-_WORKSPACE_ROOT = os.path.abspath(os.path.dirname(__file__))
-
-
 def _display_scalar(value, fallback="—"):
     if value is None or value == "":
         return fallback
@@ -1070,14 +1071,6 @@ def _display_scalar(value, fallback="—"):
     return value
 
 
-def _resolve_folder(path: str) -> str:
-    """Return an absolute path; relative paths are anchored to the workspace root."""
-    p = os.path.expanduser(path.strip())
-    if not os.path.isabs(p):
-        p = os.path.join(_WORKSPACE_ROOT, p)
-    return p
-
-
 def _queue_trace_jump(trace_id: str, step_index: int) -> None:
     nonce = _safe_int(st.session_state.get("trace_jump_nonce")) + 1
     st.session_state["trace_jump_nonce"] = nonce
@@ -1092,10 +1085,9 @@ def _queue_trace_jump(trace_id: str, step_index: int) -> None:
 st.sidebar.title("🎮 Agent Dash")
 st.sidebar.markdown("---")
 
-default_folder = os.environ.get("AGENT_DATA_DIR", "__data1")
 folder = st.sidebar.text_input(
     "Data folder path",
-    value=default_folder,
+    value=str(DATA_DIR),
     help="Path to the folder containing recordings.json and agent-traces.json",
 )
 
@@ -1110,7 +1102,7 @@ def cached_load(folder_path: str, store_signature: tuple):
     return load_data(folder_path)
 
 
-resolved_folder = _resolve_folder(folder)
+resolved_folder = str(repository_path(folder.strip()))
 store_signature = []
 for name in ("recordings.json", "agent-traces.json"):
     try:
@@ -1219,6 +1211,11 @@ with st.expander(
         ]
         cols_present = [c for c in display_cols if c in overview_runs_df.columns]
         view = cast(pd.DataFrame, overview_runs_df.loc[:, cols_present].copy())
+        if "model" in view.columns:
+            view["model"] = [
+                f"{profile}:{str(model)}" if profile and model else model
+                for model, profile in zip(view["model"], overview_runs_df["modelProfile"])
+            ]
         gold_collected = {}
         if not steps_df.empty:
             for trace_id, trace_steps in steps_df.groupby("traceId", sort=False):
@@ -1276,7 +1273,7 @@ with st.expander(
                 "lowerScoreRequestCount": "✨",
                 "warningStepCount": "⚠️",
                 "loopActiveSteps": "🔁",
-                "recordTime": "record",
+                "recordTime": "🕤",
             }
         )
         if "savedAt" in view.columns:
@@ -1303,13 +1300,13 @@ with st.expander(
             height=header_h + row_h * len(view),
             column_config={
                 "#": st.column_config.NumberColumn("#", width=30),
-                "outcome": st.column_config.TextColumn("outcome", width=200),
+                "outcome": st.column_config.TextColumn("outcome", width=120),
                 "🧈": st.column_config.NumberColumn("🧈", width=30, format="%d"),
                 "🎯": st.column_config.NumberColumn("🎯", width=30, format="%.1f"),
                 "✨": st.column_config.NumberColumn("✨", width=30),
                 "⚠️": st.column_config.NumberColumn("⚠️", width=30),
                 "🔁": st.column_config.NumberColumn("🔁", width=30),
-                "model": st.column_config.TextColumn("model", width=100),
+                "model": st.column_config.TextColumn("model", width=180),
             },
             on_select="rerun",
             selection_mode="single-row",

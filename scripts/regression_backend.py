@@ -79,7 +79,7 @@ def check_floor_separated_horizontal_pressure():
         exit_action = next(c["action"] for c in pool if c["kind"] == "exit_ladder_route")
         assert exit_action == {"keyCode": key, "ticks": 4}
         assert action_guard_safety_rejection_detail(exit_action, analysis, snapshot=state) is None
-        from agent.service import validate_or_fallback_candidate
+        from agent.planner import validate_or_fallback_candidate
         exit_candidate = next(c for c in pool if c["kind"] == "exit_ladder_route")
         selected, validation = validate_or_fallback_candidate(
             {"choice": {"candidateId": exit_candidate["id"]}}, pool, analysis, snapshot=state)
@@ -569,32 +569,139 @@ def check_horizontal_offset_progress():
 
 def check_provider_and_response_contracts():
     import os
-    from types import SimpleNamespace
+    from types import SimpleNamespace as N
     from unittest.mock import patch
-    from agent.config import resolve_model_profile, get_explicit_provider_configs
-    from agent.service import parse_candidate_response, _extract_openai_declared_reasoning
-    for profile in ("openai", "minimax", "gemini"):
+    from agent.config import resolve_model_profile, GEMINI_DEFAULT_BASE_URL
+    from agent.errors import AgentRequestError
+    from agent.llm_client import AgentClient, effective_settings, normalize_chat_response, parse_chat_response
+    for profile in ("openai", "gemini"):
         prefix = profile.upper()
         with patch.dict(os.environ, {prefix + "_MODEL": "test", prefix + "_API_KEY": "dummy"}, clear=True):
-            resolved = resolve_model_profile(profile, source="request")
-            assert resolved.profile == profile
-            assert resolved.aisuite_provider == ("openai" if profile == "gemini" else profile)
-            if profile != "gemini":
-                assert get_explicit_provider_configs(profile) == resolved.provider_configs
-        with patch.dict(os.environ, {}, clear=True):
-            try:
-                resolve_model_profile(profile, source="config")
-            except ValueError:
-                pass
-            else:
-                raise AssertionError("Missing model accepted")
+            model = resolve_model_profile(profile, source="request")
+            assert model.profile == profile
+            if profile == "gemini":
+                assert model.provider_configs["openai"]["base_url"] == GEMINI_DEFAULT_BASE_URL
+            fake = N(chat=N(completions=N(create=lambda **kw: kw)))
+            with patch("agent.llm_client.openai.OpenAI", return_value=fake) as factory:
+                sent = AgentClient().create_completion(model, [{"role": "user", "content": "test"}], temperature=0.5)
+                assert sent["model"] == "test" and sent["temperature"] == 0.5
+                assert factory.call_args.kwargs["max_retries"] == 0
+    with patch.dict(os.environ, {"OPENAI_API_KEY": "dummy", "OPENAI_BASE_URL": "https://example.test"}, clear=True):
+        explicit = AgentClient().resolve_model_name("openai:test", source="request")
+        assert explicit.provider_configs["openai"]["base_url"] == "https://example.test"
+        nano = AgentClient().resolve_model_name("openai:gpt-5-nano", source="request")
+        assert effective_settings(nano, {"temperature": 0.5}) == {}
+    for name in ("minimax:test", "anthropic:test"):
+        try:
+            AgentClient().resolve_model_name(name, source="request")
+        except AgentRequestError:
+            pass
+        else:
+            raise AssertionError("Unsupported direct provider accepted")
+    try:
+        resolve_model_profile("minimax", source="request")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("Retired profile accepted")
     for content in ('{"candidateId":"test"}', '```json\n{"candidateId":"test"}\n```'):
-        response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
-        choice, error = parse_candidate_response(response)
+        response = N(choices=[N(message=N(content=content))])
+        choice, error = parse_chat_response(response)
         assert choice == {"candidateId": "test"} and error is None
-    assert _extract_openai_declared_reasoning('```json\n{"reasoning":"brief"}\n```') == "brief"
-    response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="[]"))])
-    assert parse_candidate_response(response)[0] is None
+    response = N(choices=[N(message=N(content=None, refusal="no"))])
+    assert parse_chat_response(response)[1] == "model refused candidate selection"
+    meta = normalize_chat_response(response, explicit, 10, "refusal")
+    assert meta["status"] == "refusal" and meta["usage"]["inputTokens"] is None
+    assert meta["gateway"] == "custom" and meta["servingProvider"] is None
+    assert parse_chat_response(N(choices=[N(message=N(content="[]"))]))[0] is None
+
+
+def check_selector_protocols():
+    import json
+    import os
+    from types import SimpleNamespace as N
+    from unittest.mock import patch
+    from agent.config import resolve_model_profile, load_public_agent_config
+    from agent.planner import run_model_turn, validate_or_fallback_candidate
+    from agent.llm_client import AgentClient, normalize_chat_response, normalize_decision_response, parse_decision_response
+
+    env = {"OPENAI_API_KEY": "dummy", "OPENAI_MODEL": "test", "OPENROUTER_API_KEY": "dummy",
+           "OPENROUTER_MODEL": "vendor/model", "OPENROUTER_PROVIDER": "vendor"}
+    snapshot = candidate_snapshot(guarded=True)
+    candidates, analysis = generate_candidates(snapshot, [])
+    ids = [c["id"] for c in candidates]
+    captured = []
+    class Fake:
+        def create_completion(self, model, messages, **kwargs):
+            captured.append((messages[-1]["content"], kwargs))
+            if model.profile == "openai-decisions":
+                return N(answers=[N(type="choice", choice=ids[0])], usage=None, model="gpt-6-luna")
+            return N(choices=[N(message=N(content=json.dumps({"candidateId": ids[0]})))], usage=None)
+    with patch.dict(os.environ, env, clear=True):
+        chat = resolve_model_profile("openai", source="request")
+        decisions = resolve_model_profile("openai-decisions", source="request")
+        router = resolve_model_profile("openrouter", source="request")
+        results = [run_model_turn(Fake(), m, snapshot, candidates, analysis, {}, load_public_agent_config()) for m in (chat, decisions, router)]
+        assert all(result["choice"]["candidateId"] == ids[0] for result in results)
+        assert captured[1][1]["candidate_ids"] == ids
+        contexts = [p.split("Decision context (valid JSON):\n", 1)[1].split("\n\n", 1)[0] for p, _ in captured]
+        assert len(set(contexts)) == 1
+        for result in results:
+            selected, validation = validate_or_fallback_candidate(result, candidates, analysis, snapshot=snapshot)
+            assert selected["id"] == ids[0] and not validation["fallbackUsed"]
+        fake = N(chat=N(completions=N(create=lambda **kwargs: N(provider="vendor", usage=N(cost=0.0002), **{"sent": kwargs}))))
+        with patch("agent.llm_client.openai.OpenAI", return_value=fake):
+            response = AgentClient().create_completion(router, [], temperature=0.5)
+            routing = response.sent["extra_body"]["provider"]
+            assert routing == {"only": ["vendor"], "allow_fallbacks": False, "require_parameters": True}
+            meta = normalize_chat_response(response, router, 1, None)
+            assert "reportedUsd" not in meta and meta["servingProvider"] == "vendor"
+    for answer in (N(type="refusal"), N(type="choice", choice=True), N(type="score")):
+        choice, error = parse_decision_response(N(answers=[answer]))
+        selected, validation = validate_or_fallback_candidate({"choice": choice, "parseError": error}, candidates, analysis, snapshot=snapshot)
+        assert selected["id"] == ids[0] and validation["fallbackUsed"]
+    selected, validation = validate_or_fallback_candidate({"choice": {"candidateId": "unknown"}}, candidates, analysis, snapshot=snapshot)
+    assert selected["id"] == ids[0] and validation["fallbackUsed"] and not validation["knownCandidate"]
+
+    # Exercise the real SDK's request serialization and typed response parser when available.
+    import openai
+    if hasattr(openai.OpenAI(api_key="dummy"), "decisions"):
+        import httpx2
+        seen = []
+        def handle(request):
+            seen.append(json.loads(request.content))
+            return httpx2.Response(200, json={"model":"gpt-6-luna", "answers":[{"type":"choice", "name":"candidate", "choice":ids[0], "confidence":0.9, "probabilities":[{"value":ids[0], "probability":0.9}]}], "usage":{"input_tokens":3,"output_tokens":1,"total_tokens":4,"input_tokens_details":{"cached_tokens":0,"cache_write_tokens":0},"output_tokens_details":{"reasoning_tokens":0}}})
+        sdk = openai.OpenAI(api_key="dummy", http_client=httpx2.Client(transport=httpx2.MockTransport(handle)), max_retries=0)
+        transport = AgentClient()
+        transport._clients[json.dumps(decisions.provider_configs["openai"], sort_keys=True)] = sdk
+        result = transport.create_completion(decisions, [{"role":"user", "content":"context"}], candidate_ids=ids)
+        assert parse_decision_response(result)[0] == {"candidateId": ids[0]}
+        assert [c["value"] for c in seen[0]["questions"][0]["choices"]] == ids
+        meta = normalize_decision_response(result, decisions, 1, None, ids)
+        assert meta["diagnostics"] == {"confidence": 0.9, "probabilities": [{"candidateId":ids[0], "probability":0.9}]}
+        assert meta["usage"]["cacheWriteTokens"] == 0
+        # Parse real SDK refusal and malformed choice responses through the same transport.
+        for raw, expected in (({"type":"refusal", "name":"candidate"}, "model refused candidate selection"),
+                              ({"type":"choice", "name":"candidate", "choice":True, "confidence":0.9, "probabilities":[]}, "model returned malformed choice")):
+            def other_handle(request, answer=raw):
+                return httpx2.Response(200, json={"model":"gpt-6-luna", "answers":[answer], "usage":{"input_tokens":1,"output_tokens":0,"total_tokens":1}})
+            other_sdk = openai.OpenAI(api_key="dummy", http_client=httpx2.Client(transport=httpx2.MockTransport(other_handle)), max_retries=0)
+            transport._clients[json.dumps(decisions.provider_configs["openai"], sort_keys=True)] = other_sdk
+            typed = transport.create_completion(decisions, [{"role":"user","content":"context"}], candidate_ids=ids)
+            choice, error = parse_decision_response(typed)
+            assert choice is None and error == expected
+            assert normalize_decision_response(typed, decisions, 1, error, ids)["status"] == ("refusal" if raw["type"] == "refusal" else "parse_error")
+        def router_handle(request):
+            seen.append(json.loads(request.content))
+            return httpx2.Response(200, json={"id":"x", "object":"chat.completion", "created":0, "model":"vendor/model", "provider":"vendor", "choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":json.dumps({"candidateId":ids[0]})}}], "usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4,"cost":0.0002}})
+        router_sdk = openai.OpenAI(api_key="dummy", base_url="https://openrouter.ai/api/v1", http_client=httpx2.Client(transport=httpx2.MockTransport(router_handle)), max_retries=0)
+        adapter = AgentClient()
+        adapter._clients[json.dumps(router.provider_configs["openai"], sort_keys=True)] = router_sdk
+        router_response = adapter.create_completion(router, [{"role":"user","content":"context"}], temperature=0.5)
+        assert seen[-1]["provider"] == {"only":["vendor"], "allow_fallbacks":False, "require_parameters":True}
+        assert "usage" not in seen[-1]  # Usage is included automatically.
+        router_meta = normalize_chat_response(router_response, router, 1, None)
+        assert "reportedUsd" not in router_meta and router_meta["servingProvider"] == "vendor"
 
 
 def check_immediate_descent_after_climb():
@@ -633,7 +740,167 @@ def check_logging_levels():
         assert debug_log_enabled() and effective_app_log_level() == 10
 
 
+def check_metrics_token_validation():
+    import tempfile
+    from agent.metrics import Measurement, database
+
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "metrics.sqlite3"
+        measurement = Measurement(path, "usage")
+        measurement.begin(candidate_snapshot())
+        # Invalid totals must not discard valid measurements from the same call.
+        for invalid in (-1, 2.5, 2.0, True, "12", float("nan"), float("inf"), 2**63):
+            measurement.request_start()
+            measurement.request_end({"status": "ok", "usage": {
+                "inputTokens": invalid, "outputTokens": 0, "cachedInputTokens": 0}})
+            with database(path, readonly=True) as db:
+                row = db.execute("SELECT * FROM model_calls WHERE id=?", (measurement.request_id,)).fetchone()
+                assert row["input_tokens"] is None and row["output_tokens"] == 0
+                assert row["cached_tokens"] == 0 and row["status"] == "ok"
+        measurement.request_start()
+        measurement.request_end({"status": "ok", "usage": {
+            "inputTokens": 10, "outputTokens": 5, "cachedInputTokens": 11,
+            "cacheWriteTokens": 10, "reasoningTokens": 6}})
+        with database(path, readonly=True) as db:
+            row = db.execute("SELECT * FROM model_calls WHERE id=?", (measurement.request_id,)).fetchone()
+            assert (row["input_tokens"], row["output_tokens"], row["cache_write_tokens"]) == (10, 5, 10)
+            assert row["cached_tokens"] is None and row["reasoning_tokens"] is None
+        measurement.request_start()
+        measurement.request_end({"status": "ok"})
+        with database(path, readonly=True) as db:
+            row = db.execute("SELECT * FROM model_calls WHERE id=?", (measurement.request_id,)).fetchone()
+            assert all(row[k] is None for k in ("input_tokens", "output_tokens", "cached_tokens",
+                                                "cache_write_tokens", "reasoning_tokens"))
+        assert not measurement.partial
+
+
+def check_metrics_lifecycle():
+    import json
+    import os
+    import sqlite3
+    from types import SimpleNamespace as N
+    from unittest.mock import patch
+    from concurrent.futures import ThreadPoolExecutor
+    from contextlib import closing
+    from agent.metrics import Measurement, database
+    from agent.metrics import eligible_games
+    from sanity_backend import isolated_client
+    import app as backend
+
+    snapshot = candidate_snapshot()
+    snapshot["gold"]["visiblePositions"].append({"x":0,"y":1})
+    snapshot["gold"]["remainingCount"] = 2
+    snapshot["goldCount"] = 2
+    candidate = generate_candidates(snapshot, [])[0][0]
+    response = N(id="mock", model="gpt-5-nano", choices=[N(message=N(
+        content=json.dumps({"candidateId": candidate["id"]})))],
+        usage=N(prompt_tokens=100, completion_tokens=20, prompt_tokens_details=N(cached_tokens=40)))
+    request = {"playData": 1, "level": 1, "runId": "measured", "snapshot": snapshot,
+               "model": "openai:gpt-5-nano"}
+    with isolated_client() as client, patch.dict(os.environ, {"OPENAI_API_KEY":"dummy"}, clear=True), \
+            patch("agent.planner.reload_dotenv_files"), \
+            patch("agent.llm_client.AgentClient.create_completion", return_value=response) as model:
+        path = backend.metrics_path()
+        first = client.post("/api/agent/next-action", json=request).json
+        assert first["candidateId"] == candidate["id"] and not first["metricsPartial"]
+        identity = {"profile": "explicit", "provider": "openai", "modelId": "gpt-5-nano", "api": "chat_completions"}
+        assert {key: first["planner"][key] for key in identity} == identity
+        assert backend.load_trace_store()["runs"]["measured"]["model"] == identity
+        try:
+            backend.assert_trace_settings({"model": identity, "config": {}}, {**identity, "api": "decisions"}, {})
+        except backend.AgentRequestError:
+            pass
+        else:
+            raise AssertionError("API identity drift accepted")
+        save = {"source":"agent", "traceId":"measured", "result":"success",
+                "demo":{"level":1, "ai":1, "time":4, "state":1, "action":[0,39], "goldDrop":[], "bornPos":[]},
+                "finalSnapshot":{**snapshot, "tick":4,"gold":{"remainingCount":0}},
+                "metrics":{"wallMs":60}, "solver": identity}
+        for _ in range(2):
+            saved = client.put("/api/recordings/1/1", json=save).json
+            assert not saved["metricsPartial"] and saved["solver"] == identity
+        assert model.call_count == 1
+        with database(path) as db:
+            game, = eligible_games(db)
+            assert (game["gold"], game["calls"], game["decisions"], game["divergences"]) == (2, 1, 1, 0)
+            assert (game["profile"],game["model_id"],game["gw_model"]) == ("explicit","gpt-5-nano","gpt-5-nano")
+            assert db.execute("SELECT output_tokens FROM model_calls").fetchone()[0] == 20
+        god = {**snapshot, "godMode": True}
+        client.post("/api/agent/next-action", json={**request, "snapshot":god, "runId":"test-mode"})
+        client.put("/api/recordings/1/1", json={**save, "traceId":"test-mode","finalSnapshot":god})
+        with database(path) as db:
+            assert db.execute("SELECT count(*) FROM runs").fetchone()[0] == 1
+
+        model.side_effect = RuntimeError("private mock exception")
+        failure = client.post("/api/agent/next-action", json={**request, "runId":"failed", "metrics":{}})
+        assert failure.status_code == 502 and "private" not in str(failure.json)
+        with database(path) as db:
+            assert db.execute("SELECT count(*) FROM model_calls WHERE status='error'").fetchone()[0] == 1
+            assert len(eligible_games(db)) == 1
+            db.execute("DELETE FROM runs WHERE id='failed'")
+            assert db.execute("SELECT count(*) FROM model_calls").fetchone()[0] == 1
+        model.side_effect = None
+        with patch.dict(os.environ, {"AGENT_METRICS_PATH": str(path.parent)}):
+            degraded = client.post("/api/agent/next-action", json={**request, "runId":"degraded"})
+            assert degraded.status_code == 200 and degraded.json["metricsPartial"]
+            assert degraded.json["action"] == first["action"]
+
+        fresh = path.with_name("concurrent.sqlite3")
+        def start(i):
+            Measurement(fresh, str(i)).begin(snapshot)
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            list(pool.map(start, range(3)))
+        with database(fresh, readonly=True) as db:
+            assert db.execute("SELECT count(*) FROM runs WHERE saved_at IS NULL").fetchone()[0] == 3
+        with closing(sqlite3.connect(fresh)) as db:
+            db.execute("BEGIN IMMEDIATE")
+            blocked = Measurement(fresh, "contended")
+            blocked.begin(snapshot)
+            assert blocked.partial
+            db.rollback()
+            db.execute("PRAGMA user_version=9")
+        m = Measurement(fresh, "unsupported")
+        m.begin(snapshot)
+        assert m.partial
+        with closing(sqlite3.connect(fresh)) as db:
+            assert db.execute("PRAGMA user_version").fetchone()[0] == 9
+
+
+def check_forced_single_candidate():
+    from unittest.mock import patch, Mock
+    from dataclasses import replace
+    from agent.planner import run_candidate_selection
+    from agent.config import ResolvedAgentModel, load_public_agent_config
+    from agent.metrics import Measurement, database
+    import tempfile
+    import json
+    snapshot = candidate_snapshot()
+    pool, analysis = generate_candidates(snapshot, [])
+    candidate = pool[0]
+    model = ResolvedAgentModel("openai", "openai", "openai:test", "test", {}, "request")
+    with tempfile.TemporaryDirectory() as directory:
+        for profile in ("openai", "gemini", "openai-decisions", "openrouter"):
+            measurement = Measurement(Path(directory)/"metrics.sqlite3", profile)
+            measurement.begin(snapshot)
+            client = Mock()
+            with patch("agent.planner.generate_candidates", return_value=([candidate], analysis)):
+                plan = run_candidate_selection(snapshot, [], replace(model, profile=profile),
+                    client, {"measurement":measurement}, load_public_agent_config())
+            client.create_completion.assert_not_called()
+            assert plan["action"]["keyCode"] == candidate["action"]["keyCode"]
+            assert plan["trace"]["decision"] == {
+                "requestedId":None,"selectedId":candidate["id"],"rationale":"","fallback":None}
+            assert plan["planner"]["mode"] == "backend-forced"
+            measurement.issue(plan["trace"])
+        with database(Path(directory)/"metrics.sqlite3", readonly=True) as db:
+            assert db.execute("SELECT count(*) FROM model_calls").fetchone()[0] == 0
+            assert db.execute("SELECT count(*) FROM runs WHERE decisions=1").fetchone()[0] == 4
+
+
 if __name__ == "__main__":
+    check_metrics_token_validation()
+    check_forced_single_candidate()
+    check_metrics_lifecycle()
     check_model_context()
     check_floor_separated_horizontal_pressure()
     check_open_hole_escape()
@@ -652,6 +919,7 @@ if __name__ == "__main__":
     check_loop_target_alignment_score()
     check_horizontal_offset_progress()
     check_provider_and_response_contracts()
+    check_selector_protocols()
     check_logging_levels()
     check_immediate_descent_after_climb()
     print("backend regressions ok")

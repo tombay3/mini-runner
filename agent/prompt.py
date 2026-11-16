@@ -34,6 +34,7 @@ def build_agent_prompt(
     candidates: list[dict[str, Any]],
     analysis: dict[str, Any],
     include_reasoning: bool = False,
+    typed_choice: bool = False,
     history: list[dict[str, Any]] | None = None,
 ) -> str:
     response_format = (
@@ -69,7 +70,7 @@ def build_agent_prompt(
                 if analysis.get("goldComplete") and _dict(analysis.get("exitTarget"))
                 else None
             ),
-            f"Return JSON only: {response_format}.",
+            "Choose one of the supplied candidate IDs." if typed_choice else f"Return JSON only: {response_format}.",
             rationale_instruction,
             "Agent rules:\n" + read_agent_rules(),
             format_decision_context(snapshot, candidates, analysis),

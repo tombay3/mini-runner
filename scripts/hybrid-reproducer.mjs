@@ -20,7 +20,6 @@ const git=(...args)=>execFileSync('git',args,{cwd:root});
 const evidence=['__data1/agent-traces.json','__data1/recordings.json','__data1/trace-cohorts.json'];
 const hashes=files=>Object.fromEntries(files.map(p=>[p,hash(fs.readFileSync(path.join(root,p)))]));
 const status=()=>fs.existsSync(path.join(here,'state.json'))?read(path.join(here,'state.json')):null;
-const backendUrl='http://127.0.0.1:8485';
 let viteUrl;
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 async function ready(url){try{return (await fetch(url,{signal:AbortSignal.timeout(2000)})).ok;}catch{return false;}}
@@ -80,15 +79,22 @@ function prepare(){
   assert.equal(run.steps[prefix.length]?.state.tick,tick,'Fork must be a recorded decision boundary');
   const controlRevision=options.controlSource?null:git('rev-parse','--verify',`${options.controlRef}^{commit}`).toString().trim();
   const fixRevision=options.fixRef?git('rev-parse','--verify',`${options.fixRef}^{commit}`).toString().trim():null;
-  const refFiles=ref=>git('ls-tree','-r','--name-only',ref,'app.py','agent','public/agent-config.json','public/LLM_GAME_RULES.md').toString().trim().split('\n').filter(n=>/\.(py|json|md)$/.test(n));
+  const refFiles=ref=>git('ls-tree','-r','--name-only',ref,'app.py','agent','public/agent-config.json','public/LLM_GAME_RULES.md','requirements.txt').toString().trim().split('\n').filter(n=>/\.(py|json|md|txt)$/.test(n));
 
-  const files=['app.py','public/agent-config.json','public/LLM_GAME_RULES.md',
-    ...fs.readdirSync(path.join(root,'agent')).filter(n=>/\.(py|json)$/.test(n)).map(n=>'agent/'+n)];
+  const sourceFiles=source=>{
+    const walk=dir=>fs.readdirSync(path.join(source,dir),{withFileTypes:true}).flatMap(entry=>{
+      const name=path.posix.join(dir,entry.name);
+      return entry.isDirectory()?(entry.name==='__pycache__'?[]:walk(name)):
+        (/\.(py|json)$/.test(name)?[name]:[]);
+    });
+    return ['app.py','public/agent-config.json','public/LLM_GAME_RULES.md','requirements.txt',...walk('agent')];
+  };
+  const files=sourceFiles(root);
   const manifest={traceId:id,forkTick:tick,historicalProvenance:catalog.traces[id],
     currentSource:{revision:git('rev-parse','HEAD').toString().trim(),
       dirtyFingerprint:hash(git('diff','HEAD','--binary')),sourceHashes:hashes(files)},
     evidenceHashes:hashes(evidence),prefixDecisions:prefix.length,paidCeiling:options.paidBudget,
-    model:run.model.name,profile:run.model.profile,controlRef:options.controlRef,controlRevision,
+    model:run.model.modelId,profile:run.model.profile,controlRef:options.controlRef,controlRevision,
     localProbeSteps:options.localProbeSteps??null,controlSource:options.controlSource??null,
     fixRef:options.fixRef??null,fixRevision,godMode,
     historyLimit:read(path.join(root,'public/agent-config.json')).agent.historyLimit,
@@ -98,9 +104,10 @@ function prepare(){
     const dir=path.join(here,'arms',arm);fs.mkdirSync(path.join(dir,'public'),{recursive:true});
     fs.mkdirSync(path.join(dir,'agent'),{recursive:true});fs.mkdirSync(path.join(dir,'__data1'),{recursive:true});
     const revision=arm==='control'?controlRevision:fixRevision;
-    const armFiles=revision?refFiles(revision):files;
+    const source=arm==='control'&&options.controlSource?options.controlSource:root;
+    const armFiles=revision?refFiles(revision):sourceFiles(source);
     for(const name of armFiles){
-      const source=arm==='control'&&options.controlSource?options.controlSource:root;
+      fs.mkdirSync(path.dirname(path.join(dir,name)),{recursive:true});
       const bytes=revision?git('show',`${revision}:${name}`):fs.readFileSync(path.join(source,name));
       fs.writeFileSync(path.join(dir,name),bytes,{flag:'wx'});
     }
@@ -108,7 +115,7 @@ function prepare(){
     for(const name of ['.venv','.env','.env.local']){
       if(fs.existsSync(path.join(root,name)))fs.symlinkSync(path.join(root,name),path.join(dir,name));
     }
-    manifest.arms[arm]={root:dir,revision,hashes:Object.fromEntries(armFiles.map(n=>[n,hash(fs.readFileSync(path.join(dir,n)))]))};
+    manifest.arms[arm]={root:dir,revision,dependencies:fs.readFileSync(path.join(dir,'requirements.txt'),'utf8').split('\n').filter(Boolean),hashes:Object.fromEntries(armFiles.map(n=>[n,hash(fs.readFileSync(path.join(dir,n)))]))};
   }
   write('input.json',{run,record,prefix});write('manifest.json',manifest);
   write('state.json',{status:'prepared',attempts:[],paidStarted:0,updatedAt:new Date().toISOString()});
@@ -170,6 +177,9 @@ from pathlib import Path
 package = types.ModuleType('_check')
 package.__path__ = [str(Path.cwd() / 'agent')]
 sys.modules['_check'] = package
+import importlib.util
+if (Path.cwd() / 'agent' / 'service.py').read_text().find('import aisuite') >= 0 and importlib.util.find_spec('aisuite') is None:
+    raise RuntimeError('Historical arm requires aisuite; install a compatible environment before continuation')
 from _check.candidates import generate_candidates
 from _check.config import reload_dotenv_files, resolve_model_profile, load_public_agent_config
 reload_dotenv_files()
@@ -178,7 +188,7 @@ with open(sys.argv[1]) as source:
     payload = json.load(source)
 pool, analysis = generate_candidates(payload['snapshot'], payload['history'])
 print(json.dumps({
-    'model': model.model, 'profile': model.profile, 'provider': model.provider,
+    'model': model.transport_model, 'profile': model.profile, 'provider': model.provider,
     'config': load_public_agent_config(),
     'candidates': [{'id': c['id'], 'kind': c['kind'], 'action': c['action']} for c in pool],
 }))
@@ -219,6 +229,9 @@ function checkFrozen(){
 async function trial(arm,pair,fake=false){
   const manifest=checkFrozen(), input=read(path.join(here,'input.json'));
   assert.equal(read(path.join(here,'preflight.json')).status,'passed');
+  // Model-free validation owns a separate loopback server alongside the user's game.
+  const port = fake ? 18485 : 8485;
+  const backendUrl = `http://127.0.0.1:${port}`;
   if(await ready(backendUrl+'/api/health'))throw Error('Existing Flask backend: ask its owner to stop it; never reuse it');
   const label=fake?`smoke-${arm}`:`pair-${pair}-${arm}`;
   const dir=path.join(here,label);fs.mkdirSync(dir);fs.mkdirSync(path.join(dir,'__data1'));
@@ -233,10 +246,10 @@ async function trial(arm,pair,fake=false){
       s.updatedAt=new Date().toISOString();write('state.json',s);}
   };
   try{
-    let code=`import app; from pathlib import Path; app.STORE_PATH=Path(${JSON.stringify(path.join(dir,'__data1/recordings.json'))}); app.TRACE_STORE_PATH=Path(${JSON.stringify(path.join(dir,'__data1/agent-traces.json'))}); app.app.add_url_rule(${JSON.stringify(ownerRoute)},'reproducer_owner',lambda:{'id':${JSON.stringify(runId)}}); `;
+    let code=`import os; os.environ["AGENT_METRICS_PATH"]=${JSON.stringify(path.join(dir,'__data1/metrics.sqlite3'))}; import app; from pathlib import Path; app.STORE_PATH=Path(${JSON.stringify(path.join(dir,'__data1/recordings.json'))}); app.TRACE_STORE_PATH=Path(${JSON.stringify(path.join(dir,'__data1/agent-traces.json'))}); app.app.add_url_rule(${JSON.stringify(ownerRoute)},'reproducer_owner',lambda:{'id':${JSON.stringify(runId)}}); `;
     code+=`from flask import request,jsonify; app.app.before_request(lambda:(jsonify({'error':'isolated reproducer: foreign writes disabled'}),403) if request.method not in ('GET','HEAD','OPTIONS') and ((request.get_json(silent=True) or {}).get('runId') or (request.get_json(silent=True) or {}).get('traceId'))!=${JSON.stringify(runId)} else None); `;
-    if(fake)code+=`import json; from types import SimpleNamespace as N; import agent.service as service; service.AisuiteAgentClient.create_completion=lambda self,model,messages,**kwargs:N(choices=[N(message=N(content=json.dumps({'candidateId':json.JSONDecoder().raw_decode(messages[-1]['content'].split('Decision context (valid JSON):\\n',1)[1])[0]['candidates'][0]['id'],'reasoning':'model-free integration smoke'})))],id='fake-model-free',created=0); `;
-    code+="app.app.run(host='0.0.0.0',port=8485,use_reloader=False)";
+    if(fake)code+=`import json; from types import SimpleNamespace as N; import agent.service as service; C=getattr(service,'AisuiteAgentClient',None) or service.AgentClient; C.create_completion=lambda self,model,messages,**kwargs:N(choices=[N(message=N(content=json.dumps({'candidateId':json.JSONDecoder().raw_decode(messages[-1]['content'].split('Decision context (valid JSON):\\n',1)[1])[0]['candidates'][0]['id'],'reasoning':'model-free integration smoke'})))],id='fake-model-free',created=0); `;
+    code+=`app.app.run(host='127.0.0.1',port=${port},use_reloader=False)`;
     backend=await startServer(path.join(root,'.venv/bin/python'),['-u','-c',code],manifest.arms[arm].root,
       backendUrl+ownerRoute,`${label}/backend.log`);
     item.backendPid=backend.pid;persist();
@@ -251,6 +264,8 @@ async function trial(arm,pair,fake=false){
       item.status=fake?'running-model-free':'running-paid';persist();
       const config=read(path.join(manifest.arms[arm].root,'public/agent-config.json'));
       const observations=[];let planner;
+      const metrics={partial:false};
+      const metricsStart=performance.now();
       const deadline=Date.now()+60*60*1000;
       const max=fake?1:Math.min(config.agent.maxSteps-input.prefix.length,manifest.localProbeSteps??Infinity);
       for(let n=0;n<max;n++){
@@ -263,9 +278,10 @@ async function trial(arm,pair,fake=false){
         item.modelRequests++;item.lastTick=before.tick;persist();
         const response=await fetch(backendUrl+'/api/agent/next-action',{
           method:'POST',headers:{'Content-Type':'application/json'},signal:AbortSignal.timeout(60*60*1000),
-          body:JSON.stringify({playData:1,level:1,snapshot:before,history,runId,modelProfile:manifest.profile})});
+          body:JSON.stringify({playData:1,level:1,snapshot:before,history,runId,metrics,modelProfile:manifest.profile})});
         const body=await response.json();assert(response.ok,`Agent API ${response.status}: ${JSON.stringify(body)}`);
-        assert.equal(body.planner.model,manifest.model);assert.equal(body.planner.modelProfile,manifest.profile);
+        metrics.partial ||= body.metricsPartial === true;
+        assert.equal(body.planner.modelId,manifest.model);assert.equal(body.planner.profile,manifest.profile);
         assert.deepEqual(body.planner.config,input.run.config);planner=body.planner;
         const observed=await page.evaluate(async({response,config})=>{
           const {_test}=await import('/src/agent.js'), hooks=window.lodeRunnerAgentHooks;
@@ -301,13 +317,17 @@ async function trial(arm,pair,fake=false){
       verifyEngineContext(final.snapshot,manifest.godMode);
       assert([0,1,false,true].includes(final.demo.godMode),'Missing/invalid recording mode');
       assert.equal(Boolean(final.demo.godMode),manifest.godMode,'Recording mode changed before save');
-      const solver={modelProfile:planner.modelProfile,provider:planner.provider,model:planner.model,
+      const solver={profile:planner.profile,provider:planner.provider,modelId:planner.modelId,api:planner.api,
         generatedAt:planner.generatedAt,responseId:planner.responseId,traceId:runId,
         failureReason:final.result==='failure'?final.reason:null};
       const saved=await fetch(backendUrl+'/api/recordings/1/1',{
         method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({
-          demo:final.demo,source:'agent',result:final.result,solver,traceId:runId,finalSnapshot:final.snapshot})});
+          demo:final.demo,source:'agent',result:final.result,solver,traceId:runId,metrics:{...metrics,wallMs:performance.now()-metricsStart},finalSnapshot:final.snapshot})});
       assert(saved.ok,'Recording persistence failed');
+      const pin=await fetch(backendUrl+'/api/recordings/1/1/pin',{
+        method:'PATCH',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({recordId:runId,runId,pinned:true})});
+      assert(pin.ok,'Recording pin failed');
       return {...final,observations:observations.length,record:await saved.json()};
     });
     const trace=read(path.join(dir,'__data1/agent-traces.json')).runs[runId];

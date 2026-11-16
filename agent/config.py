@@ -53,10 +53,10 @@ class ResolvedAgentModel:
     profile: str
     provider: str
     model: str
-    aisuite_provider: str
-    aisuite_model: str
+    transport_model: str
     provider_configs: dict[str, dict[str, Any]]
     source: str
+    routing_provider: str | None = None
 
 
 def reload_dotenv_files() -> list[str]:
@@ -207,6 +207,8 @@ def resolve_model_profile(profile: str | None, *, source: str) -> ResolvedAgentM
     normalized = str(profile).strip().lower()
     if not normalized:
         return None
+    if normalized == "minimax":
+        raise ValueError("MiniMax direct access is retired; choose an OpenAI or Gemini profile explicitly")
     if normalized not in AGENT_MODEL_PROFILES:
         raise ValueError(
             f"unsupported modelProfile '{normalized}'. Supported profiles: {sorted(AGENT_MODEL_PROFILES)}"
@@ -229,28 +231,8 @@ def resolve_openai_profile(*, source: str) -> ResolvedAgentModel:
         profile="openai",
         provider="openai",
         model=model,
-        aisuite_provider="openai",
-        aisuite_model=model,
+        transport_model=model.split(":", 1)[1],
         provider_configs={"openai": provider_config},
-        source=source,
-    )
-
-
-def resolve_minimax_profile(*, source: str) -> ResolvedAgentModel:
-    model_name = get_env_value("MINIMAX_MODEL")
-    if not model_name:
-        raise ValueError("MINIMAX_MODEL must be configured for minimax profile")
-    api_key = get_env_value("MINIMAX_API_KEY")
-    if not api_key:
-        raise ValueError("MINIMAX_API_KEY must be configured for minimax profile")
-    provider_config = _provider_config("minimax")
-    return ResolvedAgentModel(
-        profile="minimax",
-        provider="minimax",
-        model=f"minimax:{model_name}",
-        aisuite_provider="minimax",
-        aisuite_model=f"minimax:{model_name}",
-        provider_configs={"minimax": provider_config},
         source=source,
     )
 
@@ -268,17 +250,39 @@ def resolve_gemini_profile(*, source: str) -> ResolvedAgentModel:
         profile="gemini",
         provider="gemini",
         model=f"gemini:{model_name}",
-        aisuite_provider="openai",
-        aisuite_model=f"openai:{model_name}",
+        transport_model=model_name,
         provider_configs={"openai": provider_config},
         source=source,
     )
 
 
+
+def resolve_decisions_profile(*, source: str) -> ResolvedAgentModel:
+    if not get_env_value("OPENAI_API_KEY"):
+        raise ValueError("OPENAI_API_KEY must be configured for openai-decisions profile")
+    name = get_env_value("OPENAI_DECISIONS_MODEL") or "gpt-6-luna"
+    if name != "gpt-6-luna":
+        raise ValueError("openai-decisions currently supports only gpt-6-luna")
+    return ResolvedAgentModel("openai-decisions", "openai", f"openai:{name}", name,
+                              {"openai": _provider_config("openai")}, source)
+
+
+def resolve_openrouter_profile(*, source: str) -> ResolvedAgentModel:
+    name = get_env_value("OPENROUTER_MODEL")
+    key = get_env_value("OPENROUTER_API_KEY")
+    provider = get_env_value("OPENROUTER_PROVIDER")
+    if not name or not key or not provider:
+        raise ValueError("OPENROUTER_MODEL, OPENROUTER_API_KEY and OPENROUTER_PROVIDER are required for openrouter profile")
+    if "/" not in name or ":" in name:
+        raise ValueError("OPENROUTER_MODEL must be a single explicit model slug without routing suffixes")
+    return ResolvedAgentModel("openrouter", "openrouter", f"openrouter:{name}", name,
+        {"openai": {"api_key": key, "base_url": "https://openrouter.ai/api/v1"}}, source, provider)
+
 AGENT_MODEL_PROFILES = {
     "openai": resolve_openai_profile,
-    "minimax": resolve_minimax_profile,
     "gemini": resolve_gemini_profile,
+    "openai-decisions": resolve_decisions_profile,
+    "openrouter": resolve_openrouter_profile,
 }
 
 

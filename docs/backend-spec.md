@@ -11,7 +11,8 @@ Backend layers:
 - `reasoning_tools`: deterministic movement, guard, dig, and route helpers.
 - `loop_tools`: deterministic stationary, horizontal, and vertical cycle detection and suppression.
 - `prompt`: formats the current state summary and eligible candidate list, including compact loop status.
-- `service`: orchestrates one model call, generic candidate validation, and trace assembly.
+- `planner` selects a sole candidate directly or asks the model to choose. It validates the action and assembles the step trace.
+- `llm_client` sends Chat Completions and Decisions requests and parses each API’s response.
 
 Local data stores:
 
@@ -86,9 +87,10 @@ a JSON `400` error. A valid request appends one trace step and returns one actio
 {
   "action": { "keyCode": 39, "ticks": 8, "reason": "..." },
   "planner": {
-    "modelProfile": "openai",
+    "profile": "openai",
     "provider": "openai",
-    "model": "openai:gpt-5-nano",
+    "modelId": "gpt-5-nano",
+    "api": "chat_completions",
     "mode": "candidate-selection"
   },
   "traceId": "...",
@@ -110,8 +112,8 @@ a JSON `400` error. A valid request appends one trace step and returns one actio
 This section is the canonical trace API/store reference. `app.py` owns storage, endpoints and
 run metadata; `agent/traces.py` serializes steps and terminal state, using model-input formatters
 from `agent/prompt.py`. The supported context is Classic `playData=1, level=1`.
-Dashboard views and indicators belong in [Trace dashboard](trace-dashboard.md);
-reviewed findings and comparison groups belong in [Trace cohorts](trace-cohort.md).
+Dashboard views and indicators belong in [Trace dashboard](../analytics/README.md);
+reviewed findings and comparison groups belong in [Trace cohorts](../analytics/cohorts.md).
 
 The trace store shape is:
 
@@ -126,7 +128,7 @@ The trace store shape is:
       "updatedAt": "...",
       "playData": 1,
       "level": 1,
-      "model": { "profile": "openai", "provider": "openai", "name": "openai:gpt-5-nano" },
+      "model": { "profile": "openai", "provider": "openai", "modelId": "gpt-5-nano", "api": "chat_completions" },
       "config": { "candidateLimit": 7, "maxActionTicks": 20, "temperature": 1 },
       "outcome": null,
       "steps": []
@@ -199,7 +201,7 @@ Step data:
   with statuses `safety_rejection`, `physical_rejection`, `deduplicated`, `loop_suppressed`, and
   `limit_truncated`. Each event is a nonexposed proposal occurrence, using its proposed action;
   repeated IDs remain separate occurrences. Events carry no scores, lanes, targets or audit payload.
-  Event reasons are capped at 240 characters. Exposed/proposed audit rows are not emitted as events.
+  Physical rejection reasons describe the blocked move or open hole. Event reasons are capped at 240 characters. Exposed/proposed audit rows are not emitted as events.
 - Step index and selected kind are derived. Raw model messages, provider reasoning, terrain,
   non-model analysis, score breakdowns, and candidate audits are not stored in traces.
 
@@ -334,18 +336,23 @@ See [current ranking rules](candidate-design.md#scoring-and-deduplication).
 - Loop-filter behavior is defined in [candidate design](./candidate-design.md#loop-handling).
 
 Dashboard loading, derived after-state, event markers, and UI behavior are documented in
-[Trace dashboard](./trace-dashboard.md).
+[Trace dashboard](../analytics/README.md).
 
 Retention and run metadata:
 
 - The trace store keeps runs linked by pinned recordings plus the newest 10 other runs.
 - Recordings keep all pinned records plus the newest 10 unpinned records; recordings alone own pin state.
-- [Retention and missing links](./trace-dashboard.md#retention-and-missing-links) explains how
+- [Retention and missing links](../analytics/README.md#retention-and-missing-links) explains how
   the dashboard presents unavailable evidence.
 
 
+## Model identity
+
+Planner responses, recording solver metadata and trace model objects use
+profile, provider, modelId and api. The provider identifies the service receiving the request. The model ID is the exact submitted ID, without a service prefix. API values are chat_completions and decisions. Display labels use profile:modelId.
+
 ## Model Profiles
-The backend uses `aisuite` for provider/model abstraction. Resolution order is:
+The backend uses a shared Chat Completions adapter for direct OpenAI and Gemini. Resolution order is:
 
 1. explicit request `model`;
 2. request `modelProfile` (the browser derives this from `?profile=...`, runtime options,
@@ -357,8 +364,11 @@ The backend uses `aisuite` for provider/model abstraction. Resolution order is:
 Supported profiles:
 
 - `openai`: `OPENAI_MODEL`, `OPENAI_API_KEY`, optional `OPENAI_BASE_URL`.
-- `minimax`: `MINIMAX_MODEL`, `MINIMAX_API_KEY`, optional `MINIMAX_BASE_URL` or `MINIMAX_API_BASE`.
 - `gemini`: `GEMINI_MODEL`, `GEMINI_API_KEY`, optional `GEMINI_API_BASE`.
+- `openai-decisions`: `OPENAI_API_KEY`, optional `OPENAI_DECISIONS_MODEL` (currently only `gpt-6-luna`) and `OPENAI_BASE_URL`. It uses a typed choice over the ordered candidate IDs. Refusal and malformed answers use the ordinary candidate fallback; confidence and probabilities are diagnostics only.
+- `openrouter`: `OPENROUTER_API_KEY`, `OPENROUTER_MODEL` (explicit `vendor/model` slug), and `OPENROUTER_PROVIDER` (one provider slug). The endpoint is fixed at `https://openrouter.ai/api/v1`; routing uses `only`, disables fallback, and requires support for submitted parameters. OpenRouter includes usage automatically. The adapter records the serving provider when supplied. A base provider slug can match several variants or regions; specify the full endpoint slug when a comparison requires one variant or region.
+
+The repository configuration and examples contain only the explicit `openai:` prefix; the former aisuite registry accepted additional provider prefixes, which now require review and explicit support. Explicit model IDs support `openai:model`; use named profiles to select Decisions or OpenRouter; other direct prefixes, including retired MiniMax, are rejected. Historical traces remain readable. The adapter uses a 90-second timeout and no automatic retries (the former aisuite path could retry). Temperature is omitted for OpenAI GPT-5 model IDs because those reasoning models may reject it; effective settings record only parameters sent. Custom endpoints are classified as custom gateways with unknown serving provider for price attribution. Chat returns the requested JSON gameplay rationale; Responses reasoning summaries are no longer requested.
 
 Dotenv files are reconciled before each backend planning request:
 
@@ -373,11 +383,6 @@ Examples:
 AGENT_MODEL_PROFILE=openai
 OPENAI_MODEL=gpt-5-nano
 OPENAI_API_KEY=...
-
-AGENT_MODEL_PROFILE=minimax
-MINIMAX_MODEL=MiniMax-M2.1
-MINIMAX_API_KEY=...
-MINIMAX_API_BASE=https://api.minimax.io/v1
 
 AGENT_MODEL_PROFILE=gemini
 GEMINI_MODEL=gemini-flash-lite-latest
@@ -448,18 +453,55 @@ Environment-only settings:
 - `AGENT_DEBUG_LOG=1` enables the diagnostics without Flask debug mode.
 - `npm run api` uses the project virtual environment and Flask source reloading; the interactive
   Flask debugger remains disabled.
-- Debug model I/O is written to `__data1/agent-debug.log` with 10-entry rotation. Entries include
+- Debug model I/O is written to `__data1/agent-debug.log` with 10-entry rotation. The model line uses `profile:model-id`, retaining the supplied model identifier when the profile is unavailable. Entries include
   prompt/model output and correlation identifiers only, with no selected-candidate
   or error headers.
 - OpenAI calls request a brief observable rationale. Raw model I/O is never written to stdout or
   `agent-traces.json`.
 
-## Offline Analytics
+## Local model metrics
 
-Jupyter notebook `trace-analytics.ipynb` reads the flat recording and trace stores without
-modifying them. It builds recording, run, step, and candidate data frames; joins recordings
-to traces by `traceId`; and charts outcomes, model usage, run duration, candidate selection,
-loop-filter events, and generic fallbacks. Notebook dependencies are included in `requirements.txt`.
+**SQLite schema version 2** (`PRAGMA user_version = 2`) has two tables. Each run counts its attempted decisions and owns its model calls. Normal gameplay writes to `__data1/metrics.sqlite3`. Set `AGENT_METRICS_PATH` to select another file. God-mode tests skip ingestion. The evaluator keeps launch provenance, attempts and persistence checks in its result.
+
+### `runs` — one row per measured game
+
+| Column | SQLite type | Meaning |
+|---|---|---|
+| `id` | TEXT PRIMARY KEY | Run ID shared with the V4 trace and agent recording. |
+| `profile`, `model_id` | TEXT | Configured project profile and submitted model ID. Together they identify a notebook group. |
+| `api`, `gateway` | TEXT | Configured API and route, such as `decisions` and `direct`. Both are fixed for the run. |
+| `gw_provider`, `gw_model` | TEXT | Serving provider and returned model ID. Each starts unknown, takes its first known value and becomes `Mixed` if known values disagree. |
+| `saved_at` | TEXT | Recording save timestamp. NULL until finalization. Migrated games use the old run end time when the recording timestamp is unavailable. |
+| `result`, `reason` | TEXT | Recorded outcome and optional reason. The report uses both to classify gameplay losses. |
+| `initial_gold`, `final_gold` | INTEGER | Gold remaining at the first measured snapshot and at finalization. Their difference is gold collected. |
+| `wall_ms` | REAL | Whole-game elapsed time in milliseconds, supplied at finalization. |
+| `decisions` | INTEGER NOT NULL | Attempt count. Defaults to zero and increments at decision start, including forced moves and attempts that fail. |
+
+### `model_calls` — one row per attempted model call
+
+| Column | SQLite type | Meaning |
+|---|---|---|
+| `id` | TEXT PRIMARY KEY | Local request ID allocated before dispatch. |
+| `run_id` | TEXT NOT NULL | Foreign key to `runs.id`, indexed by `calls_run`. |
+| `diverged` | INTEGER | 1 for a lower-scoring requested candidate whose action differs from every top action, 0 for other evaluable choices, NULL when the request cannot be scored. |
+| `status` | TEXT NOT NULL | Starts as `pending`. Completion records `ok`, `error`, `refusal` or `parse_error`. |
+| `latency_ms` | REAL | Elapsed milliseconds for this model request. |
+| `input_tokens`, `output_tokens` | INTEGER | Provider-reported totals. Add these two fields for total token usage. |
+| `cached_tokens`, `cache_write_tokens` | INTEGER | Input tokens served from cache and written to cache, respectively. Both are input breakdowns. |
+| `reasoning_tokens` | INTEGER | Reasoning portion of output tokens. |
+
+Missing measurements are NULL. A reported zero is a measured value. Cost estimates use notebook tariffs.
+
+### Reporting and retention
+
+Both comparison notebooks use the same Table 1 query. A run qualifies when it has a save timestamp, a gameplay win or loss, and at least one request with all request statuses equal to `ok`. A gameplay win has `result = 'success'`. A gameplay loss has `result = 'failure'` and a reason of `runner dead`, `runner_dead`, `agent max playback time reached` or `agent safety step limit reached`. [Shared query](../agent/metrics.py)
+
+The run foreign key uses `ON DELETE CASCADE`. SQLite retention is independent of trace and recording pruning. To explicitly remove one
+run and its child measurements, use `.venv/bin/python -m agent.metrics delete --run ID`.
+
+## Offline analytics
+
+See the [notebook guide](../analytics/README.md) for trace, model and cost comparison scopes.
 
 ## Related References
 
@@ -469,5 +511,14 @@ loop-filter events, and generic fallbacks. Notebook dependencies are included in
 - [Prompt and model output](./llm-agent.md#prompt-and-model-output)
 - [Safety, loops, and god mode](./llm-agent.md#safety-loops-and-god-mode)
 - [Loop handling](./candidate-design.md#loop-handling)
-- [Trace dashboard and retention](./trace-dashboard.md#retention-and-missing-links)
+- [Trace dashboard and retention](../analytics/README.md#retention-and-missing-links)
 - [Evaluator reports](./evaluator.md#reports-and-retention)
+
+### Single-candidate decisions
+
+When only one validated candidate remains, the backend selects it directly for every
+profile. Trace `requestedId` is null, `selectedId` identifies the offered candidate,
+and fallback is null. The response planner mode is `backend-forced`. SQLite records
+one attempted decision and zero model calls. Pools
+with two or more candidates continue through the configured model. This also avoids
+the Decisions Choice endpoint’s minimum of two options.

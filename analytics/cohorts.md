@@ -20,7 +20,7 @@ by itself. Archiving is a separate, explicit operation.
 These files do not need a Git commit. Deleting live data must preserve catalog
 entries and groups. Pin changes need no catalog edit; unpinned data can age out
 through rolling retention. The dashboard reads the live stores, not the catalog.
-See [store retention](backend-spec.md) and [dashboard views](trace-dashboard.md).
+See [store retention](../docs/backend-spec.md#trace-api-and-store) and [dashboard views](README.md#inspecting-a-trace).
 
 ## Check the catalog
 
@@ -32,27 +32,9 @@ Run `npm run cohorts:check` before reviewing traces.
 | `npm run cohorts:check -- --write` | Creates a missing catalog or updates its availability status. Preserves historical entries and findings; backs up an existing catalog as `.bak`. Does not review or catalog new runs for you. |
 | `npm run cohorts:check -- --verify-archives` | Reads linked local archives and checks that the recording and trace match. Use before reproduction or after transferring archives. |
 
-No command scans archive folders or creates an archive. Missing local archives and
-historical member IDs without detailed entries are quietly skipped and preserved.
-Malformed references and inconsistent membership are still reported.
+Use the default `__data1` or set `AGENT_DATA_DIR`. Review only complete live recording/trace pairs. Keep active and orphaned traces out of gameplay cohorts. Record launcher failures in the campaign report.
 
-Active or orphaned traces without a complete recording/trace pair are excluded
-from new-run review lists. Do not add them to gameplay cohorts or replay archives;
-keep infrastructure failures in campaign logs and reports. `--write` does not
-delete live data, archive files, or historical findings when a pair is unavailable.
-
-“Catalog availability or policy needs updating” means saved `dataStatus` values
-or checker-maintained policy differ from the current check. For example, a deleted
-live pair may now be available only in an archive. `--write` saves those updates;
-it does not diagnose runs, repair archive contents, or remove obsolete files.
-
-All modes use `AGENT_DATA_DIR` when set; otherwise they use `__data1`. Missing live
-store files count as empty stores and are not recreated. Avoid `--write` while
-another task is editing the catalog.
-
-Archive verification checks IDs, recording streams, trace decisions, final tick,
-level, and mode. It does **not** replay gameplay, confirm findings, or prove that a
-recording will replay correctly against another code revision.
+If the checker reports stale availability or policy, use `--write` when updating the catalog. It preserves historical IDs and findings, including runs whose evidence is missing locally. Avoid concurrent catalog edits. Use `--verify-archives` to check linked IDs, streams, decisions, final tick, level and mode. Replay separately to verify gameplay against a revision.
 
 ## Review runs and update findings
 
@@ -79,34 +61,13 @@ or paid evaluations.
 
 ## When to archive a live run
 
-**Archive selected runs with a concrete future use, not every completed run.**
-Saving, pinning, cataloging, or requesting debugging does not automatically create
-or require an archive. Review with the user is not a prerequisite; the deciding
-question is what investigation or comparison needs the full data.
+Pin new evaluation runs by default. Keep ordinary completed games in the live stores. Archive a complete pair when it serves a specific future use:
 
-| Trigger | When to archive | Examples |
-| --- | --- | --- |
-| Preserve campaign evidence | A selected run supports a finding or future comparison. | Representative baseline, evidence of a fix, suspected regression, or distinct unresolved failure. |
-| Prepare a reproducer | A run is selected for replay or testing alternative decisions. | Save the original pair before a hybrid comparison; its preparation step captures both in `input.json`. |
-| Remove useful live data | A run still has a debugging purpose but is about to be unpinned or deleted. | Verify an existing archive or save the pair before removing an unresolved example or needed baseline. |
+- Preserve a representative baseline, evidence of a fix, or an unresolved failure.
+- Prepare a run for replay or hybrid comparison.
+- Protect needed evidence before unpinning or deleting live data.
 
-Keep ordinary completed or unreviewed runs in the live stores and pin new evaluation
-runs by default. Pinned runs survive rolling retention, so retention alone does not
-justify an archive copy. Routine successes and duplicate failures usually need no
-separate archive.
-
-Keep the campaign launch manifest and aggregate report for its setup and results.
-Archive full pairs only for selected supporting examples, unless the user explicitly
-requests every run. Record the reason in the catalog findings so later work can
-understand why the archive was kept.
-
-Save both objects under `__data3`, in a bundle or separate store backups. Keep the
-full run UUID and available launch manifest. Add `archive` references to the catalog
-and run `--verify-archives`. A report alone is not a replay backup; an existing
-complete archive does not need another copy.
-
-Archives differ between machines. When transferring an investigation, copy the
-recording, trace, and catalog references together.
+Keep the campaign manifest and aggregate report. Archive a whole campaign only on explicit request. Save the selected pair under `__data3`, preserve the full run ID and available launch manifest, record the reason in the findings, and verify the archive links. When transferring an investigation, copy both objects and their catalog references together.
 
 ## Find historical replay data
 
@@ -162,43 +123,6 @@ new traces do not store them. Do not duplicate pin state in the catalog.
 Before rerunning, state what question existing evidence cannot answer. An old
 failure does not prove a current bug, and a summary is not an engine checkpoint.
 
-Useful request examples:
+## Deferred archive improvements
 
-- **Review and catalog:** “Review `<trace IDs>` for `<question>`. Cite steps, update
-  findings and groups, and check the catalog. Do not change gameplay or start runs.”
-- **Diagnose:** “Debug `<trace ID>`, steps `<start–end>`. Observed `<behavior>`;
-  expected `<behavior>`. Check previous findings. Propose a fix without applying it.”
-- **Review the store:** “Rank unresolved anomalies and possible regressions across
-  retained runs. Note comparison limits and missing coverage. Update the catalog.”
-- **Review retention:** “Recommend redundant runs to unpin while preserving useful
-  baselines and unresolved examples. Wait for approval before changing pins.”
-
-Include the run ID and scope when handing work to another session. Run Signals
-help locate an issue but do not replace the full data.
-
-## Future simplification — not implemented
-
-The main weakness is that saving data, adding findings, and maintaining archive
-links are separate manual tasks. More checks alone cannot recover missing data.
-A simpler workflow would use:
-
-- **One archive folder per run**, named by its full UUID, containing the recording,
-  trace, and available launch information. Predictable paths replace custom JSON
-  references for new archives.
-- **One command to preserve a run.** Copy both objects, verify them, then update the
-  catalog. Failure leaves live data untouched; repeating the command is safe.
-- **A catalog focused on findings and groups.** Check local availability when needed
-  instead of storing a status that can become stale. Keep historical findings even
-  when their data is unavailable on this machine.
-
-Keep routine checks fast: check structure and expected files. Read archive contents
-only for explicit verification, such as before reproduction or after transfer.
-Unavailable historical data should not fail routine tests.
-
-Introduce the folder convention and preservation command first, use them for new
-investigations, then simplify the catalog once the workflow proves reliable. Avoid
-a large archive migration or another supervisor. Existing archives and links must
-remain usable during the transition.
-
-Related: [Evaluator workflow](evaluator.md) · [Trace dashboard](trace-dashboard.md) ·
-[Candidate design](candidate-design.md)
+Saving a pair and updating its catalog links are separate manual steps today. The proposed next step is one folder per full run ID and one repeatable command that copies both objects, verifies them, then records their links. Existing archives keep their original paths. Revisit stored availability flags after the new workflow has proved reliable.

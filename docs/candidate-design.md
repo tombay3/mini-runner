@@ -234,7 +234,8 @@ fixed. A sole progress choice keeps its score.
 
 ## Selection validation
 
-[service.py](../agent/service.py) parses the returned JSON and looks up the exposed ID.
+[llm_client.py](../agent/llm_client.py) extracts the candidate ID from a Chat Completions or Decisions response.
+[planner.py](../agent/planner.py) looks up that ID among the candidates offered for this step.
 A known choice that passes physical and guard checks is retained, even if its score
 is lower. Invalid JSON, absent/unknown IDs, or an invalid/unsafe selected action use
 the first backend-ranked candidate. Validation checks the plan; it does not execute physics.
@@ -266,3 +267,12 @@ likewise used bounded continuations, not a level-completion study.
 Validate simplification against a frozen source baseline. Accept simpler code when
 differences are understood and relevant validation shows no demonstrated regression;
 gameplay improvement is not required. Keep sample sizes and uncovered cases explicit.
+
+### Single-candidate decisions
+
+When only one validated candidate remains, the backend selects it directly for every
+profile. Trace `requestedId` is null, `selectedId` identifies the offered candidate,
+and fallback is null. The response planner mode is `backend-forced`. SQLite records
+one attempted decision and zero model calls. Pools
+with two or more candidates continue through the configured model. This also avoids
+the Decisions Choice endpoint’s minimum of two options.

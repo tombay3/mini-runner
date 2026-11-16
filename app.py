@@ -27,6 +27,7 @@ from agent.logging_utils import (
     log_event,
     normalize_flask_logger,
 )
+from agent.metrics import Measurement
 from agent.traces import summarize_state
 
 
@@ -336,9 +337,10 @@ def validate_solver(value: Any) -> dict[str, Any] | None:
         raise ValueError("solver must be an object")
 
     allowed_keys = {
-        "modelProfile",
+        "profile",
         "provider",
-        "model",
+        "modelId",
+        "api",
         "generatedAt",
         "responseId",
         "traceId",
@@ -350,9 +352,10 @@ def validate_solver(value: Any) -> dict[str, Any] | None:
         if key in value and value[key] is not None
     }
     for key in (
-        "modelProfile",
+        "profile",
         "provider",
-        "model",
+        "modelId",
+        "api",
         "responseId",
         "traceId",
         "failureReason",
@@ -385,7 +388,7 @@ def validate_record_id(value: Any) -> str | None:
 def trace_model_summary(planner: dict[str, Any] | None) -> dict[str, Any] | None:
     if not isinstance(planner, dict):
         return None
-    return {"profile": planner.get("modelProfile"), "provider": planner.get("provider"), "name": planner.get("model")}
+    return {key: planner.get(key) for key in ("profile", "provider", "modelId", "api")}
 
 
 def trace_config_summary(planner: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -560,6 +563,11 @@ def finalize_trace_run(
         return True
 
 
+def metrics_path():
+    configured = os.environ.get("AGENT_METRICS_PATH")
+    return Path(configured) if configured else STORE_PATH.with_name("metrics.sqlite3")
+
+
 @app.get("/api/health")
 def health():
     return jsonify({"ok": True})
@@ -689,6 +697,10 @@ def put_recording(play_data: str, level: str):
             reason=(solver or {}).get("failureReason"),
             final_snapshot=final_snapshot,
         )
+        measurement = Measurement(metrics_path(), trace_id, payload.get("metrics"))
+        measurement.finish(result, (solver or {}).get("failureReason"), final_snapshot or {}, now, demo.get("godMode"))
+        # Response-only status. Recording pins and JSON storage stay independent.
+        record["metricsPartial"] = measurement.partial
         log_event(
             LOGGER,
             logging.INFO,
@@ -698,7 +710,7 @@ def put_recording(play_data: str, level: str):
             result=result,
             reason=(solver or {}).get("failureReason"),
             trace_id=trace_id,
-            model=(solver or {}).get("model"),
+            model=(solver or {}).get("modelId"),
         )
 
     return jsonify(record)
@@ -747,12 +759,16 @@ def set_recording_pin(play_data: str, level: str):
 def next_agent_action():
     payload = request.get_json(silent=True)
     logging_context = payload if isinstance(payload, dict) else {}
+    measurement = None
     try:
         snapshot, history, options = validate_agent_request(payload)
         run_id = options.get("runId") or f"trace-{utc_now()}"
         with _trace_store_lock:
             existing_run = load_trace_store()["runs"].get(run_id)
         options["traceGuard"] = lambda model, config: assert_trace_settings(existing_run, model, config)
+        measurement = Measurement(metrics_path(), run_id, payload.get("metrics"))
+        measurement.begin(snapshot)
+        options["measurement"] = measurement
         plan = plan_next_action(snapshot, history, options)
     except AgentRequestError as exc:
         log_event(
@@ -762,7 +778,7 @@ def next_agent_action():
             trace_id=logging_context.get("runId"),
             error=exc,
         )
-        return jsonify({"error": str(exc)}), 400
+        return jsonify({"error": str(exc), "metricsPartial": bool(measurement and measurement.partial)}), 400
     except AgentConfigError as exc:
         log_event(
             LOGGER,
@@ -771,7 +787,7 @@ def next_agent_action():
             trace_id=logging_context.get("runId"),
             error=exc,
         )
-        return jsonify({"error": str(exc)}), 503
+        return jsonify({"error": str(exc), "metricsPartial": bool(measurement and measurement.partial)}), 503
     except AgentExecutionError as exc:
         log_event(
             LOGGER,
@@ -780,7 +796,7 @@ def next_agent_action():
             trace_id=logging_context.get("runId"),
             error=exc,
         )
-        return jsonify({"error": "agent execution failed", "detail": str(exc)}), 502
+        return jsonify({"error": "agent execution failed", "detail": str(exc), "metricsPartial": measurement.partial}), 502
 
     step_trace = dict(plan["trace"])
     step_trace["playData"] = snapshot.get("playData", 1)
@@ -799,8 +815,9 @@ def next_agent_action():
             level=step_trace["level"],
             error=exc,
         )
-        return jsonify({"error": "failed to persist agent trace"}), 500
+        return jsonify({"error": "failed to persist agent trace", "metricsPartial": measurement.partial}), 500
 
+    measurement.issue(step_trace)
     log_event(
         LOGGER,
         logging.INFO,
@@ -808,8 +825,8 @@ def next_agent_action():
         trace_id=run_id,
         play_data=step_trace["playData"],
         level=step_trace["level"],
-        model=plan["planner"].get("model"),
-        model_profile=plan["planner"].get("modelProfile"),
+        model=plan["planner"].get("modelId"),
+        model_profile=plan["planner"].get("profile"),
         candidate_id=plan.get("candidateId"),
         step_count=len(run["steps"]),
     )
@@ -820,6 +837,7 @@ def next_agent_action():
             "planner": plan["planner"],
             "traceId": run_id,
             "stepCount": len(run["steps"]),
+            "metricsPartial": measurement.partial,
             "candidateId": plan.get("candidateId"),
         }
     )
